@@ -349,10 +349,6 @@ private fun GeminiProviderCard(
                 ModelDetectorRow(
                     isDetecting = isDetecting,
                     result = detectorResult,
-                    models = detectedModels.ifEmpty { listOf("gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro") },
-                    isRealList = detectedModels.isNotEmpty(),
-                    selectedModel = selectedModel,
-                    onSelectModel = onSetModel,
                     isDarkMode = isDarkMode,
                     onDetect = {
                         isDetecting = true
@@ -432,10 +428,6 @@ private fun ProviderCard(
                 ModelDetectorRow(
                     isDetecting = isDetecting,
                     result = detectorResult,
-                    models = detectedModels,
-                    isRealList = detectedModels.isNotEmpty(),
-                    selectedModel = savedModel,
-                    onSelectModel = onSelectModel,
                     isDarkMode = isDarkMode,
                     onDetect = {
                         isDetecting = true
@@ -482,10 +474,6 @@ private fun ProviderHeader(
 private fun ModelDetectorRow(
     isDetecting: Boolean,
     result: ConnectivityResult?,
-    models: List<String>,
-    isRealList: Boolean,
-    selectedModel: String,
-    onSelectModel: (String) -> Unit,
     isDarkMode: Boolean,
     onDetect: () -> Unit
 ) {

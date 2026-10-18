@@ -494,9 +494,13 @@ fun AiChatScreen(
 
         coroutineScope.launch {
             val key = preferences.getEffectiveApiKey()
-            val model = preferences.selectedModel.value
-            // Use models detected for the same Gemini API key as automatic quota fallbacks.
-            val fallbackModels = preferences.detectedModels.value["Gemini"].orEmpty().filterNot { it == model }
+            // Chat uses a text-capable model automatically; never use TTS/audio-only models.
+            val model = "gemini-2.5-flash"
+            // Keep only text-chat candidates for automatic fallback.
+            val fallbackModels = (listOf("gemini-2.0-flash", "gemini-1.5-flash") +
+                preferences.detectedModels.value["Gemini"].orEmpty())
+                .filterNot { it.contains("tts", ignoreCase = true) || it.contains("audio", ignoreCase = true) || it == model }
+                .distinct()
             val history = messages.dropLast(1).map { ConversationTurn(it.sender, it.text) }
 
             // Attachments (text files or PDF page images) go through the plain
