@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -309,6 +310,7 @@ private fun GeminiProviderCard(
     onSetApiKey: (String) -> Unit,
     onSetModel: (String) -> Unit
 ) {
+    val context = LocalContext.current
     var keyInput by remember(userApiKey) { mutableStateOf(userApiKey) }
     var keyVisible by remember { mutableStateOf(false) }
     var detectorResult by remember { mutableStateOf<ConnectivityResult?>(null) }
@@ -337,8 +339,18 @@ private fun GeminiProviderCard(
                         singleLine = true,
                         visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
-                            IconButton(onClick = { keyVisible = !keyVisible }) {
-                                Icon(if (keyVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff, null, tint = Color.Gray)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = {
+                                    val clip = (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip
+                                    val text = clip?.getItemAt(0)?.text?.toString() ?: ""
+                                    if (text.isNotBlank()) { keyInput = text.trim(); onSetApiKey(text.trim()) }
+                                    Toast.makeText(context, if (text.isNotBlank()) "Pasted from clipboard" else "Clipboard empty", Toast.LENGTH_SHORT).show()
+                                }) {
+                                    Icon(Icons.Default.ContentPaste, null, tint = CrimsonPrimary)
+                                }
+                                IconButton(onClick = { keyVisible = !keyVisible }) {
+                                    Icon(if (keyVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff, null, tint = Color.Gray)
+                                }
                             }
                         },
                         colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary),
@@ -381,6 +393,7 @@ private fun ProviderCard(
     onSave: (key: String, baseUrl: String) -> Unit,
     onDelete: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
     var keyInput by remember(savedKey) { mutableStateOf(savedKey) }
     var urlInput by remember(savedBaseUrl) { mutableStateOf(savedBaseUrl) }
     var keyVisible by remember { mutableStateOf(false) }
@@ -418,8 +431,18 @@ private fun ProviderCard(
                     singleLine = true,
                     visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
-                        IconButton(onClick = { keyVisible = !keyVisible }) {
-                            Icon(if (keyVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff, null, tint = Color.Gray)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = {
+                                val clip = (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip
+                                val text = clip?.getItemAt(0)?.text?.toString() ?: ""
+                                if (text.isNotBlank()) { keyInput = text.trim(); onSave(text.trim(), urlInput) }
+                                Toast.makeText(context, if (text.isNotBlank()) "Pasted from clipboard" else "Clipboard empty", Toast.LENGTH_SHORT).show()
+                            }) {
+                                Icon(Icons.Default.ContentPaste, null, tint = CrimsonPrimary)
+                            }
+                            IconButton(onClick = { keyVisible = !keyVisible }) {
+                                Icon(if (keyVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff, null, tint = Color.Gray)
+                            }
                         }
                     },
                     colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary),

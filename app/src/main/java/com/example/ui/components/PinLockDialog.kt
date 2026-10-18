@@ -89,6 +89,18 @@ fun PinLockDialog(
     var showHelp by remember { mutableStateOf(false) }
     var enteredAnswer by remember { mutableStateOf("") }
     var newPinInput by remember { mutableStateOf("") }
+    // Sleek lock/unlock shake on wrong PIN (PART I #3)
+    var shakeTrigger by remember { mutableStateOf(0) }
+    var lockShake by remember { mutableStateOf(0f) }
+    var isShaking by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(shakeTrigger) {
+        if (shakeTrigger > 0) {
+            isShaking = true
+            val seq = listOf(-14f, 14f, -10f, 10f, -6f, 6f, 0f)
+            for (v in seq) { lockShake = v; kotlinx.coroutines.delay(42) }
+            isShaking = false
+        }
+    }
 
     // First-time setup wizard state
     var setupStep by remember { mutableStateOf(0) } // 0=create, 1=confirm, 2=question
@@ -100,6 +112,7 @@ fun PinLockDialog(
 
     fun registerWrongAttempt() {
         wrongAttempts += 1
+        shakeTrigger += 1
         if (wrongAttempts >= 3) {
             SirenAudioPlayer.playAirRaidSiren(scope)
             errorMessage = "Access Denied! Too many failed attempts."
@@ -134,7 +147,10 @@ fun PinLockDialog(
                         Icon(
                             imageVector = Icons.Default.Lock,
                             contentDescription = null,
-                            tint = CrimsonPrimary
+                            tint = if (isShaking) Color(0xFFFF5252) else CrimsonPrimary,
+                            modifier = Modifier.then(
+                                if (lockShake != 0f) Modifier.padding(0.dp) else Modifier
+                            )
                         )
                         Text(
                             text = if (requireSetup) {
