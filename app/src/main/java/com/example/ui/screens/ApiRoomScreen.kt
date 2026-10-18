@@ -499,7 +499,7 @@ private fun ModelDetectorRow(
         if (isDetecting) {
             CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
         } else {
-            Text("Model Detector")
+            Text("Run")
         }
     }
     result?.let { r ->
@@ -525,33 +525,5 @@ private fun ModelDetectorRow(
             }
         }
     }
-    if (models.isNotEmpty()) {
-        Spacer(modifier = Modifier.height(10.dp))
-        Text(
-            text = if (isRealList) "Detected models — tap to select" else "Default models (run Model Detector for your real list)",
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-            color = if (isDarkMode) Color.White else Color.Black
-        )
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 240.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            models.forEach { m ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable { onSelectModel(m) },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = selectedModel == m,
-                        onClick = { onSelectModel(m) },
-                        colors = RadioButtonDefaults.colors(selectedColor = CrimsonPrimary)
-                    )
-                    Text(m, fontSize = 12.sp, color = if (isDarkMode) Color.White else Color.Black)
-                }
-            }
-        }
-    }
+
 }
