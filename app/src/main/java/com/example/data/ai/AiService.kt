@@ -37,7 +37,7 @@ class AiService {
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    private class ApiFailure(val userMessage: String, val retryable: Boolean, val modelMissing: Boolean = false) : Exception(userMessage)
+    private class ApiFailure(val userMessage: String, val retryable: Boolean, val modelMissing: Boolean = false, val quotaExceeded: Boolean = false) : Exception(userMessage)
 
     private fun baseSystemPrompt(): String = """
         You are AU Bot, a smart, friendly AI assistant inside the AU Notes app (built by student developer Anshul).
@@ -85,7 +85,7 @@ class AiService {
             else ApiFailure("Gemini could not process this request. ${apiMsg.orEmpty()}".trim(), false)
             401, 403 -> ApiFailure("Gemini rejected your API key (or it has no access to this model). Open Settings → API Room and check the key.", false)
             404 -> ApiFailure("The selected model isn't available for your key.", false, modelMissing = true)
-            429 -> ApiFailure("Gemini rate limit / free quota reached. Wait a minute and try again, or switch model in API Room.", true)
+            429 -> ApiFailure("Gemini rate limit / quota reached.", true, quotaExceeded = true)
             500, 502, 503, 504 -> ApiFailure("Gemini is busy right now. Please try again in a moment.", true)
             else -> ApiFailure("Gemini error (HTTP $code). ${apiMsg.orEmpty()}".trim(), false)
         }
@@ -131,10 +131,10 @@ class AiService {
     }
 
     /** Calls Gemini with retry on transient errors and fallback when the chosen model isn't available. */
-    private suspend fun generate(apiKey: String, model: String, body: JSONObject): JSONArray {
+    private suspend fun generate(apiKey: String, model: String, body: JSONObject, fallbackModels: List<String> = emptyList()): JSONArray {
         val key = apiKey.trim()
         if (key.isBlank()) throw ApiFailure("No API key set. Open Settings → API Room and add your Gemini API key.", false)
-        val candidatesModels = listOf(model.ifBlank { "gemini-2.0-flash" }, "gemini-2.0-flash", "gemini-1.5-flash").distinct()
+        val candidatesModels = (listOf(model.ifBlank { "gemini-2.0-flash" }) + fallbackModels + listOf("gemini-2.0-flash", "gemini-1.5-flash")).map { it.trim().removePrefix("models/") }.filter { it.isNotBlank() }.distinct()
         var lastFailure: ApiFailure? = null
         for (m in candidatesModels) {
             var attempt = 0
@@ -143,7 +143,7 @@ class AiService {
                     return callGemini(m, key, body)
                 } catch (f: ApiFailure) {
                     lastFailure = f
-                    if (f.modelMissing) break // try next model
+                    if (f.modelMissing || f.quotaExceeded) break // automatically try the next configured/available model
                     if (!f.retryable) throw f
                     attempt++
                     if (attempt < 3) delay(1200L * attempt)
@@ -151,7 +151,7 @@ class AiService {
                 }
             }
         }
-        throw lastFailure ?: ApiFailure("Something went wrong talking to Gemini.", true)
+        throw if (lastFailure?.quotaExceeded == true) ApiFailure("Quota/rate limit reached on the available Gemini models. Add/select another working Gemini model or try again later.", false, quotaExceeded = true) else (lastFailure ?: ApiFailure("Something went wrong talking to Gemini.", true))
     }
 
     private fun joinText(parts: JSONArray): String {
@@ -175,7 +175,8 @@ class AiService {
         model: String = "gemini-2.0-flash",
         noteContext: String? = null,
         history: List<ConversationTurn> = emptyList(),
-        allowEditCurrentNote: Boolean = false
+        allowEditCurrentNote: Boolean = false,
+        fallbackModels: List<String> = emptyList()
     ): AiActionResult = withContext(Dispatchers.IO) {
         val system = buildString {
             append(baseSystemPrompt())
@@ -227,7 +228,7 @@ class AiService {
         }
 
         try {
-            val parts = generate(apiKey, model, body)
+            val parts = generate(apiKey, model, body, fallbackModels)
             for (i in 0 until parts.length()) {
                 val fn = parts.getJSONObject(i).optJSONObject("functionCall")
                 if (fn != null && fn.optString("name").isNotBlank()) {
@@ -278,7 +279,8 @@ class AiService {
         noteContext: String? = null,
         attachmentContent: String? = null,
         history: List<ConversationTurn> = emptyList(),
-        attachmentImagesBase64: List<String> = emptyList()
+        attachmentImagesBase64: List<String> = emptyList(),
+        fallbackModels: List<String> = emptyList()
     ): String = withContext(Dispatchers.IO) {
         val system = buildString {
             append(baseSystemPrompt())
@@ -311,7 +313,7 @@ class AiService {
         }
 
         try {
-            val text = joinText(generate(apiKey, model, body))
+            val text = joinText(generate(apiKey, model, body, fallbackModels))
             text.ifBlank { "I couldn't come up with an answer. Could you rephrase that?" }
         } catch (f: ApiFailure) {
             "⚠️ ${f.userMessage}"

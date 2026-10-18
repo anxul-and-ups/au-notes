@@ -495,6 +495,8 @@ fun AiChatScreen(
         coroutineScope.launch {
             val key = preferences.getEffectiveApiKey()
             val model = preferences.selectedModel.value
+            // Use models detected for the same Gemini API key as automatic quota fallbacks.
+            val fallbackModels = preferences.detectedModels.value["Gemini"].orEmpty().filterNot { it == model }
             val history = messages.dropLast(1).map { ConversationTurn(it.sender, it.text) }
 
             // Attachments (text files or PDF page images) go through the plain
@@ -508,7 +510,8 @@ fun AiChatScreen(
                     noteContext = currentNoteContent,
                     attachmentContent = docText,
                     history = history,
-                    attachmentImagesBase64 = docImages ?: emptyList()
+                    attachmentImagesBase64 = docImages ?: emptyList(),
+                    fallbackModels = fallbackModels
                 )
                 isLoading = false
                 messages.add(ChatMessage(sender = "bot", text = response))
@@ -519,7 +522,8 @@ fun AiChatScreen(
                     model = model,
                     noteContext = currentNoteContent,
                     history = history,
-                    allowEditCurrentNote = onModifyCurrentNote != null
+                    allowEditCurrentNote = onModifyCurrentNote != null,
+                    fallbackModels = fallbackModels
                 )) {
                     is AiActionResult.Text -> {
                         isLoading = false
