@@ -44,6 +44,8 @@ class AiService {
         You behave like a modern conversational assistant (Claude / Gemini / ChatGPT):
         - Actually read and answer what the user asked. Never reply with a generic menu of things you can do.
         - Reply in the same language and style the user writes in (English, Hindi, or Hinglish written in Roman script).
+        - Hindi/Hinglish is a first-class requirement: understand Roman Hindi spellings and variants such as "karo/kar do/kr do", "hatao/hata do/ हटाओ", "banao/ बना do", "kholo/open karo", "badal do/change kar do". Reply in the same script/style as the user unless asked otherwise.
+        - Never claim an app action was completed unless the matching app function was actually called and accepted by the app. If a needed function is unavailable, say so clearly instead of pretending.
         - Be direct and natural. Short questions get short answers; complex ones get structured, step-by-step answers.
         - Use Markdown: short paragraphs, bullet lists, and fenced code blocks with a language tag for code.
         - When the user attaches a document or image, read it carefully and base your answer on its real content
@@ -180,10 +182,13 @@ class AiService {
     ): AiActionResult = withContext(Dispatchers.IO) {
         val system = buildString {
             append(baseSystemPrompt())
-            append("\n\nYou can also control the app through functions: search_notes, create_note, move_note_to_folder, delete_note, create_folder, delete_folder, open_folder.")
+            append("\n\nYou can control app functions: search_notes, create_note, move_note_to_folder, delete_note, create_folder, delete_folder, open_folder.")
+            append(" When inside the note editor, use apply_editor_tool for actual editor formatting/control instead of merely describing steps. Supported actions: bold, italic, underline, strikethrough, highlight, color, font_size, alignment, bullet_list, numbered_list, lettered_list, roman_list, clear_formatting, open_table_editor. Use value for color hex, font size number, or alignment/list value as appropriate. Respond in the user's language (Hindi/Hinglish/English).")
             append(" Call a function ONLY when the user clearly asks for that app action (e.g. \"find my Java note\", \"create a note from this\", \"make a folder called Travel\").")
             append(" For questions, explanations, writing, coding help or chatting, just answer in text — do NOT call a function.")
-            append(" move_note_to_folder and delete_note need a note_id: get it with search_notes first if you don't have it.")
+            append(" Understand follow-up references such as 'it', 'that note', 'isko', 'usko', 'ye wali', 'wahi', 'ise', 'isko hata do' using the recent conversation and current note context; do not ask the user to repeat information already present.")
+            append(" move_note_to_folder and delete_note need a note_id: get it with search_notes first if you don't have it. Never invent IDs, titles, folders, or completed actions.")
+            append(" When operating inside the note editor, preserve the meaning and existing content unless the user explicitly asks to replace it. Do not output explanations instead of the requested note content.")
             if (allowEditCurrentNote) {
                 append("\nYou are running INSIDE the editor of the note in [Current Note Context]. When the user asks you to rewrite, clean up, correct, format, translate, summarize into, or insert something into THIS note, call edit_current_note with the note's COMPLETE new text (not a diff).")
             }
@@ -218,21 +223,11 @@ class AiService {
             functionDeclarations.put(functionDecl("edit_current_note",
                 "Replace the content of the note currently open in the editor with new text.",
                 listOf(FnParam("new_content", "STRING", "The complete new body text for the current note", true))))
-                
-            functionDeclarations.put(functionDecl("format_text",
-                "Apply formatting to specific text in the current note.",
+            functionDeclarations.put(functionDecl("apply_editor_tool",
+                "Apply an actual formatting or editor action to the note currently open in the editor.",
                 listOf(
-                    FnParam("action", "STRING", "Formatting action: bold, italic, underline, color, size", true),
-                    FnParam("value", "STRING", "Value for the action (e.g., '#FF0000' for color, '24' for size). Leave blank for bold/italic/underline.", false),
-                    FnParam("start", "NUMBER", "Start index of the text to format", true),
-                    FnParam("end", "NUMBER", "End index of the text to format", true)
-                )))
-                
-            functionDeclarations.put(functionDecl("insert_table",
-                "Insert a table into the current note.",
-                listOf(
-                    FnParam("rows", "NUMBER", "Number of rows", true),
-                    FnParam("cols", "NUMBER", "Number of columns", true)
+                    FnParam("action", "STRING", "bold, italic, underline, strikethrough, highlight, color, font_size, alignment, bullet_list, numbered_list, lettered_list, roman_list, clear_formatting, open_table_editor", true),
+                    FnParam("value", "STRING", "Optional color hex, font size, alignment, or list value", false)
                 )))
         }
 

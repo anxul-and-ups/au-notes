@@ -194,8 +194,7 @@ fun AiChatScreen(
     onCreateNoteFromAi: (String, String, String) -> Unit,
     onOpenNoteFromAi: (NoteEntity) -> Unit = {},
     onModifyCurrentNote: ((String) -> Unit)? = null,
-    onFormatText: ((String, String, Int, Int) -> Unit)? = null,
-    onInsertTable: ((Int, Int) -> Unit)? = null,
+    onApplyEditorTool: ((String, String) -> Boolean)? = null,
     onOpenFolderFromAi: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -428,27 +427,11 @@ fun AiChatScreen(
                 }
             }
             "edit_current_note" -> handleEditCurrentNote(args)
-            "format_text" -> {
-                val action = args.optString("action", "")
-                val value = args.optString("value", "")
-                val start = args.optInt("start", -1)
-                val end = args.optInt("end", -1)
-                if (onFormatText != null && start >= 0 && end > start) {
-                    onFormatText.invoke(action, value, start, end)
-                    messages.add(ChatMessage(sender = "bot", text = "Applied $action formatting."))
-                } else {
-                    messages.add(ChatMessage(sender = "bot", text = "Please select some text in the editor first, so I can format it."))
-                }
-            }
-            "insert_table" -> {
-                val rows = args.optInt("rows", 2)
-                val cols = args.optInt("cols", 2)
-                if (onInsertTable != null) {
-                    onInsertTable.invoke(rows, cols)
-                    messages.add(ChatMessage(sender = "bot", text = "Inserted a ${rows}x${cols} table into the note."))
-                } else {
-                    messages.add(ChatMessage(sender = "bot", text = "I can only insert tables when opened inside the note editor."))
-                }
+            "apply_editor_tool" -> {
+                val action = args.optString("action", "").trim().lowercase()
+                val value = args.optString("value", "").trim()
+                val applied = onApplyEditorTool?.invoke(action, value) == true
+                messages.add(ChatMessage(sender = "bot", text = if (applied) "Editor action applied: $action." else "I couldn't apply '$action'. Open the note editor and select text for formatting actions."))
             }
             "create_folder" -> {
                 val name = args.optString("name", "").trim()
@@ -514,17 +497,42 @@ fun AiChatScreen(
                 attachedFileName = currentAttachmentName
             )
         )
+        // Resolve simple follow-up commands against the most recent visible search result.
+        // The model's text-only history cannot otherwise reliably resolve "delete it" to a note ID.
+        val normalizedUserMsg = userMsg.lowercase()
+            .replace("\\s+".toRegex(), " ")
+            .replace("kr do", "kar do")
+            .replace("kr de", "kar de")
+        val deleteIntent = listOf(
+            "delete", "remove", "हटा", "मिटा", "nikal do", "nikaal do",
+            "hatao", "hata do", "hata de", "kar do delete", "delete kar",
+            "delete kr", "delete kar do", "delete kar de", "isko hata", "usko hata",
+            "ise hata", "wahi hata", "ye hata", "ye wali hata", "trash"
+        ).any { normalizedUserMsg.contains(it) }
+        val previousSearch = messages.dropLast(1).lastOrNull { !it.noteResults.isNullOrEmpty() }
+        if (deleteIntent && previousSearch?.noteResults?.isNotEmpty() == true) {
+            val candidates = previousSearch.noteResults
+            val target = candidates.firstOrNull { note ->
+                note.title.isNotBlank() && normalizedUserMsg.contains(note.title.lowercase())
+            } ?: candidates.singleOrNull()
+            if (target != null) {
+                messages.add(ChatMessage(
+                    sender = "bot",
+                    text = "Do you want to move \"${target.title}\" to the recycle bin?",
+                    pendingAction = PendingAiAction("delete", target.id, target.title)
+                ))
+                isLoading = false
+                return
+            }
+        }
+
         isLoading = true
 
         coroutineScope.launch {
             val key = preferences.getEffectiveApiKey()
-            // Chat uses a text-capable model automatically; never use TTS/audio-only models.
-            val model = "gemini-2.5-flash"
-            // Keep only text-chat candidates for automatic fallback.
-            val fallbackModels = (listOf("gemini-2.0-flash", "gemini-1.5-flash") +
-                preferences.detectedModels.value["Gemini"].orEmpty())
-                .filterNot { it.contains("tts", ignoreCase = true) || it.contains("audio", ignoreCase = true) || it == model }
-                .distinct()
+            val model = preferences.selectedModel.value
+            // Use models detected for the same Gemini API key as automatic quota fallbacks.
+            val fallbackModels = preferences.detectedModels.value["Gemini"].orEmpty().filterNot { it == model }
             val history = messages.dropLast(1).map { ConversationTurn(it.sender, it.text) }
 
             // Attachments (text files or PDF page images) go through the plain

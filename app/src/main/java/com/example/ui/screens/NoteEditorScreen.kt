@@ -1538,42 +1538,27 @@ fun NoteEditorScreen(
         onCreateNoteFromAi = { _, _, _ -> },
         onModifyCurrentNote = { newContent ->
             contentValue = TextFieldValue(newContent, selection = TextRange(newContent.length))
+            spans = emptyList()
             Toast.makeText(context, "Note updated by AU Bot", Toast.LENGTH_SHORT).show()
         },
-        onFormatText = { action, value, start, end ->
-            val sel = TextRange(start, end)
-            when (action.lowercase()) {
-                "bold" -> spans = RichTextFormatter.toggleBooleanProperty(spans, "bold", sel.min, sel.max)
-                "italic" -> spans = RichTextFormatter.toggleBooleanProperty(spans, "italic", sel.min, sel.max)
-                "underline" -> spans = RichTextFormatter.toggleBooleanProperty(spans, "underline", sel.min, sel.max)
-                "strikethrough" -> spans = RichTextFormatter.toggleBooleanProperty(spans, "strikethrough", sel.min, sel.max)
-                "color" -> if (value.isNotBlank()) spans = RichTextFormatter.setValueProperty(spans, "color", sel.min, sel.max, value)
-                "size" -> if (value.isNotBlank()) spans = RichTextFormatter.setValueProperty(spans, "fontsize", sel.min, sel.max, value)
+        onApplyEditorTool = { action, value ->
+            when (action) {
+                "bold" -> { applyOrToggleBooleanFormat("bold", isBold) { isBold = it }; true }
+                "italic" -> { applyOrToggleBooleanFormat("italic", isItalic) { isItalic = it }; true }
+                "underline" -> { applyOrToggleBooleanFormat("underline", isUnderline) { isUnderline = it }; true }
+                "strikethrough", "strike" -> { applyOrToggleBooleanFormat("strikethrough", isStrikethrough) { isStrikethrough = it }; true }
+                "highlight" -> { applyOrToggleHighlight(); true }
+                "color", "text_color", "font_color" -> { applyOrSetColor(value.takeIf { it.isNotBlank() }); true }
+                "font_size", "fontsize" -> value.toIntOrNull()?.takeIf { it in 6..96 }?.let { applyOrSetFontSize(it); true } ?: false
+                "alignment" -> if (value.lowercase() in listOf("left", "center", "right", "justify")) { alignment = value.lowercase(); true } else false
+                "bullet_list" -> { listType = if (listType == "bullet") "none" else "bullet"; true }
+                "numbered_list" -> { listType = if (listType == "number") "none" else "number"; true }
+                "lettered_list" -> { listType = if (listType == "letter") "none" else "letter"; true }
+                "roman_list" -> { listType = if (listType == "roman") "none" else "roman"; true }
+                "clear_formatting" -> { clearFormattingOnSelection(); true }
+                "open_table_editor", "table" -> { showTableFullscreen = true; true }
+                else -> false
             }
-            Toast.makeText(context, "AI applied $action", Toast.LENGTH_SHORT).show()
-        },
-        onInsertTable = { rows, cols ->
-            val tableMarkdown = buildString {
-                append("\n")
-                repeat(rows) {
-                    append("|")
-                    repeat(cols) { append(" Header |") }
-                    append("\n")
-                    if (it == 0) {
-                        append("|")
-                        repeat(cols) { append(" --- |") }
-                        append("\n")
-                    }
-                }
-                append("\n")
-            }
-            val sel = contentValue.selection
-            val startIdx = if (sel.min >= 0) sel.min else contentValue.text.length
-            contentValue = contentValue.copy(
-                text = contentValue.text.substring(0, startIdx) + tableMarkdown + contentValue.text.substring(startIdx),
-                selection = TextRange(startIdx + tableMarkdown.length)
-            )
-            Toast.makeText(context, "AI inserted a ${rows}x${cols} table", Toast.LENGTH_SHORT).show()
         }
     )
 
