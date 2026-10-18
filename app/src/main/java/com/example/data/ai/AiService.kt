@@ -193,6 +193,16 @@ class AiService {
         }
 
         val functionDeclarations = JSONArray()
+            .put(functionDecl("apply_editor_tool", "Applies formatting or tools to the current note in the editor. Actions: bold, italic, underline, highlight, color, font_size, alignment, bullet_list, numbered_list, clear_formatting, table.",
+                listOf(
+                    FnParam("action", "STRING", "The action to perform (e.g., bold, italic, color, font_size, table)", true),
+                    FnParam("value", "STRING", "Optional value for the action (e.g., hex color code like #FF0000, or size like 24)", false)
+                )))
+            .put(functionDecl("insert_table", "Inserts a table into the current note.",
+                listOf(
+                    FnParam("rows", "NUMBER", "Number of rows", true),
+                    FnParam("cols", "NUMBER", "Number of columns", true)
+                )))
             .put(functionDecl("search_notes", "Search the user's notes by a keyword or topic and return matching titles.",
                 listOf(FnParam("query", "STRING", "Keyword or topic to search for", true))))
             .put(functionDecl("create_note", "Create a brand-new note with the given title and content.",
