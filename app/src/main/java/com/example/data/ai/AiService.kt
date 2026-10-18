@@ -218,6 +218,22 @@ class AiService {
             functionDeclarations.put(functionDecl("edit_current_note",
                 "Replace the content of the note currently open in the editor with new text.",
                 listOf(FnParam("new_content", "STRING", "The complete new body text for the current note", true))))
+                
+            functionDeclarations.put(functionDecl("format_text",
+                "Apply formatting to specific text in the current note.",
+                listOf(
+                    FnParam("action", "STRING", "Formatting action: bold, italic, underline, color, size", true),
+                    FnParam("value", "STRING", "Value for the action (e.g., '#FF0000' for color, '24' for size). Leave blank for bold/italic/underline.", false),
+                    FnParam("start", "NUMBER", "Start index of the text to format", true),
+                    FnParam("end", "NUMBER", "End index of the text to format", true)
+                )))
+                
+            functionDeclarations.put(functionDecl("insert_table",
+                "Insert a table into the current note.",
+                listOf(
+                    FnParam("rows", "NUMBER", "Number of rows", true),
+                    FnParam("cols", "NUMBER", "Number of columns", true)
+                )))
         }
 
         val body = JSONObject().apply {

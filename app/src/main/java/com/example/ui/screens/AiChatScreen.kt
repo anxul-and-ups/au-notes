@@ -193,7 +193,9 @@ fun AiChatScreen(
     onClose: () -> Unit,
     onCreateNoteFromAi: (String, String, String) -> Unit,
     onOpenNoteFromAi: (NoteEntity) -> Unit = {},
-    onModifyCurrentNote: ((String) -> Unit)? = null,
+    onModifyCurrentNote: ((String) -> Unit)?,
+    onFormatText: ((String, String, Int, Int) -> Unit)? = null,
+    onInsertTable: ((Int, Int) -> Unit)? = null = null,
     onOpenFolderFromAi: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -426,6 +428,28 @@ fun AiChatScreen(
                 }
             }
             "edit_current_note" -> handleEditCurrentNote(args)
+            "format_text" -> {
+                val action = args.optString("action", "")
+                val value = args.optString("value", "")
+                val start = args.optInt("start", -1)
+                val end = args.optInt("end", -1)
+                if (onFormatText != null && start >= 0 && end > start) {
+                    onFormatText.invoke(action, value, start, end)
+                    messages.add(ChatMessage(sender = "bot", text = "Applied $action formatting."))
+                } else {
+                    messages.add(ChatMessage(sender = "bot", text = "Please select some text in the editor first, so I can format it."))
+                }
+            }
+            "insert_table" -> {
+                val rows = args.optInt("rows", 2)
+                val cols = args.optInt("cols", 2)
+                if (onInsertTable != null) {
+                    onInsertTable.invoke(rows, cols)
+                    messages.add(ChatMessage(sender = "bot", text = "Inserted a ${rows}x${cols} table into the note."))
+                } else {
+                    messages.add(ChatMessage(sender = "bot", text = "I can only insert tables when opened inside the note editor."))
+                }
+            }
             "create_folder" -> {
                 val name = args.optString("name", "").trim()
                 if (name.isBlank()) {

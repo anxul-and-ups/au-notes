@@ -1539,6 +1539,41 @@ fun NoteEditorScreen(
         onModifyCurrentNote = { newContent ->
             contentValue = TextFieldValue(newContent, selection = TextRange(newContent.length))
             Toast.makeText(context, "Note updated by AU Bot", Toast.LENGTH_SHORT).show()
+        },
+        onFormatText = { action, value, start, end ->
+            val sel = TextRange(start, end)
+            when (action.lowercase()) {
+                "bold" -> spans = RichTextFormatter.toggleBooleanProperty(spans, "bold", sel.min, sel.max)
+                "italic" -> spans = RichTextFormatter.toggleBooleanProperty(spans, "italic", sel.min, sel.max)
+                "underline" -> spans = RichTextFormatter.toggleBooleanProperty(spans, "underline", sel.min, sel.max)
+                "strikethrough" -> spans = RichTextFormatter.toggleBooleanProperty(spans, "strikethrough", sel.min, sel.max)
+                "color" -> if (value.isNotBlank()) spans = RichTextFormatter.setValueProperty(spans, "color", sel.min, sel.max, value)
+                "size" -> if (value.isNotBlank()) spans = RichTextFormatter.setValueProperty(spans, "fontsize", sel.min, sel.max, value)
+            }
+            Toast.makeText(context, "AI applied $action", Toast.LENGTH_SHORT).show()
+        },
+        onInsertTable = { rows, cols ->
+            val tableMarkdown = buildString {
+                append("\n")
+                repeat(rows) {
+                    append("|")
+                    repeat(cols) { append(" Header |") }
+                    append("\n")
+                    if (it == 0) {
+                        append("|")
+                        repeat(cols) { append(" --- |") }
+                        append("\n")
+                    }
+                }
+                append("\n")
+            }
+            val sel = contentValue.selection
+            val startIdx = if (sel.min >= 0) sel.min else contentValue.text.length
+            contentValue = contentValue.copy(
+                text = contentValue.text.substring(0, startIdx) + tableMarkdown + contentValue.text.substring(startIdx),
+                selection = TextRange(startIdx + tableMarkdown.length)
+            )
+            Toast.makeText(context, "AI inserted a ${rows}x${cols} table", Toast.LENGTH_SHORT).show()
         }
     )
 
