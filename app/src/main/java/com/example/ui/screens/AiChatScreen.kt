@@ -194,7 +194,7 @@ fun AiChatScreen(
     onCreateNoteFromAi: (String, String, String) -> Unit,
     onOpenNoteFromAi: (NoteEntity) -> Unit = {},
     onModifyCurrentNote: ((String) -> Unit)?,
-    onApplyEditorTool: ((String, String) -> Boolean)? = null = null,
+    onApplyEditorTool: ((String, String) -> Boolean)? = null,
     onOpenFolderFromAi: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
