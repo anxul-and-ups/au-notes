@@ -193,7 +193,8 @@ fun AiChatScreen(
     onClose: () -> Unit,
     onCreateNoteFromAi: (String, String, String) -> Unit,
     onOpenNoteFromAi: (NoteEntity) -> Unit = {},
-    onModifyCurrentNote: ((String) -> Unit)? = null,
+    onModifyCurrentNote: ((String) -> Unit)?,
+    onApplyEditorTool: ((String, String) -> Boolean)? = null = null,
     onOpenFolderFromAi: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -372,6 +373,21 @@ fun AiChatScreen(
     // post a confirmation card — see onResolveAiAction for where they actually run.
     suspend fun handleFunctionCall(name: String, args: org.json.JSONObject) {
         when (name) {
+            "apply_editor_tool", "format_text", "insert_table" -> {
+                if (onApplyEditorTool != null) {
+                    val action = if (name == "insert_table") "table" else args.optString("action", name)
+                    val value = if (name == "insert_table") "" else args.optString("value", "")
+                    
+                    val success = onApplyEditorTool.invoke(action, value)
+                    if (success) {
+                        messages.add(ChatMessage(sender = "bot", text = "Applied $action successfully in the editor."))
+                    } else {
+                        messages.add(ChatMessage(sender = "bot", text = "Could not apply $action. Please select some text first."))
+                    }
+                } else {
+                    messages.add(ChatMessage(sender = "bot", text = "Editor tools are only available when you open the AI from inside the Note Editor."))
+                }
+            }
             "search_notes" -> {
                 val query = args.optString("query", "")
                 val results = try { repository.searchNotes(query).first() } catch (e: Exception) { emptyList() }
