@@ -194,7 +194,6 @@ fun AiChatScreen(
     onCreateNoteFromAi: (String, String, String) -> Unit,
     onOpenNoteFromAi: (NoteEntity) -> Unit = {},
     onModifyCurrentNote: ((String) -> Unit)? = null,
-    onApplyEditorTool: ((String, String) -> Boolean)? = null,
     onOpenFolderFromAi: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -427,12 +426,6 @@ fun AiChatScreen(
                 }
             }
             "edit_current_note" -> handleEditCurrentNote(args)
-            "apply_editor_tool" -> {
-                val action = args.optString("action", "").trim().lowercase()
-                val value = args.optString("value", "").trim()
-                val applied = onApplyEditorTool?.invoke(action, value) == true
-                messages.add(ChatMessage(sender = "bot", text = if (applied) "Editor action applied: $action." else "I couldn't apply '$action'. Open the note editor and select text for formatting actions."))
-            }
             "create_folder" -> {
                 val name = args.optString("name", "").trim()
                 if (name.isBlank()) {
@@ -497,35 +490,6 @@ fun AiChatScreen(
                 attachedFileName = currentAttachmentName
             )
         )
-        // Resolve simple follow-up commands against the most recent visible search result.
-        // The model's text-only history cannot otherwise reliably resolve "delete it" to a note ID.
-        val normalizedUserMsg = userMsg.lowercase()
-            .replace("\\s+".toRegex(), " ")
-            .replace("kr do", "kar do")
-            .replace("kr de", "kar de")
-        val deleteIntent = listOf(
-            "delete", "remove", "हटा", "मिटा", "nikal do", "nikaal do",
-            "hatao", "hata do", "hata de", "kar do delete", "delete kar",
-            "delete kr", "delete kar do", "delete kar de", "isko hata", "usko hata",
-            "ise hata", "wahi hata", "ye hata", "ye wali hata", "trash"
-        ).any { normalizedUserMsg.contains(it) }
-        val previousSearch = messages.dropLast(1).lastOrNull { !it.noteResults.isNullOrEmpty() }
-        if (deleteIntent && previousSearch?.noteResults?.isNotEmpty() == true) {
-            val candidates = previousSearch.noteResults
-            val target = candidates.firstOrNull { note ->
-                note.title.isNotBlank() && normalizedUserMsg.contains(note.title.lowercase())
-            } ?: candidates.singleOrNull()
-            if (target != null) {
-                messages.add(ChatMessage(
-                    sender = "bot",
-                    text = "Do you want to move \"${target.title}\" to the recycle bin?",
-                    pendingAction = PendingAiAction("delete", target.id, target.title)
-                ))
-                isLoading = false
-                return
-            }
-        }
-
         isLoading = true
 
         coroutineScope.launch {
