@@ -193,9 +193,9 @@ fun AiChatScreen(
     onClose: () -> Unit,
     onCreateNoteFromAi: (String, String, String) -> Unit,
     onOpenNoteFromAi: (NoteEntity) -> Unit = {},
-    onModifyCurrentNote: ((String) -> Unit)?,
+    onModifyCurrentNote: ((String) -> Unit)? = null,
     onFormatText: ((String, String, Int, Int) -> Unit)? = null,
-    onInsertTable: ((Int, Int) -> Unit)? = null = null,
+    onInsertTable: ((Int, Int) -> Unit)? = null,
     onOpenFolderFromAi: (String) -> Unit = {}
 ) {
     val context = LocalContext.current

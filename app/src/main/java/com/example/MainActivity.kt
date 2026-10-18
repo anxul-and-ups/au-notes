@@ -682,6 +682,7 @@ fun AuNotesApp(
                     repository.saveNote(newEntity)
                 }
             },
+            onModifyCurrentNote = null,
             onOpenNoteFromAi = { note ->
                 isAiChatOpen = false
                 currentScreen = Screen.ReadNote(note)
