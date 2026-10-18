@@ -83,7 +83,7 @@ object ApiConnectivityChecker {
                     val m = arr.optJSONObject(i) ?: return@mapNotNull null
                     val methods = m.optJSONArray("supportedGenerationMethods")
                     val canGenerate = methods == null || (0 until methods.length()).any { methods.optString(it) == "generateContent" }
-                    if (canGenerate) m.optString("name").removePrefix("models/") else null
+                    if (canGenerate && !m.optString("name").contains("tts") && !m.optString("name").contains("embedding") && !m.optString("name").contains("vision")) m.optString("name").removePrefix("models/") else null
                 }.filter { it.isNotBlank() }
             } catch (e: Exception) { emptyList() }
             return ConnectivityResult(true, "Gemini API is active.", models)

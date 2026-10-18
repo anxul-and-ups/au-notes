@@ -134,7 +134,7 @@ class AiService {
     private suspend fun generate(apiKey: String, model: String, body: JSONObject, fallbackModels: List<String> = emptyList()): JSONArray {
         val key = apiKey.trim()
         if (key.isBlank()) throw ApiFailure("No API key set. Open Settings → API Room and add your Gemini API key.", false)
-        val candidatesModels = (listOf(model.ifBlank { "gemini-2.0-flash" }) + fallbackModels + listOf("gemini-2.0-flash", "gemini-1.5-flash")).map { it.trim().removePrefix("models/") }.filter { it.isNotBlank() }.distinct()
+        val candidatesModels = (listOf(model.ifBlank { "gemini-1.5-flash" }) + fallbackModels + listOf("gemini-1.5-flash", "gemini-1.5-pro")).map { it.trim().removePrefix("models/") }.filter { it.isNotBlank() && !it.contains("tts") && !it.contains("embedding") && !it.contains("vision") }.distinct()
         var lastFailure: ApiFailure? = null
         for (m in candidatesModels) {
             var attempt = 0
