@@ -532,7 +532,12 @@ fun AiChatScreen(
                 isLoading = false
                 messages.add(ChatMessage(sender = "bot", text = response))
             } else {
-                when (val result = aiService.generateWithTools(
+                val botIndex = messages.size
+                messages.add(ChatMessage(sender = "bot", text = "Typing..."))
+                isLoading = true
+                var accumulatedText = ""
+                
+                val result = aiService.generateWithToolsStreaming(
                     prompt = userMsg,
                     apiKey = key,
                     model = model,
@@ -540,14 +545,22 @@ fun AiChatScreen(
                     history = history,
                     allowEditCurrentNote = onModifyCurrentNote != null,
                     fallbackModels = fallbackModels
-                )) {
-                    is AiActionResult.Text -> {
-                        isLoading = false
-                        messages.add(ChatMessage(sender = "bot", text = result.text))
+                ) { chunk ->
+                    accumulatedText += chunk
+                    if (botIndex < messages.size) {
+                        messages[botIndex] = ChatMessage(sender = "bot", text = accumulatedText)
                     }
-                    is AiActionResult.FunctionCall -> {
-                        handleFunctionCall(result.name, result.args)
-                        isLoading = false
+                }
+                
+                isLoading = false
+                if (result is AiActionResult.FunctionCall) {
+                    if (botIndex < messages.size) {
+                        messages[botIndex] = ChatMessage(sender = "bot", text = "🤖 Using tool: ${result.name}...")
+                    }
+                    handleFunctionCall(result.name, result.args)
+                } else if (result is AiActionResult.Text && accumulatedText.isBlank()) {
+                    if (botIndex < messages.size) {
+                        messages[botIndex] = ChatMessage(sender = "bot", text = result.text)
                     }
                 }
             }

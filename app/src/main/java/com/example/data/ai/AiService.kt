@@ -288,6 +288,134 @@ class AiService {
      * The attached text and/or page images are sent together with the question so the
      * model answers from the real file content.
      */
+    
+    suspend fun generateWithToolsStreaming(
+        prompt: String,
+        apiKey: String,
+        model: String = "gemini-1.5-flash",
+        noteContext: String? = null,
+        history: List<ConversationTurn> = emptyList(),
+        allowEditCurrentNote: Boolean = false,
+        fallbackModels: List<String> = emptyList(),
+        onChunk: (String) -> Unit
+    ): AiActionResult = withContext(Dispatchers.IO) {
+        val key = apiKey.trim()
+        if (key.isBlank()) return@withContext AiActionResult.Text("No API key set.")
+        
+        val system = buildString {
+            append(baseSystemPrompt())
+            append("\n\n### 🚨 CRITICAL INSTRUCTION: YOU ARE AN AI AGENT WITH TOOL ACCESS 🚨")
+            append("\nYou are NOT a simple text chatbot. You have direct control over the app via functions.")
+            append("\nYou have these functions available: search_notes, create_note, move_note_to_folder, delete_note, create_folder, delete_folder, open_folder, apply_editor_tool, insert_table.")
+            append("\n\nRULES FOR TOOL CALLING:")
+            append("\n1. If the user asks you to perform an action, YOU MUST CALL THE FUNCTION. Do NOT reply with text.")
+            append("\n2. If the user asks to format text, YOU MUST call 'apply_editor_tool'.")
+            append("\n3. If the user asks to insert a table, YOU MUST call 'insert_table'.")
+            append("\n4. If the user asks to create a note, YOU MUST call 'create_note'.")
+            append("\n5. Only reply in plain text if the user is just chatting.")
+            if (allowEditCurrentNote) {
+                append("\n\nYou are running INSIDE the note editor. If the user asks you to rewrite or edit the text, call 'edit_current_note' with the COMPLETE new text.")
+            }
+            if (!noteContext.isNullOrBlank()) {
+                append("\n\n[Current Note Context]\n").append(noteContext.take(30000))
+            }
+        }
+
+        val functionDeclarations = JSONArray()
+            .put(functionDecl("apply_editor_tool", "Applies formatting or tools to the current note in the editor. Actions: bold, italic, underline, highlight, color, font_size, alignment, bullet_list, numbered_list, clear_formatting, table.",
+                listOf(
+                    FnParam("action", "STRING", "The action to perform", true),
+                    FnParam("value", "STRING", "Optional value for the action", false)
+                )))
+            .put(functionDecl("insert_table", "Inserts a table into the current note.",
+                listOf(
+                    FnParam("rows", "NUMBER", "Number of rows", true),
+                    FnParam("cols", "NUMBER", "Number of columns", true)
+                )))
+            .put(functionDecl("search_notes", "Search the user's notes.",
+                listOf(FnParam("query", "STRING", "Keyword to search for", true))))
+            .put(functionDecl("create_note", "Create a brand-new note.",
+                listOf(
+                    FnParam("title", "STRING", "Short title", true),
+                    FnParam("content", "STRING", "Body text", true),
+                    FnParam("category", "STRING", "Category", false)
+                )))
+            .put(functionDecl("move_note_to_folder", "Move an existing note.",
+                listOf(
+                    FnParam("note_id", "NUMBER", "The id of the note", true),
+                    FnParam("folder", "STRING", "Target folder", true)
+                )))
+            .put(functionDecl("delete_note", "Move an existing note to recycle bin.",
+                listOf(FnParam("note_id", "NUMBER", "The id of the note", true))))
+            .put(functionDecl("create_folder", "Create a new folder.",
+                listOf(FnParam("name", "STRING", "Folder name", true))))
+            .put(functionDecl("delete_folder", "Delete a folder.",
+                listOf(FnParam("name", "STRING", "Folder name", true))))
+            .put(functionDecl("open_folder", "Open a folder.",
+                listOf(FnParam("name", "STRING", "Folder name", true))))
+        if (allowEditCurrentNote) {
+            functionDeclarations.put(functionDecl("edit_current_note", "Replace the content of the note.",
+                listOf(FnParam("new_content", "STRING", "The complete new body text", true))))
+        }
+
+        val body = JSONObject().apply {
+            put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
+            put("contents", buildContents(history, textContent("user", prompt)))
+            put("tools", JSONArray().put(JSONObject().put("function_declarations", functionDeclarations)))
+            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 4096))
+        }
+
+        val client = OkHttpClient.Builder()
+            .connectTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$key"
+
+        val request = Request.Builder()
+            .url(url)
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val err = response.body?.string() ?: ""
+                    return@withContext AiActionResult.Text("⚠️ API Error: ${response.code} $err")
+                }
+                val source = response.body?.source() ?: return@withContext AiActionResult.Text("⚠️ No body")
+                var fullText = ""
+                while (!source.exhausted()) {
+                    val line = source.readUtf8Line() ?: break
+                    if (line.startsWith("data: ")) {
+                        val jsonStr = line.substring(6).trim()
+                        if (jsonStr == "[DONE]") break
+                        try {
+                            val chunk = JSONObject(jsonStr)
+                            val parts = chunk.optJSONArray("candidates")?.optJSONObject(0)
+                                ?.optJSONObject("content")?.optJSONArray("parts")
+                            if (parts != null) {
+                                for (i in 0 until parts.length()) {
+                                    val p = parts.getJSONObject(i)
+                                    if (p.has("text")) {
+                                        val text = p.getString("text")
+                                        fullText += text
+                                        onChunk(text)
+                                    } else if (p.has("functionCall")) {
+                                        val fc = p.getJSONObject("functionCall")
+                                        return@withContext AiActionResult.FunctionCall(fc.getString("name"), fc.optJSONObject("args") ?: JSONObject())
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+                return@withContext AiActionResult.Text(fullText)
+            }
+        } catch (e: Exception) {
+            return@withContext AiActionResult.Text("⚠️ Connection Error: ${e.message}")
+        }
+    }
+
     suspend fun generateResponse(
         prompt: String,
         apiKey: String,
