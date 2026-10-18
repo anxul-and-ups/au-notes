@@ -180,12 +180,18 @@ class AiService {
     ): AiActionResult = withContext(Dispatchers.IO) {
         val system = buildString {
             append(baseSystemPrompt())
-            append("\n\nYou can also control the app through functions: search_notes, create_note, move_note_to_folder, delete_note, create_folder, delete_folder, open_folder.")
-            append(" Call a function ONLY when the user clearly asks for that app action (e.g. \"find my Java note\", \"create a note from this\", \"make a folder called Travel\").")
-            append(" For questions, explanations, writing, coding help or chatting, just answer in text — do NOT call a function.")
-            append(" move_note_to_folder and delete_note need a note_id: get it with search_notes first if you don't have it.")
+            append("\n\n### 🚨 CRITICAL INSTRUCTION: YOU ARE AN AI AGENT WITH TOOL ACCESS 🚨")
+            append("\nYou are NOT a simple text chatbot. You have direct control over the app via functions.")
+            append("\nYou have these functions available: search_notes, create_note, move_note_to_folder, delete_note, create_folder, delete_folder, open_folder, apply_editor_tool, insert_table.")
+            append("\n\nRULES FOR TOOL CALLING:")
+            append("\n1. If the user asks you to perform an action, YOU MUST CALL THE FUNCTION. Do NOT reply with text explaining how they can do it themselves.")
+            append("\n2. If the user asks to format text (make it bold, color it, change size, underline, etc.), YOU MUST call 'apply_editor_tool'.")
+            append("\n3. If the user asks to insert a table, YOU MUST call 'insert_table'.")
+            append("\n4. If the user asks to create a note, YOU MUST call 'create_note'.")
+            append("\n5. Only reply in plain text if the user is just chatting, asking a general question, or asking for an explanation of a concept.")
+            append("\n6. move_note_to_folder and delete_note need a note_id: get it with search_notes first if you don't have it.")
             if (allowEditCurrentNote) {
-                append("\nYou are running INSIDE the editor of the note in [Current Note Context]. When the user asks you to rewrite, clean up, correct, format, translate, summarize into, or insert something into THIS note, call edit_current_note with the note's COMPLETE new text (not a diff).")
+                append("\n\nYou are running INSIDE the note editor. If the user asks you to rewrite, summarize, or edit the text itself, call 'edit_current_note' with the COMPLETE new text.")
             }
             if (!noteContext.isNullOrBlank()) {
                 append("\n\n[Current Note Context]\n").append(noteContext.take(30000))
