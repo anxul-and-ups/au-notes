@@ -1,13 +1,9 @@
 package com.example
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
-import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -189,12 +185,9 @@ fun AuNotesApp(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Request Storage, Notification and All-Files permissions on first launch (PART B Item 3)
+    // Request Storage and Notification Permissions on first launch (PART B Item 3)
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ -> }
-    val manageFilesLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
     ) { _ -> }
 
     LaunchedEffect(Unit) {
@@ -219,23 +212,6 @@ fun AuNotesApp(
 
         if (permissionsToRequest.isNotEmpty()) {
             permissionsLauncher.launch(permissionsToRequest.toTypedArray())
-        }
-
-        // File-manager style "All files access" (Android 11+). Cannot be granted via
-        // RequestMultiplePermissions; requires the Settings page.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (!Environment.isExternalStorageManager()) {
-                try {
-                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                        data = Uri.parse("package:${activity.packageName}")
-                    }
-                    manageFilesLauncher.launch(intent)
-                } catch (_: Exception) {
-                    try {
-                        manageFilesLauncher.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
-                    } catch (_: Exception) { }
-                }
-            }
         }
     }
 
@@ -672,17 +648,15 @@ fun AuNotesApp(
             onClose = { isAiChatOpen = false },
             onCreateNoteFromAi = { title, content, category ->
                 coroutineScope.launch {
-                    val newEntity = NoteEntity(
-                        id = 0L,
-                        title = title,
-                        content = content,
-                        category = category,
-                        isCodeFormat = category == "Code"
-                    )
-                    repository.saveNote(newEntity)
+                    val richNote = com.example.ui.util.NoteAgentFormatter.convertToRichNote(content, defaultTitle = title, forcedCategory = category)
+                    val newId = repository.saveNote(richNote)
+                    val saved = repository.getNoteByIdOnce(newId)
+                    if (saved != null) {
+                        isAiChatOpen = false
+                        currentScreen = Screen.ReadNote(saved)
+                    }
                 }
             },
-            onModifyCurrentNote = null,
             onOpenNoteFromAi = { note ->
                 isAiChatOpen = false
                 currentScreen = Screen.ReadNote(note)

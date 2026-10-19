@@ -1535,30 +1535,30 @@ fun NoteEditorScreen(
         repository = repository,
         currentNoteContent = "Title: $title\n\n${ImageMarkers.strip(contentValue.text)}",
         onClose = { showAiChatbotModal = false },
-        onCreateNoteFromAi = { _, _, _ -> },
-        onModifyCurrentNote = { newContent ->
-            contentValue = TextFieldValue(newContent, selection = TextRange(newContent.length))
-            spans = emptyList()
-            Toast.makeText(context, "Note updated by AU Bot", Toast.LENGTH_SHORT).show()
-        },
-        onApplyEditorTool = { action, value ->
-            when (action) {
-                "bold" -> { applyOrToggleBooleanFormat("bold", isBold) { isBold = it }; true }
-                "italic" -> { applyOrToggleBooleanFormat("italic", isItalic) { isItalic = it }; true }
-                "underline" -> { applyOrToggleBooleanFormat("underline", isUnderline) { isUnderline = it }; true }
-                "strikethrough", "strike" -> { applyOrToggleBooleanFormat("strikethrough", isStrikethrough) { isStrikethrough = it }; true }
-                "highlight" -> { applyOrToggleHighlight(); true }
-                "color", "text_color", "font_color" -> { applyOrSetColor(value.takeIf { it.isNotBlank() }); true }
-                "font_size", "fontsize" -> value.toIntOrNull()?.takeIf { it in 6..96 }?.let { applyOrSetFontSize(it); true } ?: false
-                "alignment" -> if (value.lowercase() in listOf("left", "center", "right", "justify")) { alignment = value.lowercase(); true } else false
-                "bullet_list" -> { listType = if (listType == "bullet") "none" else "bullet"; true }
-                "numbered_list" -> { listType = if (listType == "number") "none" else "number"; true }
-                "lettered_list" -> { listType = if (listType == "letter") "none" else "letter"; true }
-                "roman_list" -> { listType = if (listType == "roman") "none" else "roman"; true }
-                "clear_formatting" -> { clearFormattingOnSelection(); true }
-                "open_table_editor", "table" -> { showTableFullscreen = true; true }
-                else -> false
+        onCreateNoteFromAi = { noteTitle, noteContent, noteCat ->
+            coroutineScope.launch {
+                val entity = NoteEntity(title = noteTitle, content = noteContent, category = noteCat)
+                repository.saveNote(entity)
+                showAiChatbotModal = false
+                Toast.makeText(context, "Note created: $noteTitle", Toast.LENGTH_SHORT).show()
             }
+        },
+        onModifyCurrentNote = { newContent ->
+            pushUndo()
+            contentValue = TextFieldValue(newContent, selection = TextRange(newContent.length))
+            Toast.makeText(context, "Note updated by AU Agent", Toast.LENGTH_SHORT).show()
+        },
+        onApplyAgentNoteToEditor = { newContent, newTable, newSpans ->
+            pushUndo()
+            contentValue = TextFieldValue(newContent, selection = TextRange(newContent.length))
+            if (newTable.isNotBlank()) {
+                tableData = newTable
+            }
+            if (newSpans.isNotEmpty()) {
+                spans = newSpans
+            }
+            showAiChatbotModal = false
+            Toast.makeText(context, "Note updated with AU Agent tools!", Toast.LENGTH_SHORT).show()
         }
     )
 

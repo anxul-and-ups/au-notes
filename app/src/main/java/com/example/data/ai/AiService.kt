@@ -37,17 +37,27 @@ class AiService {
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    private class ApiFailure(val userMessage: String, val retryable: Boolean, val modelMissing: Boolean = false, val quotaExceeded: Boolean = false) : Exception(userMessage)
+    private class ApiFailure(val userMessage: String, val retryable: Boolean, val modelMissing: Boolean = false) : Exception(userMessage)
 
     private fun baseSystemPrompt(): String = """
-        You are AU Bot, a smart, friendly AI assistant inside the AU Notes app (built by student developer Anshul).
-        You behave like a modern conversational assistant (Claude / Gemini / ChatGPT):
-        - Actually read and answer what the user asked. Never reply with a generic menu of things you can do.
+        You are AU Agent, an autonomous intelligent AI Assistant and Note Craftsman inside AU Notes (built by student developer Anshul).
+        You behave like a modern autonomous agent:
+        - When the user asks for an explanation (e.g., "Python ke upar ek explanation do", "Explain Machine Learning", "Prepare notes on Indian History", etc.), a tutorial, or a guide:
+          DO NOT reply with plain, flat, boring text! You MUST act as an autonomous Agent utilizing AU Note Writer's full set of formatting tools to create an aesthetically structured, rich note:
+          1. Headings & Font Sizes: Start with a clear '# Title' (large heading), followed by '## Section Heading' (medium) and '### Subheading' for organized topics.
+          2. Highlights & Emphasis: Highlight core definitions, critical terms, and key concepts using '==highlighted key phrase==' (which renders with a highlighter background in the note writer) and '**bold terminology**'.
+          3. Tables: ALWAYS organize comparisons, feature summaries, data types, pros & cons, or syntax sheets into a structured Markdown Table:
+             | Feature / Concept | Description | Example / Syntax |
+             |---|---|---|
+             | ... | ... | ... |
+          4. Interactive Checkboxes: ALWAYS include an actionable learning checklist, practice exercises, or implementation steps using '[ ] Task to do', '[x] Completed task' (AU Notes interactive checkboxes).
+          5. Callout / Pro-Tip Boxes: Use blockquotes for key takeaways and tips: '> 💡 Key Concept: ...' or '> ⚠️ Pro-Tip: ...'.
+          6. Code Blocks: Provide practical, syntax-highlighted code blocks with language tags (e.g. ```python ... ```) whenever code is relevant.
+          7. Paragraphs: Keep paragraphs concise, well-spaced, clear, and easy to read.
         - Reply in the same language and style the user writes in (English, Hindi, or Hinglish written in Roman script).
-        - Be direct and natural. Short questions get short answers; complex ones get structured, step-by-step answers.
-        - Use Markdown: short paragraphs, bullet lists, and fenced code blocks with a language tag for code.
-        - When the user attaches a document or image, read it carefully and base your answer on its real content
-          (summaries, questions about it, extraction, rewriting, translation). Quote or refer to specific parts.
+        - Actually read and answer what the user asked. Never reply with a generic menu of things you can do.
+        - For conversational chit-chat or quick factual questions (e.g., "What is 2+2?"), give a direct answer. For any explanation, learning topic, or note-creation request, craft the rich note with all tools described above!
+        - When the user attaches a document or image, read it carefully and base your answer on its real content.
         - Use earlier messages in this conversation for context; follow-up questions refer to them.
         - If something is unclear, make a sensible assumption and say so, or ask ONE short clarifying question.
         - Be honest: if you don't know, say so instead of guessing.
@@ -85,7 +95,7 @@ class AiService {
             else ApiFailure("Gemini could not process this request. ${apiMsg.orEmpty()}".trim(), false)
             401, 403 -> ApiFailure("Gemini rejected your API key (or it has no access to this model). Open Settings → API Room and check the key.", false)
             404 -> ApiFailure("The selected model isn't available for your key.", false, modelMissing = true)
-            429 -> ApiFailure("Gemini rate limit / quota reached.", true, quotaExceeded = true)
+            429 -> ApiFailure("Gemini rate limit / free quota reached. Wait a minute and try again, or switch model in API Room.", true)
             500, 502, 503, 504 -> ApiFailure("Gemini is busy right now. Please try again in a moment.", true)
             else -> ApiFailure("Gemini error (HTTP $code). ${apiMsg.orEmpty()}".trim(), false)
         }
@@ -131,10 +141,10 @@ class AiService {
     }
 
     /** Calls Gemini with retry on transient errors and fallback when the chosen model isn't available. */
-    private suspend fun generate(apiKey: String, model: String, body: JSONObject, fallbackModels: List<String> = emptyList()): JSONArray {
+    private suspend fun generate(apiKey: String, model: String, body: JSONObject): JSONArray {
         val key = apiKey.trim()
         if (key.isBlank()) throw ApiFailure("No API key set. Open Settings → API Room and add your Gemini API key.", false)
-        val candidatesModels = (listOf(model.ifBlank { "gemini-1.5-flash" }) + fallbackModels + listOf("gemini-1.5-flash", "gemini-1.5-pro")).map { it.trim().removePrefix("models/") }.filter { it.isNotBlank() && !it.contains("tts") && !it.contains("embedding") && !it.contains("vision") }.distinct()
+        val candidatesModels = listOf(model.ifBlank { "gemini-2.0-flash" }, "gemini-2.0-flash", "gemini-1.5-flash").distinct()
         var lastFailure: ApiFailure? = null
         for (m in candidatesModels) {
             var attempt = 0
@@ -143,7 +153,7 @@ class AiService {
                     return callGemini(m, key, body)
                 } catch (f: ApiFailure) {
                     lastFailure = f
-                    if (f.modelMissing || f.quotaExceeded) break // automatically try the next configured/available model
+                    if (f.modelMissing) break // try next model
                     if (!f.retryable) throw f
                     attempt++
                     if (attempt < 3) delay(1200L * attempt)
@@ -151,7 +161,7 @@ class AiService {
                 }
             }
         }
-        throw if (lastFailure?.quotaExceeded == true) ApiFailure("Quota/rate limit reached on the available Gemini models. Add/select another working Gemini model or try again later.", false, quotaExceeded = true) else (lastFailure ?: ApiFailure("Something went wrong talking to Gemini.", true))
+        throw lastFailure ?: ApiFailure("Something went wrong talking to Gemini.", true)
     }
 
     private fun joinText(parts: JSONArray): String {
@@ -175,23 +185,16 @@ class AiService {
         model: String = "gemini-2.0-flash",
         noteContext: String? = null,
         history: List<ConversationTurn> = emptyList(),
-        allowEditCurrentNote: Boolean = false,
-        fallbackModels: List<String> = emptyList()
+        allowEditCurrentNote: Boolean = false
     ): AiActionResult = withContext(Dispatchers.IO) {
         val system = buildString {
             append(baseSystemPrompt())
-            append("\n\n### 🚨 CRITICAL INSTRUCTION: YOU ARE AN AI AGENT WITH TOOL ACCESS 🚨")
-            append("\nYou are NOT a simple text chatbot. You have direct control over the app via functions.")
-            append("\nYou have these functions available: search_notes, create_note, move_note_to_folder, delete_note, create_folder, delete_folder, open_folder, apply_editor_tool, insert_table.")
-            append("\n\nRULES FOR TOOL CALLING:")
-            append("\n1. If the user asks you to perform an action, YOU MUST CALL THE FUNCTION. Do NOT reply with text explaining how they can do it themselves.")
-            append("\n2. If the user asks to format text (make it bold, color it, change size, underline, etc.), YOU MUST call 'apply_editor_tool'.")
-            append("\n3. If the user asks to insert a table, YOU MUST call 'insert_table'.")
-            append("\n4. If the user asks to create a note, YOU MUST call 'create_note'.")
-            append("\n5. Only reply in plain text if the user is just chatting, asking a general question, or asking for an explanation of a concept.")
-            append("\n6. move_note_to_folder and delete_note need a note_id: get it with search_notes first if you don't have it.")
+            append("\n\nYou can also control the app through functions: search_notes, create_note, move_note_to_folder, delete_note, create_folder, delete_folder, open_folder.")
+            append(" Call a function ONLY when the user clearly asks for that app action (e.g. \"find my Java note\", \"create a note from this\", \"make a folder called Travel\").")
+            append(" For questions, explanations, writing, coding help or chatting, just answer in text — do NOT call a function.")
+            append(" move_note_to_folder and delete_note need a note_id: get it with search_notes first if you don't have it.")
             if (allowEditCurrentNote) {
-                append("\n\nYou are running INSIDE the note editor. If the user asks you to rewrite, summarize, or edit the text itself, call 'edit_current_note' with the COMPLETE new text.")
+                append("\nYou are running INSIDE the editor of the note in [Current Note Context]. When the user asks you to rewrite, clean up, correct, format, translate, summarize into, or insert something into THIS note, call edit_current_note with the note's COMPLETE new text (not a diff).")
             }
             if (!noteContext.isNullOrBlank()) {
                 append("\n\n[Current Note Context]\n").append(noteContext.take(30000))
@@ -199,23 +202,14 @@ class AiService {
         }
 
         val functionDeclarations = JSONArray()
-            .put(functionDecl("apply_editor_tool", "Applies formatting or tools to the current note in the editor. Actions: bold, italic, underline, highlight, color, font_size, alignment, bullet_list, numbered_list, clear_formatting, table.",
-                listOf(
-                    FnParam("action", "STRING", "The action to perform (e.g., bold, italic, color, font_size, table)", true),
-                    FnParam("value", "STRING", "Optional value for the action (e.g., hex color code like #FF0000, or size like 24)", false)
-                )))
-            .put(functionDecl("insert_table", "Inserts a table into the current note.",
-                listOf(
-                    FnParam("rows", "NUMBER", "Number of rows", true),
-                    FnParam("cols", "NUMBER", "Number of columns", true)
-                )))
             .put(functionDecl("search_notes", "Search the user's notes by a keyword or topic and return matching titles.",
                 listOf(FnParam("query", "STRING", "Keyword or topic to search for", true))))
-            .put(functionDecl("create_note", "Create a brand-new note with the given title and content.",
+            .put(functionDecl("create_note", "Create a brand-new note with the given title and content using Note Writer tools.",
                 listOf(
                     FnParam("title", "STRING", "Short title for the note", true),
-                    FnParam("content", "STRING", "The note's body text", true),
-                    FnParam("category", "STRING", "One of: General, Code, API, Media, Personal", false)
+                    FnParam("content", "STRING", "The note's body text (include [ ] for checkboxes, # for headings, ==term== for highlights)", true),
+                    FnParam("category", "STRING", "One of: General, Code, API, Media, Personal", false),
+                    FnParam("table_data", "STRING", "Optional markdown table to embed into the note's tableData field", false)
                 )))
             .put(functionDecl("move_note_to_folder", "Move an existing note (by its id) into a different folder. Needs user confirmation.",
                 listOf(
@@ -244,7 +238,7 @@ class AiService {
         }
 
         try {
-            val parts = generate(apiKey, model, body, fallbackModels)
+            val parts = generate(apiKey, model, body)
             for (i in 0 until parts.length()) {
                 val fn = parts.getJSONObject(i).optJSONObject("functionCall")
                 if (fn != null && fn.optString("name").isNotBlank()) {
@@ -288,134 +282,6 @@ class AiService {
      * The attached text and/or page images are sent together with the question so the
      * model answers from the real file content.
      */
-    
-    suspend fun generateWithToolsStreaming(
-        prompt: String,
-        apiKey: String,
-        model: String = "gemini-1.5-flash",
-        noteContext: String? = null,
-        history: List<ConversationTurn> = emptyList(),
-        allowEditCurrentNote: Boolean = false,
-        fallbackModels: List<String> = emptyList(),
-        onChunk: (String) -> Unit
-    ): AiActionResult = withContext(Dispatchers.IO) {
-        val key = apiKey.trim()
-        if (key.isBlank()) return@withContext AiActionResult.Text("No API key set.")
-        
-        val system = buildString {
-            append(baseSystemPrompt())
-            append("\n\n### 🚨 CRITICAL INSTRUCTION: YOU ARE AN AI AGENT WITH TOOL ACCESS 🚨")
-            append("\nYou are NOT a simple text chatbot. You have direct control over the app via functions.")
-            append("\nYou have these functions available: search_notes, create_note, move_note_to_folder, delete_note, create_folder, delete_folder, open_folder, apply_editor_tool, insert_table.")
-            append("\n\nRULES FOR TOOL CALLING:")
-            append("\n1. If the user asks you to perform an action, YOU MUST CALL THE FUNCTION. Do NOT reply with text.")
-            append("\n2. If the user asks to format text, YOU MUST call 'apply_editor_tool'.")
-            append("\n3. If the user asks to insert a table, YOU MUST call 'insert_table'.")
-            append("\n4. If the user asks to create a note, YOU MUST call 'create_note'.")
-            append("\n5. Only reply in plain text if the user is just chatting.")
-            if (allowEditCurrentNote) {
-                append("\n\nYou are running INSIDE the note editor. If the user asks you to rewrite or edit the text, call 'edit_current_note' with the COMPLETE new text.")
-            }
-            if (!noteContext.isNullOrBlank()) {
-                append("\n\n[Current Note Context]\n").append(noteContext.take(30000))
-            }
-        }
-
-        val functionDeclarations = JSONArray()
-            .put(functionDecl("apply_editor_tool", "Applies formatting or tools to the current note in the editor. Actions: bold, italic, underline, highlight, color, font_size, alignment, bullet_list, numbered_list, clear_formatting, table.",
-                listOf(
-                    FnParam("action", "STRING", "The action to perform", true),
-                    FnParam("value", "STRING", "Optional value for the action", false)
-                )))
-            .put(functionDecl("insert_table", "Inserts a table into the current note.",
-                listOf(
-                    FnParam("rows", "NUMBER", "Number of rows", true),
-                    FnParam("cols", "NUMBER", "Number of columns", true)
-                )))
-            .put(functionDecl("search_notes", "Search the user's notes.",
-                listOf(FnParam("query", "STRING", "Keyword to search for", true))))
-            .put(functionDecl("create_note", "Create a brand-new note.",
-                listOf(
-                    FnParam("title", "STRING", "Short title", true),
-                    FnParam("content", "STRING", "Body text", true),
-                    FnParam("category", "STRING", "Category", false)
-                )))
-            .put(functionDecl("move_note_to_folder", "Move an existing note.",
-                listOf(
-                    FnParam("note_id", "NUMBER", "The id of the note", true),
-                    FnParam("folder", "STRING", "Target folder", true)
-                )))
-            .put(functionDecl("delete_note", "Move an existing note to recycle bin.",
-                listOf(FnParam("note_id", "NUMBER", "The id of the note", true))))
-            .put(functionDecl("create_folder", "Create a new folder.",
-                listOf(FnParam("name", "STRING", "Folder name", true))))
-            .put(functionDecl("delete_folder", "Delete a folder.",
-                listOf(FnParam("name", "STRING", "Folder name", true))))
-            .put(functionDecl("open_folder", "Open a folder.",
-                listOf(FnParam("name", "STRING", "Folder name", true))))
-        if (allowEditCurrentNote) {
-            functionDeclarations.put(functionDecl("edit_current_note", "Replace the content of the note.",
-                listOf(FnParam("new_content", "STRING", "The complete new body text", true))))
-        }
-
-        val body = JSONObject().apply {
-            put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
-            put("contents", buildContents(history, textContent("user", prompt)))
-            put("tools", JSONArray().put(JSONObject().put("function_declarations", functionDeclarations)))
-            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 4096))
-        }
-
-        val client = OkHttpClient.Builder()
-            .connectTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .build()
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$key"
-
-        val request = Request.Builder()
-            .url(url)
-            .post(body.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        try {
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    val err = response.body?.string() ?: ""
-                    return@withContext AiActionResult.Text("⚠️ API Error: ${response.code} $err")
-                }
-                val source = response.body?.source() ?: return@withContext AiActionResult.Text("⚠️ No body")
-                var fullText = ""
-                while (!source.exhausted()) {
-                    val line = source.readUtf8Line() ?: break
-                    if (line.startsWith("data: ")) {
-                        val jsonStr = line.substring(6).trim()
-                        if (jsonStr == "[DONE]") break
-                        try {
-                            val chunk = JSONObject(jsonStr)
-                            val parts = chunk.optJSONArray("candidates")?.optJSONObject(0)
-                                ?.optJSONObject("content")?.optJSONArray("parts")
-                            if (parts != null) {
-                                for (i in 0 until parts.length()) {
-                                    val p = parts.getJSONObject(i)
-                                    if (p.has("text")) {
-                                        val text = p.getString("text")
-                                        fullText += text
-                                        onChunk(text)
-                                    } else if (p.has("functionCall")) {
-                                        val fc = p.getJSONObject("functionCall")
-                                        return@withContext AiActionResult.FunctionCall(fc.getString("name"), fc.optJSONObject("args") ?: JSONObject())
-                                    }
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }
-                }
-                return@withContext AiActionResult.Text(fullText)
-            }
-        } catch (e: Exception) {
-            return@withContext AiActionResult.Text("⚠️ Connection Error: ${e.message}")
-        }
-    }
-
     suspend fun generateResponse(
         prompt: String,
         apiKey: String,
@@ -423,8 +289,7 @@ class AiService {
         noteContext: String? = null,
         attachmentContent: String? = null,
         history: List<ConversationTurn> = emptyList(),
-        attachmentImagesBase64: List<String> = emptyList(),
-        fallbackModels: List<String> = emptyList()
+        attachmentImagesBase64: List<String> = emptyList()
     ): String = withContext(Dispatchers.IO) {
         val system = buildString {
             append(baseSystemPrompt())
@@ -457,7 +322,7 @@ class AiService {
         }
 
         try {
-            val text = joinText(generate(apiKey, model, body, fallbackModels))
+            val text = joinText(generate(apiKey, model, body))
             text.ifBlank { "I couldn't come up with an answer. Could you rephrase that?" }
         } catch (f: ApiFailure) {
             "⚠️ ${f.userMessage}"

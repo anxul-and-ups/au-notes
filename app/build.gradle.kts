@@ -20,12 +20,26 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-    signingConfigs {
+  signingConfigs {
     create("persistent") {
-      storeFile = rootProject.file("my-upload-key.jks")
-      storePassword = "CodeForgeAU2026!"
-      keyAlias = "upload"
-      keyPassword = "CodeForgeAU2026!"
+      // Relative paths are resolved from the PROJECT ROOT (not from app/), where my-upload-key.jks lives.
+      val uploadKey = rootProject.file("my-upload-key.jks")
+      val debugKey = file("${rootDir}/debug.keystore")
+      if (uploadKey.exists()) {
+        storeFile = uploadKey
+        storePassword = System.getenv("STORE_PASSWORD")
+          ?: providers.gradleProperty("AU_KEYSTORE_PASSWORD").orNull
+          ?: "CodeForgeAU2026!"
+        keyAlias = "upload"
+        keyPassword = System.getenv("KEY_PASSWORD")
+          ?: providers.gradleProperty("AU_KEY_PASSWORD").orNull
+          ?: "CodeForgeAU2026!"
+      } else {
+        storeFile = debugKey
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
+      }
     }
   }
 

@@ -1651,10 +1651,5 @@ private fun showTempMailNotification(context: Context, count: Int, subject: Stri
         .setStyle(NotificationCompat.BigTextStyle().bigText("$subject\nInbox: $address"))
         .setAutoCancel(true)
         .build()
-    runCatching {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) return
-        }
-        NotificationManagerCompat.from(context).notify((address + subject).hashCode(), notification)
-    }
+    runCatching { NotificationManagerCompat.from(context).notify((address + subject).hashCode(), notification) }
 }

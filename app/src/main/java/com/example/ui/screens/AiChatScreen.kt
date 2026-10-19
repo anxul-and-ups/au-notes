@@ -90,11 +90,25 @@ import com.example.data.ai.ConversationTurn
 import com.example.data.model.NoteEntity
 import com.example.data.repository.NoteRepository
 import com.example.data.preferences.AppPreferences
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.text.style.TextDecoration
 import com.example.ui.components.CodeBlockView
 import com.example.ui.components.GlassCard
 import com.example.ui.components.NeuIconButton
 import com.example.ui.components.PinLockDialog
 import com.example.ui.theme.CrimsonPrimary
+import com.example.ui.util.AgentChecklistItem
+import com.example.ui.util.AgentContentBlock
+import com.example.ui.util.NoteAgentFormatter
+import com.example.ui.util.RichTextFormatter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.util.Date
@@ -193,9 +207,9 @@ fun AiChatScreen(
     onClose: () -> Unit,
     onCreateNoteFromAi: (String, String, String) -> Unit,
     onOpenNoteFromAi: (NoteEntity) -> Unit = {},
-    onModifyCurrentNote: ((String) -> Unit)?,
-    onApplyEditorTool: ((String, String) -> Boolean)? = null,
-    onOpenFolderFromAi: (String) -> Unit = {}
+    onModifyCurrentNote: ((String) -> Unit)? = null,
+    onOpenFolderFromAi: (String) -> Unit = {},
+    onApplyAgentNoteToEditor: ((String, String, List<RichTextFormatter.TextSpan>) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -224,7 +238,7 @@ fun AiChatScreen(
         mutableStateListOf(
             ChatMessage(
                 sender = "bot",
-                text = "Hi! I'm AU Bot. Ask me anything — or attach a file / image and I'll read it with you."
+                text = "Hi! I'm AU Agent, your autonomous Note Craftsman. Ask me to explain any topic (e.g. \"Python ke upar explanation do\", science, coding, history), and I will create a structured note with tables, checkboxes, highlights, headings, and code blocks!"
             )
         )
     }
@@ -373,21 +387,6 @@ fun AiChatScreen(
     // post a confirmation card — see onResolveAiAction for where they actually run.
     suspend fun handleFunctionCall(name: String, args: org.json.JSONObject) {
         when (name) {
-            "apply_editor_tool", "format_text", "insert_table" -> {
-                if (onApplyEditorTool != null) {
-                    val action = if (name == "insert_table") "table" else args.optString("action", name)
-                    val value = if (name == "insert_table") "" else args.optString("value", "")
-                    
-                    val success = onApplyEditorTool.invoke(action, value)
-                    if (success) {
-                        messages.add(ChatMessage(sender = "bot", text = "Applied $action successfully in the editor."))
-                    } else {
-                        messages.add(ChatMessage(sender = "bot", text = "Could not apply $action. Please select some text first."))
-                    }
-                } else {
-                    messages.add(ChatMessage(sender = "bot", text = "Editor tools are only available when you open the AI from inside the Note Editor."))
-                }
-            }
             "search_notes" -> {
                 val query = args.optString("query", "")
                 val results = try { repository.searchNotes(query).first() } catch (e: Exception) { emptyList() }
@@ -407,8 +406,18 @@ fun AiChatScreen(
                 val title = args.optString("title", "Untitled Note")
                 val content = args.optString("content", "")
                 val category = args.optString("category", "General")
-                onCreateNoteFromAi(title, content, category)
-                messages.add(ChatMessage(sender = "bot", text = "Created a new note: \"$title\"."))
+                val tableData = args.optString("table_data", "")
+                val fullRaw = if (tableData.isNotBlank() && !content.contains("|")) "$content\n\n$tableData" else content
+                val richNote = NoteAgentFormatter.convertToRichNote(fullRaw, defaultTitle = title, forcedCategory = category)
+                val newId = repository.saveNote(richNote)
+                val saved = repository.getNoteByIdOnce(newId)
+                messages.add(
+                    ChatMessage(
+                        sender = "bot",
+                        text = "Created a rich note with Note Writer tools: \"${richNote.title}\" — tap below to open it:",
+                        noteResults = if (saved != null) listOf(saved) else null
+                    )
+                )
             }
             "move_note_to_folder" -> {
                 val noteId = args.optLong("note_id", -1L)
@@ -511,8 +520,6 @@ fun AiChatScreen(
         coroutineScope.launch {
             val key = preferences.getEffectiveApiKey()
             val model = preferences.selectedModel.value
-            // Use models detected for the same Gemini API key as automatic quota fallbacks.
-            val fallbackModels = preferences.detectedModels.value["Gemini"].orEmpty().filterNot { it == model }
             val history = messages.dropLast(1).map { ConversationTurn(it.sender, it.text) }
 
             // Attachments (text files or PDF page images) go through the plain
@@ -526,41 +533,26 @@ fun AiChatScreen(
                     noteContext = currentNoteContent,
                     attachmentContent = docText,
                     history = history,
-                    attachmentImagesBase64 = docImages ?: emptyList(),
-                    fallbackModels = fallbackModels
+                    attachmentImagesBase64 = docImages ?: emptyList()
                 )
                 isLoading = false
                 messages.add(ChatMessage(sender = "bot", text = response))
             } else {
-                val botIndex = messages.size
-                messages.add(ChatMessage(sender = "bot", text = "Typing..."))
-                isLoading = true
-                var accumulatedText = ""
-                
-                val result = aiService.generateWithToolsStreaming(
+                when (val result = aiService.generateWithTools(
                     prompt = userMsg,
                     apiKey = key,
                     model = model,
                     noteContext = currentNoteContent,
                     history = history,
-                    allowEditCurrentNote = onModifyCurrentNote != null,
-                    fallbackModels = fallbackModels
-                ) { chunk ->
-                    accumulatedText += chunk
-                    if (botIndex < messages.size) {
-                        messages[botIndex] = ChatMessage(sender = "bot", text = accumulatedText)
+                    allowEditCurrentNote = onModifyCurrentNote != null
+                )) {
+                    is AiActionResult.Text -> {
+                        isLoading = false
+                        messages.add(ChatMessage(sender = "bot", text = result.text))
                     }
-                }
-                
-                isLoading = false
-                if (result is AiActionResult.FunctionCall) {
-                    if (botIndex < messages.size) {
-                        messages[botIndex] = ChatMessage(sender = "bot", text = "🤖 Using tool: ${result.name}...")
-                    }
-                    handleFunctionCall(result.name, result.args)
-                } else if (result is AiActionResult.Text && accumulatedText.isBlank()) {
-                    if (botIndex < messages.size) {
-                        messages[botIndex] = ChatMessage(sender = "bot", text = result.text)
+                    is AiActionResult.FunctionCall -> {
+                        handleFunctionCall(result.name, result.args)
+                        isLoading = false
                     }
                 }
             }
@@ -832,27 +824,39 @@ fun AiChatScreen(
                                                 horizontalArrangement = Arrangement.SpaceBetween,
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Text(
-                                                    text = "AU BOT INTELLIGENCE",
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = CrimsonPrimary
-                                                )
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(6.dp)
+                                                            .clip(CircleShape)
+                                                            .background(CrimsonPrimary)
+                                                    )
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text(
+                                                        text = "AU AGENT • NOTE CRAFTSMAN",
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = CrimsonPrimary
+                                                    )
+                                                }
 
                                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                    // Save as note button
+                                                    // Save as rich note button
                                                     IconButton(
                                                         onClick = {
-                                                            onCreateNoteFromAi(
-                                                                "AU Note ${Date()}",
-                                                                msg.text,
-                                                                if (msg.text.contains("```")) "Code" else "General"
-                                                            )
-                                                            Toast.makeText(context, "Saved as new note!", Toast.LENGTH_SHORT).show()
+                                                            coroutineScope.launch {
+                                                                val richNote = NoteAgentFormatter.convertToRichNote(msg.text)
+                                                                val savedId = repository.saveNote(richNote)
+                                                                val saved = repository.getNoteByIdOnce(savedId)
+                                                                if (saved != null) {
+                                                                    Toast.makeText(context, "Saved as Formatted Note!", Toast.LENGTH_SHORT).show()
+                                                                    onOpenNoteFromAi(saved)
+                                                                }
+                                                            }
                                                         },
                                                         modifier = Modifier.size(24.dp)
                                                     ) {
-                                                        Icon(Icons.Default.NoteAdd, contentDescription = "Save Note", tint = CrimsonPrimary, modifier = Modifier.size(14.dp))
+                                                        Icon(Icons.Default.NoteAdd, contentDescription = "Save Note", tint = CrimsonPrimary, modifier = Modifier.size(15.dp))
                                                     }
 
                                                     // Copy response button
@@ -863,24 +867,73 @@ fun AiChatScreen(
                                                         },
                                                         modifier = Modifier.size(24.dp)
                                                     ) {
-                                                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = CrimsonPrimary, modifier = Modifier.size(14.dp))
+                                                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = CrimsonPrimary, modifier = Modifier.size(15.dp))
                                                     }
                                                 }
                                             }
 
                                             Spacer(modifier = Modifier.height(6.dp))
 
-                                            // Check if msg contains code block
-                                            if (msg.text.contains("```")) {
-                                                RenderMessageWithCodeBlocks(msg.text, isDarkMode)
-                                            } else {
-                                                SelectionContainer {
-                                                    Text(
-                                                        text = msg.text,
-                                                        fontSize = 13.sp,
-                                                        lineHeight = 18.sp,
-                                                        color = if (isDarkMode) Color.White.copy(alpha = 0.95f) else Color(0xFF111111)
-                                                    )
+                                            // Render rich formatted agent message with tables, checkboxes, highlights, headings, callouts, and code blocks
+                                            RenderAgentRichMessage(msg.text, isDarkMode)
+
+                                            // Quick Action Bar: "Create Note with Tools" / "Apply to Editor"
+                                            if (msg.text.length > 40 && !msg.text.startsWith("⚠️")) {
+                                                Spacer(modifier = Modifier.height(10.dp))
+                                                HorizontalDivider(
+                                                    color = if (isDarkMode) Color(0x33FF2D55) else Color(0x22FF2D55),
+                                                    thickness = 0.5.dp
+                                                )
+                                                Spacer(modifier = Modifier.height(8.dp))
+
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Button(
+                                                        onClick = {
+                                                            coroutineScope.launch {
+                                                                val richNote = NoteAgentFormatter.convertToRichNote(msg.text)
+                                                                val savedId = repository.saveNote(richNote)
+                                                                val saved = repository.getNoteByIdOnce(savedId)
+                                                                if (saved != null) {
+                                                                    Toast.makeText(context, "Opened note with all Note Writer tools!", Toast.LENGTH_SHORT).show()
+                                                                    onOpenNoteFromAi(saved)
+                                                                }
+                                                            }
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                        modifier = Modifier.height(30.dp)
+                                                    ) {
+                                                        Icon(Icons.Default.NoteAdd, contentDescription = null, modifier = Modifier.size(13.dp), tint = Color.White)
+                                                        Spacer(Modifier.width(4.dp))
+                                                        Text("Create Note with Tools", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                                    }
+
+                                                    if (onModifyCurrentNote != null || onApplyAgentNoteToEditor != null) {
+                                                        OutlinedButton(
+                                                            onClick = {
+                                                                val richNote = NoteAgentFormatter.convertToRichNote(msg.text)
+                                                                if (onApplyAgentNoteToEditor != null) {
+                                                                    val spans = RichTextFormatter.deserializeSpans(richNote.styleSpansJson)
+                                                                    onApplyAgentNoteToEditor.invoke(richNote.content, richNote.tableData, spans)
+                                                                } else {
+                                                                    onModifyCurrentNote?.invoke(richNote.content)
+                                                                }
+                                                                Toast.makeText(context, "Applied to Note Editor!", Toast.LENGTH_SHORT).show()
+                                                            },
+                                                            shape = RoundedCornerShape(8.dp),
+                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                            modifier = Modifier.height(30.dp)
+                                                        ) {
+                                                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(12.dp), tint = CrimsonPrimary)
+                                                            Spacer(Modifier.width(4.dp))
+                                                            Text("Apply to Editor", fontSize = 11.sp, color = CrimsonPrimary)
+                                                        }
+                                                    }
                                                 }
                                             }
 
@@ -1251,30 +1304,180 @@ private fun QuickActionButton(
 }
 
 @Composable
-private fun RenderMessageWithCodeBlocks(text: String, isDarkMode: Boolean) {
-    val parts = text.split("```")
+private fun RenderAgentRichMessage(text: String, isDarkMode: Boolean) {
+    val blocks = remember(text) { NoteAgentFormatter.parseMessageToBlocks(text) }
+    val textColor = if (isDarkMode) Color.White.copy(alpha = 0.95f) else Color(0xFF111111)
+
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        parts.forEachIndexed { index, part ->
-            if (index % 2 == 1) {
-                // Code block
-                val firstLineEnd = part.indexOf('\n')
-                val language = if (firstLineEnd != -1) part.substring(0, firstLineEnd).trim().ifBlank { "Code" } else "Code"
-                val codeContent = if (firstLineEnd != -1) part.substring(firstLineEnd + 1) else part
-                CodeBlockView(
-                    code = codeContent,
-                    language = language,
-                    isDarkMode = isDarkMode
-                )
-            } else {
-                // Normal text
-                val trimmed = part.trim()
-                if (trimmed.isNotBlank()) {
+        blocks.forEach { block ->
+            when (block) {
+                is AgentContentBlock.Heading -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(top = if (block.level == 1) 6.dp else 4.dp, bottom = 2.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.5.dp)
+                                .height(if (block.level == 1) 20.dp else 16.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(CrimsonPrimary)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = block.text,
+                            fontSize = when (block.level) {
+                                1 -> 16.sp
+                                2 -> 14.5.sp
+                                else -> 13.5.sp
+                            },
+                            fontWeight = FontWeight.Bold,
+                            color = when (block.level) {
+                                1 -> if (isDarkMode) Color.White else Color(0xFF0F172A)
+                                2 -> CrimsonPrimary
+                                else -> if (isDarkMode) Color(0xFFCBD5E1) else Color(0xFF334155)
+                            }
+                        )
+                    }
+                }
+
+                is AgentContentBlock.Callout -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isDarkMode) Color(0x332A151C) else Color(0x1FEBEDED))
+                            .border(
+                                1.dp,
+                                if (block.isWarning) Color(0xFFFF9800).copy(0.6f) else CrimsonPrimary.copy(0.4f),
+                                RoundedCornerShape(10.dp)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 7.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.Top) {
+                            Text(block.icon, fontSize = 14.sp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = NoteAgentFormatter.buildRichAnnotatedText(block.text, isDarkMode, textColor),
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                color = textColor
+                            )
+                        }
+                    }
+                }
+
+                is AgentContentBlock.Table -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isDarkMode) Color(0x2E111827) else Color(0x0F000000))
+                            .border(1.dp, if (isDarkMode) Color(0x44FF2D55) else Color(0x33FF2D55), RoundedCornerShape(10.dp))
+                            .padding(6.dp)
+                    ) {
+                        Column {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.TableChart,
+                                        contentDescription = null,
+                                        tint = CrimsonPrimary,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Structured Table", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary)
+                                }
+                                Text("Swipe to view", fontSize = 10.sp, color = if (isDarkMode) Color.White.copy(0.4f) else Color.Gray)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Box(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                                Column {
+                                    block.rows.forEachIndexed { rowIndex, cells ->
+                                        Row(
+                                            modifier = Modifier
+                                                .height(IntrinsicSize.Min)
+                                                .background(
+                                                    if (rowIndex == 0) (if (isDarkMode) Color(0x4DFF2D55) else Color(0x26FF2D55))
+                                                    else if (rowIndex % 2 == 0) (if (isDarkMode) Color(0x14FFFFFF) else Color(0x0A000000))
+                                                    else Color.Transparent
+                                                )
+                                        ) {
+                                            cells.forEach { cellText ->
+                                                Box(
+                                                    modifier = Modifier
+                                                        .width(115.dp)
+                                                        .fillMaxHeight()
+                                                        .border(0.5.dp, if (isDarkMode) Color(0x33FFFFFF) else Color(0x22000000))
+                                                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = cellText,
+                                                        fontSize = 11.5.sp,
+                                                        fontWeight = if (rowIndex == 0) FontWeight.Bold else FontWeight.Normal,
+                                                        color = if (isDarkMode) Color.White else Color(0xFF1E293B)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                is AgentContentBlock.Checklist -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        block.items.forEach { item ->
+                            var isChecked by remember(item.checked) { mutableStateOf(item.checked) }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { isChecked = !isChecked }
+                                    .padding(vertical = 2.dp, horizontal = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (isChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                    contentDescription = null,
+                                    tint = if (isChecked) CrimsonPrimary else (if (isDarkMode) Color.White.copy(0.6f) else Color.Gray),
+                                    modifier = Modifier.size(17.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = item.text,
+                                    fontSize = 12.5.sp,
+                                    color = if (isChecked) (if (isDarkMode) Color.White.copy(0.45f) else Color.Gray) else textColor,
+                                    textDecoration = if (isChecked) TextDecoration.LineThrough else TextDecoration.None
+                                )
+                            }
+                        }
+                    }
+                }
+
+                is AgentContentBlock.Code -> {
+                    CodeBlockView(
+                        code = block.code,
+                        language = block.language,
+                        isDarkMode = isDarkMode
+                    )
+                }
+
+                is AgentContentBlock.Paragraph -> {
                     SelectionContainer {
                         Text(
-                            text = trimmed,
+                            text = NoteAgentFormatter.buildRichAnnotatedText(block.text, isDarkMode, textColor),
                             fontSize = 13.sp,
                             lineHeight = 18.sp,
-                            color = if (isDarkMode) Color.White.copy(alpha = 0.95f) else Color(0xFF111111)
+                            color = textColor
                         )
                     }
                 }
