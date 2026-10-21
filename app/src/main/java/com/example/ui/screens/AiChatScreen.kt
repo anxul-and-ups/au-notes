@@ -1249,6 +1249,8 @@ fun AiChatScreen(
                         }
                     }
                 }
+            }
+        }
 
     // Item 22: full-screen editing view for long messages, opened via the
     // input box's maximize icon.
