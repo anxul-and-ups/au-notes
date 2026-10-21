@@ -6,7 +6,6 @@ import android.content.res.Configuration
 import android.os.Build
 import android.util.Rational
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
