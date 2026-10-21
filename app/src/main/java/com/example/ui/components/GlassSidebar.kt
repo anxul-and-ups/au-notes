@@ -260,10 +260,10 @@ fun GlassSidebar(
                         }
                     )
 
-                    // 4. Command Mode
+                    // 4. Voice Command Mode (AU Agent Live)
                     SidebarMenuItem(
                         icon = Icons.Default.Mic,
-                        title = "Command Mode",
+                        title = "Voice Command Mode",
                         isDarkMode = isDarkMode,
                         onClick = {
                             onClose()

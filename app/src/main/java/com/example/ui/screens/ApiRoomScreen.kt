@@ -70,7 +70,7 @@ import com.example.ui.components.PinLockDialog
 import com.example.ui.theme.CrimsonPrimary
 import kotlinx.coroutines.launch
 
-private val BUILT_IN_PROVIDERS = listOf("Gemini", "OpenAI", "Anthropic", "DeepSeek", "Kimi", "OpenCode", "Hugging Face")
+private val BUILT_IN_PROVIDERS = listOf("Gemini", "OpenAI", "Anthropic", "DeepSeek")
 
 @Composable
 fun ApiRoomScreen(
@@ -120,7 +120,6 @@ fun ApiRoomScreen(
     var showAddProviderDialog by remember { mutableStateOf(false) }
 
     val activeProvider by preferences.activeProvider.collectAsState()
-    var showWhyProvidersFail by remember { mutableStateOf(false) }
 
     GlassBackground(isDarkMode = isDarkMode) {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
@@ -158,51 +157,6 @@ fun ApiRoomScreen(
             }
 
             Spacer(modifier = Modifier.height(10.dp))
-
-            // Explainer Card: Why other providers fail
-            GlassCard(
-                shape = RoundedCornerShape(14.dp),
-                isDarkMode = isDarkMode,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().clickable { showWhyProvidersFail = !showWhyProvidersFail },
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("💡", fontSize = 14.sp)
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                "Other Provider fail kyu hota hai? (Guide)",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                color = CrimsonPrimary
-                            )
-                        }
-                        Icon(
-                            if (showWhyProvidersFail) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            contentDescription = null,
-                            tint = CrimsonPrimary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-
-                    if (showWhyProvidersFail) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "1. Account Balance: OpenAI and DeepSeek require a funded account (balance > $0). Agar balance 0 hai toh HTTP 429 ya 401 aayega.\n" +
-                            "2. Base URL Format: Custom provider URL me https:// lagana zaroori hai (e.g. https://api.openai.com/v1).\n" +
-                            "3. Model Name: DeepSeek ke liye 'deepseek-chat', OpenAI ke liye 'gpt-4o-mini' select karein.\n" +
-                            "4. Active Provider: Ab aap niche kisi bhi provider par 'Set as Active Engine' tap karke use AU Agent me activate kar sakte hain!",
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp,
-                            color = if (isDarkMode) Color.White.copy(0.85f) else Color.DarkGray
-                        )
-                    }
-                }
-            }
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // Gemini card — reuses the existing working prefs so nothing

@@ -81,8 +81,8 @@ class VoiceAssistantManager(
     private fun configureFemaleVoice() {
         val engine = tts ?: return
         // Configure calm, professional, composed female assistant tone
-        engine.setPitch(1.05f) // Natural calm pitch
-        engine.setSpeechRate(0.95f) // Normal attentive working assistant pace
+        engine.setPitch(1.02f) // Natural calm pitch
+        engine.setSpeechRate(0.96f) // Normal attentive working assistant pace
 
         // Setup audio attributes so speech plays cleanly in background
         try {
@@ -94,30 +94,34 @@ class VoiceAssistantManager(
         } catch (_: Exception) {}
 
         try {
+            val hiLocale = Locale("hi", "IN")
+            val enInLocale = Locale("en", "IN")
+            if (engine.isLanguageAvailable(hiLocale) >= TextToSpeech.LANG_AVAILABLE) {
+                engine.language = hiLocale
+            } else if (engine.isLanguageAvailable(enInLocale) >= TextToSpeech.LANG_AVAILABLE) {
+                engine.language = enInLocale
+            } else {
+                engine.language = Locale.ENGLISH
+            }
+
             val voices = engine.voices
             if (!voices.isNullOrEmpty()) {
                 val femaleVoice = voices.find { v: Voice ->
                     !v.isNetworkConnectionRequired && (
-                        v.name.contains("female", ignoreCase = true) ||
-                        v.name.contains("en-in-x-ahp", ignoreCase = true) ||
                         v.name.contains("hi-in-x-hie", ignoreCase = true) ||
                         v.name.contains("hi-in", ignoreCase = true) ||
+                        v.name.contains("female", ignoreCase = true) ||
+                        v.name.contains("en-in-x-ahp", ignoreCase = true) ||
                         v.features?.contains("gender=female") == true
                     )
                 } ?: voices.find { v: Voice ->
-                    v.locale.language.startsWith("en") || v.locale.language.startsWith("hi")
+                    v.locale.language.startsWith("hi") || v.locale.language.startsWith("en")
                 }
                 if (femaleVoice != null) {
                     engine.voice = femaleVoice
                 }
-            } else {
-                engine.language = Locale("hi", "IN")
             }
-        } catch (_: Exception) {
-            try {
-                engine.language = Locale.ENGLISH
-            } catch (_: Exception) {}
-        }
+        } catch (_: Exception) {}
     }
 
     fun startVoiceMode() {
@@ -229,7 +233,8 @@ class VoiceAssistantManager(
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+            putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("hi-IN", "en-IN", "en-US"))
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         }

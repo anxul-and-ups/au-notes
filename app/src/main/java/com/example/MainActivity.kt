@@ -157,6 +157,7 @@ fun AuNotesApp(
     var isSidebarOpen by remember { mutableStateOf(false) }
     var pendingDeleteNoteId by remember { mutableStateOf<Long?>(null) }
     var isAiChatOpen by remember { mutableStateOf(false) }
+    var startAiVoiceAssistantImmediately by remember { mutableStateOf(false) }
     var returnToAiChatFromApiRoom by remember { mutableStateOf(false) }
 
     // Security Vault unlocked state, hoisted here (rather than local to
@@ -626,7 +627,8 @@ fun AuNotesApp(
             },
             onOpenCommandMode = {
                 isSidebarOpen = false
-                currentScreen = Screen.CommandMode
+                startAiVoiceAssistantImmediately = true
+                isAiChatOpen = true
             },
             onOpenTempMail = {
                 isSidebarOpen = false
@@ -660,9 +662,31 @@ fun AuNotesApp(
             isDarkMode = isDarkMode,
             preferences = preferences,
             repository = repository,
+            currentNoteTitle = (currentScreen as? Screen.ReadNote)?.note?.title
+                ?: (currentScreen as? Screen.EditNote)?.note?.title,
             currentNoteContent = (currentScreen as? Screen.ReadNote)?.note?.content
                 ?: (currentScreen as? Screen.EditNote)?.note?.content,
+            autoStartVoiceMode = startAiVoiceAssistantImmediately,
+            onVoiceModeStarted = { startAiVoiceAssistantImmediately = false },
             onClose = { isAiChatOpen = false },
+            onModifyCurrentNote = { newContent ->
+                coroutineScope.launch {
+                    val activeNote = (currentScreen as? Screen.ReadNote)?.note
+                        ?: (currentScreen as? Screen.EditNote)?.note
+                    if (activeNote != null) {
+                        val updated = activeNote.copy(
+                            content = newContent,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                        repository.saveNote(updated)
+                        if (currentScreen is Screen.ReadNote) {
+                            currentScreen = Screen.ReadNote(updated)
+                        } else if (currentScreen is Screen.EditNote) {
+                            currentScreen = Screen.EditNote(updated)
+                        }
+                    }
+                }
+            },
             onCreateNoteFromAi = { title, content, category ->
                 coroutineScope.launch {
                     val richNote = com.example.ui.util.NoteAgentFormatter.convertToRichNote(content, defaultTitle = title, forcedCategory = category)
