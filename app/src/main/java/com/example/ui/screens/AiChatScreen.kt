@@ -109,6 +109,32 @@ import com.example.ui.util.AgentChecklistItem
 import com.example.ui.util.AgentContentBlock
 import com.example.ui.util.NoteAgentFormatter
 import com.example.ui.util.RichTextFormatter
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import com.example.data.ai.ChatSession
+import com.example.data.ai.ChatSessionManager
+import com.example.data.ai.VoiceAssistantManager
+import com.example.data.ai.VoiceState
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.foundation.Canvas
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.util.Date
@@ -209,19 +235,41 @@ fun AiChatScreen(
     onOpenNoteFromAi: (NoteEntity) -> Unit = {},
     onModifyCurrentNote: ((String) -> Unit)? = null,
     onOpenFolderFromAi: (String) -> Unit = {},
-    onApplyAgentNoteToEditor: ((String, String, List<RichTextFormatter.TextSpan>) -> Unit)? = null
+    onApplyAgentNoteToEditor: ((String, String, List<RichTextFormatter.TextSpan>) -> Unit)? = null,
+    onOpenApiRoom: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
     val aiService = remember { AiService() }
 
+    val activeProvider by preferences.activeProvider.collectAsState()
+    val providerEntries by preferences.apiProviderEntries.collectAsState()
+    val selectedModelPref by preferences.selectedModel.collectAsState()
+
     var isCompactMode by remember { mutableStateOf(false) }
-    var activeTab by remember { mutableStateOf("Chat") }
+    var isAgentSidebarOpen by remember { mutableStateOf(false) }
+    var showAdvancedModelOptions by remember { mutableStateOf(false) }
+    var showWhyProvidersFail by remember { mutableStateOf(false) }
+    var currentActionStatus by remember { mutableStateOf<String?>(null) }
+    var showVoiceOverlay by remember { mutableStateOf(false) }
+
     var inputText by remember { mutableStateOf("") }
     var showMaximizedInput by remember { mutableStateOf(false) }
     val chatInputBringIntoViewRequester = remember { BringIntoViewRequester() }
     var isLoading by remember { mutableStateOf(false) }
+
+    // Persistent Chat Sessions
+    val sessionManager = remember { ChatSessionManager(context) }
+    var currentSessionId by remember { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    val savedSessions = remember { mutableStateListOf<ChatSession>() }
+
+    LaunchedEffect(isOpen) {
+        if (isOpen) {
+            savedSessions.clear()
+            savedSessions.addAll(sessionManager.loadAllSessions())
+        }
+    }
 
     // Attachment state
     var attachedFileName by remember { mutableStateOf<String?>(null) }
@@ -488,6 +536,49 @@ fun AiChatScreen(
         }
     }
 
+    var handleSendAction by remember { mutableStateOf<((String) -> Unit)?>(null) }
+
+    val voiceManager = remember {
+        VoiceAssistantManager(context) { userSpeech ->
+            coroutineScope.launch { handleSendAction?.invoke(userSpeech) }
+        }
+    }
+
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            voiceManager.release()
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showVoiceOverlay = true
+            voiceManager.startVoiceMode()
+        } else {
+            Toast.makeText(context, "Microphone permission is required for voice assistant", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun toggleVoiceMode() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            if (voiceManager.isVoiceModeActive) {
+                if (showVoiceOverlay) {
+                    showVoiceOverlay = false
+                    Toast.makeText(context, "Voice Assistant active in background", Toast.LENGTH_SHORT).show()
+                } else {
+                    showVoiceOverlay = true
+                }
+            } else {
+                showVoiceOverlay = true
+                voiceManager.startVoiceMode()
+            }
+        } else {
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
     fun handleSend(promptText: String) {
         if (promptText.isBlank() && attachedContent.isNullOrBlank() && attachedPdfImages.isNullOrEmpty()) return
         if (isLoading) return
@@ -517,42 +608,91 @@ fun AiChatScreen(
         )
         isLoading = true
 
-        coroutineScope.launch {
-            val key = preferences.getEffectiveApiKey()
-            val model = preferences.selectedModel.value
-            val history = messages.dropLast(1).map { ConversationTurn(it.sender, it.text) }
+        val botMsgId = java.util.UUID.randomUUID().toString()
+        messages.add(ChatMessage(id = botMsgId, sender = "bot", text = ""))
 
-            // Attachments (text files or PDF page images) go through the plain
-            // multimodal path; everything else goes through the tool-enabled path so
-            // AU Bot can act on real app data when the user asks it to.
+        coroutineScope.launch {
+            val (key, baseUrl, chosenModel) = when (activeProvider) {
+                "Gemini" -> Triple(preferences.getEffectiveApiKey(), "", preferences.selectedModel.value)
+                else -> {
+                    val entry = providerEntries[activeProvider]
+                    Triple(entry?.apiKey.orEmpty(), entry?.baseUrl.orEmpty(), entry?.model.orEmpty())
+                }
+            }
+
+            val history = messages.filter { it.id != botMsgId }.dropLast(1).map { ConversationTurn(it.sender, it.text) }
+
+            currentActionStatus = "⚡ AU Agent soch rahi hai..."
+
+            suspend fun streamLiveText(fullText: String) {
+                val words = fullText.split(" ")
+                val sb = StringBuilder()
+                for (i in words.indices) {
+                    sb.append(words[i]).append(" ")
+                    if (i % 2 == 0 || i == words.lastIndex) {
+                        val idx = messages.indexOfFirst { it.id == botMsgId }
+                        if (idx != -1) {
+                            messages[idx] = messages[idx].copy(text = sb.toString())
+                        }
+                        delay(22)
+                    }
+                }
+                val firstUser = messages.firstOrNull { it.sender == "user" }?.text?.take(30) ?: "Chat Session"
+                sessionManager.saveSession(ChatSession(currentSessionId, firstUser, System.currentTimeMillis(), messages.toList()))
+                savedSessions.clear()
+                savedSessions.addAll(sessionManager.loadAllSessions())
+
+                if (voiceManager.isVoiceModeActive) {
+                    voiceManager.speak(fullText)
+                }
+            }
+
             if (!docText.isNullOrBlank() || !docImages.isNullOrEmpty()) {
+                currentActionStatus = "📄 Document read kar rahi hoon..."
                 val response = aiService.generateResponse(
                     prompt = userMsg,
                     apiKey = key,
-                    model = model,
+                    model = chosenModel,
                     noteContext = currentNoteContent,
                     attachmentContent = docText,
                     history = history,
                     attachmentImagesBase64 = docImages ?: emptyList()
                 )
                 isLoading = false
-                messages.add(ChatMessage(sender = "bot", text = response))
+                currentActionStatus = null
+                streamLiveText(response)
             } else {
                 when (val result = aiService.generateWithTools(
                     prompt = userMsg,
                     apiKey = key,
-                    model = model,
+                    model = chosenModel,
                     noteContext = currentNoteContent,
                     history = history,
-                    allowEditCurrentNote = onModifyCurrentNote != null
+                    allowEditCurrentNote = onModifyCurrentNote != null,
+                    provider = activeProvider,
+                    customBaseUrl = baseUrl,
+                    onStatus = { s -> currentActionStatus = s }
                 )) {
                     is AiActionResult.Text -> {
                         isLoading = false
-                        messages.add(ChatMessage(sender = "bot", text = result.text))
+                        currentActionStatus = null
+                        streamLiveText(result.text)
                     }
                     is AiActionResult.FunctionCall -> {
+                        currentActionStatus = "🛠️ Tool execute ho raha hai: ${result.name}..."
+                        val idx = messages.indexOfFirst { it.id == botMsgId }
+                        if (idx != -1) messages.removeAt(idx)
                         handleFunctionCall(result.name, result.args)
                         isLoading = false
+                        currentActionStatus = null
+                        val firstUser = messages.firstOrNull { it.sender == "user" }?.text?.take(30) ?: "Chat Session"
+                        sessionManager.saveSession(ChatSession(currentSessionId, firstUser, System.currentTimeMillis(), messages.toList()))
+                        savedSessions.clear()
+                        savedSessions.addAll(sessionManager.loadAllSessions())
+                        val lastBotMsg = messages.lastOrNull { it.sender == "bot" }?.text.orEmpty()
+                        if (voiceManager.isVoiceModeActive && lastBotMsg.isNotBlank()) {
+                            voiceManager.speak(lastBotMsg)
+                        }
                     }
                 }
             }
@@ -563,22 +703,32 @@ fun AiChatScreen(
         sessionAttachmentText = null
         sessionAttachmentImages = null
         if (messages.size > 1) {
-            val firstUserMsg = messages.firstOrNull { it.sender == "user" }?.text?.take(25) ?: "Session"
-            archivedChats.add(
-                ArchivedChat(
-                    title = "Chat: $firstUserMsg",
+            val firstUserMsg = messages.firstOrNull { it.sender == "user" }?.text?.take(30) ?: "Session"
+            sessionManager.saveSession(
+                ChatSession(
+                    id = currentSessionId,
+                    title = firstUserMsg,
+                    timestamp = System.currentTimeMillis(),
                     messages = messages.toList()
                 )
             )
+            savedSessions.clear()
+            savedSessions.addAll(sessionManager.loadAllSessions())
         }
+        currentSessionId = java.util.UUID.randomUUID().toString()
         messages.clear()
         messages.add(
             ChatMessage(
                 sender = "bot",
-                text = "New chat session started. Ready for your notes, questions, or documents!"
+                text = "Namaste sir! Main aapki AU Agent hoon. Boliye, aaj kya notes banane hain ya kaunsa topic samjhana hai?"
             )
         )
-        Toast.makeText(context, "New chat started (previous archived)", Toast.LENGTH_SHORT).show()
+        isAgentSidebarOpen = false
+        Toast.makeText(context, "New chat started (previous saved)", Toast.LENGTH_SHORT).show()
+    }
+
+    LaunchedEffect(Unit) {
+        handleSendAction = { t -> handleSend(t) }
     }
 
     AnimatedVisibility(
@@ -600,7 +750,7 @@ fun AiChatScreen(
                     .fillMaxWidth()
                     .then(
                         if (isCompactMode) Modifier
-                            .height(420.dp)
+                            .height(440.dp)
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                             .clip(RoundedCornerShape(24.dp))
                             .border(1.5.dp, CrimsonPrimary, RoundedCornerShape(24.dp))
@@ -615,11 +765,11 @@ fun AiChatScreen(
                     )
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    // Top Header
+                    // Top Header Bar
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -627,6 +777,17 @@ fun AiChatScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
+                            // Hamburger menu to open Sidebar
+                            NeuIconButton(
+                                icon = Icons.Default.Menu,
+                                contentDescription = "Open Sidebar",
+                                isDarkMode = isDarkMode,
+                                size = 36.dp,
+                                iconSize = 20.dp,
+                                tint = if (isDarkMode) Color.White else Color.Black,
+                                onClick = { isAgentSidebarOpen = true }
+                            )
+
                             Box(
                                 modifier = Modifier
                                     .size(32.dp)
@@ -644,23 +805,46 @@ fun AiChatScreen(
 
                             Column {
                                 Text(
-                                    text = "AU AI ASSISTANT",
+                                    text = "AU AGENT",
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = if (isDarkMode) Color.White else Color(0xFF111111)
                                 )
                                 Text(
-                                    text = if (isCompactMode) "Compact Overlay" else "Full Workspace View",
+                                    text = "● Online • $activeProvider",
                                     fontSize = 10.sp,
-                                    color = CrimsonPrimary
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF4CAF50)
                                 )
                             }
                         }
 
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
+                            // Voice Assistant Button (Gemini Live Style)
+                            NeuIconButton(
+                                icon = if (voiceManager.isVoiceModeActive) Icons.Default.VolumeUp else Icons.Default.RecordVoiceOver,
+                                contentDescription = "Voice Assistant",
+                                isDarkMode = isDarkMode,
+                                size = 34.dp,
+                                iconSize = 18.dp,
+                                tint = if (voiceManager.isVoiceModeActive) Color(0xFF4CAF50) else CrimsonPrimary,
+                                onClick = { toggleVoiceMode() }
+                            )
+
+                            // + New Chat Button
+                            NeuIconButton(
+                                icon = Icons.Default.Add,
+                                contentDescription = "New Chat",
+                                isDarkMode = isDarkMode,
+                                size = 34.dp,
+                                iconSize = 18.dp,
+                                tint = CrimsonPrimary,
+                                onClick = { startNewChat() }
+                            )
+
                             // Expand/Collapse Compact Toggle
                             NeuIconButton(
                                 icon = if (isCompactMode) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
@@ -674,7 +858,7 @@ fun AiChatScreen(
 
                             NeuIconButton(
                                 icon = Icons.Default.Close,
-                                contentDescription = "Close AU Bot",
+                                contentDescription = "Close AU Agent",
                                 isDarkMode = isDarkMode,
                                 size = 34.dp,
                                 iconSize = 18.dp,
@@ -684,130 +868,69 @@ fun AiChatScreen(
                         }
                     }
 
-                    // Tabs: Chat, History, + NEW CHAT
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        GlassCard(
-                            shape = RoundedCornerShape(16.dp),
-                            isDarkMode = isDarkMode,
-                            isInset = activeTab == "Chat",
-                            elevation = if (activeTab == "Chat") 0.dp else 2.dp,
-                            onClick = { activeTab = "Chat" }
+                    // Floating Mini Background Voice Pill (if voice assistant is running in background)
+                    if (voiceManager.isVoiceModeActive && !showVoiceOverlay) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 2.dp),
+                            contentAlignment = Alignment.CenterEnd
                         ) {
-                            Box(
+                            Row(
                                 modifier = Modifier
-                                    .then(
-                                        if (activeTab == "Chat") Modifier.background(if (isDarkMode) Color(0x332563EB) else Color(0x222563EB))
-                                        else Modifier
-                                    )
-                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(Brush.linearGradient(listOf(CrimsonPrimary, Color(0xFF7928CA))))
+                                    .clickable { showVoiceOverlay = true }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    "● Chat",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (activeTab == "Chat") CrimsonPrimary else if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray
-                                )
+                                Icon(Icons.Default.VolumeUp, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Voice Mode Active (Background)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
                             }
                         }
+                    }
 
-                        GlassCard(
-                            shape = RoundedCornerShape(16.dp),
-                            isDarkMode = isDarkMode,
-                            isInset = activeTab == "History",
-                            elevation = if (activeTab == "History") 0.dp else 2.dp,
-                            onClick = { activeTab = "History" }
+                    // Live Action & Tool Status Banner
+                    AnimatedVisibility(visible = currentActionStatus != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 3.dp)
                         ) {
-                            Box(
+                            Row(
                                 modifier = Modifier
-                                    .then(
-                                        if (activeTab == "History") Modifier.background(if (isDarkMode) Color(0x332563EB) else Color(0x222563EB))
-                                        else Modifier
-                                    )
-                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (isDarkMode) Color(0x33FF2D55) else Color(0x18FF2D55))
+                                    .border(1.dp, CrimsonPrimary.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(13.dp),
+                                    strokeWidth = 2.dp,
+                                    color = CrimsonPrimary
+                                )
+                                Spacer(Modifier.width(8.dp))
                                 Text(
-                                    "History (${archivedChats.size})",
+                                    text = currentActionStatus ?: "",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = if (activeTab == "History") CrimsonPrimary else if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray
-                                )
-                            }
-                        }
-
-                        GlassCard(
-                            shape = RoundedCornerShape(16.dp),
-                            isDarkMode = isDarkMode,
-                            elevation = 3.dp,
-                            onClick = { startNewChat() }
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .background(Brush.linearGradient(listOf(CrimsonPrimary, Color(0xFFFF8E53))))
-                                    .padding(horizontal = 14.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    "+ New Chat",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
+                                    color = CrimsonPrimary
                                 )
                             }
                         }
                     }
 
-                    if (activeTab == "History") {
-                        // History list
-                        LazyColumn(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (archivedChats.isEmpty()) {
-                                item {
-                                    Text(
-                                        "No archived chats yet. Tap '+ New Chat' to save the current session.",
-                                        fontSize = 12.sp,
-                                        color = if (isDarkMode) Color.White.copy(0.6f) else Color.Gray
-                                    )
-                                }
-                            } else {
-                                items(archivedChats) { chat ->
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(if (isDarkMode) Color(0x22FFFFFF) else Color(0x14000000))
-                                            .clickable {
-                                                messages.clear()
-                                                messages.addAll(chat.messages)
-                                                activeTab = "Chat"
-                                                Toast.makeText(context, "Loaded ${chat.title}", Toast.LENGTH_SHORT).show()
-                                            }
-                                            .padding(12.dp)
-                                    ) {
-                                        Column {
-                                            Text(chat.title, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = CrimsonPrimary)
-                                            Text("${Date(chat.timestamp)} • ${chat.messages.size} messages", fontSize = 10.sp, color = Color.Gray)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // Chat Messages List
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 14.dp, vertical = 6.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
+                    // Full-screen Chat Messages List
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 14.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
                             items(messages) { msg ->
                                 if (msg.sender == "bot") {
                                     Box(
@@ -1192,7 +1315,6 @@ fun AiChatScreen(
                 }
             }
         }
-    }
 
     // Item 22: full-screen editing view for long messages, opened via the
     // input box's maximize icon.
@@ -1246,7 +1368,6 @@ fun AiChatScreen(
     }
 
     // Item 21/27/40: PIN gate for any locked note reached through the chatbot
-    // (opening from search results, or a confirmed delete/move action).
     pendingChatPinAction?.let { action ->
         val storedPin by preferences.lockPin.collectAsState()
         val hasCustomPin by preferences.hasCustomPin.collectAsState()
@@ -1270,6 +1391,530 @@ fun AiChatScreen(
             },
             onPinReset = { newPin -> preferences.setLockPin(newPin) }
         )
+    }
+
+    // AU Agent Sidebar Drawer (Saved Chats, API Room Direct Access, Why Providers Fail Explainer, Advanced Model Mode)
+    AnimatedVisibility(
+        visible = isOpen && isAgentSidebarOpen,
+        enter = slideInHorizontally(initialOffsetX = { -it }) + fadeIn(),
+        exit = slideOutHorizontally(targetOffsetX = { -it }) + fadeOut()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.55f))
+                .clickable { isAgentSidebarOpen = false }
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(320.dp)
+                    .clickable(enabled = false) {}
+                    .background(
+                        if (isDarkMode) Color(0xFF161822) else Color(0xFFF9FAFD)
+                    )
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    // Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(Brush.linearGradient(listOf(CrimsonPrimary, Color(0xFF7928CA)))),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.SmartToy, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            }
+                            Column {
+                                Text("AU AGENT", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                                Text("Workspace Assistant", fontSize = 11.sp, color = Color.Gray)
+                            }
+                        }
+                        IconButton(onClick = { isAgentSidebarOpen = false }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close Sidebar", tint = CrimsonPrimary)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // 1. + New Chat Button
+                    Button(
+                        onClick = { startNewChat() },
+                        colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Start New Chat", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // 2. 🔑 Enter API Room & Keys Button
+                    OutlinedButton(
+                        onClick = {
+                            isAgentSidebarOpen = false
+                            onOpenApiRoom?.invoke()
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Key, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("🔑 API Room & Keys", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = CrimsonPrimary)
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // 3. Active Provider Status Card
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        isDarkMode = isDarkMode,
+                        elevation = 2.dp
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Active Provider", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(Color(0xFF4CAF50)))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(activeProvider, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            val providersList = listOf("Gemini", "DeepSeek", "OpenAI", "Anthropic", "Custom")
+                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                providersList.forEach { p ->
+                                    val isSelected = activeProvider == p
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isSelected) CrimsonPrimary else if (isDarkMode) Color(0xFF262938) else Color(0xFFE2E8F0))
+                                            .clickable {
+                                                preferences.setActiveProvider(p)
+                                                Toast.makeText(context, "Switched active provider to $p", Toast.LENGTH_SHORT).show()
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(p, fontSize = 11.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, color = if (isSelected) Color.White else if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // 4. "⚠️ Why other providers fail?" Explainer Card
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        isDarkMode = isDarkMode,
+                        elevation = 2.dp,
+                        onClick = { showWhyProvidersFail = !showWhyProvidersFail }
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Icon(Icons.Default.HelpOutline, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(16.dp))
+                                    Text("Why other providers fail?", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary)
+                                }
+                                Icon(
+                                    if (showWhyProvidersFail) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    tint = CrimsonPrimary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            if (showWhyProvidersFail) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                HorizontalDivider(color = CrimsonPrimary.copy(alpha = 0.2f))
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    "1. Zero Quota / Balance (Sabse Bada Reason):\n" +
+                                    "OpenAI aur DeepSeek me paid credits hona zaroori hai. Trial khatam hone par balance 0 ho to '429 Insufficient Quota' ya '401' dekar fail ho jata hai.\n\n" +
+                                    "2. Base URL Format:\n" +
+                                    "• DeepSeek: https://api.deepseek.com\n" +
+                                    "• OpenAI: https://api.openai.com/v1\n" +
+                                    "• Local PC Ollama: Apne PC ka Wi-Fi IP daalein (e.g. http://192.168.1.X:11434/v1). Phone par localhost kaam nahi karta.\n\n" +
+                                    "3. Model Name:\n" +
+                                    "DeepSeek ke liye 'deepseek-chat', OpenAI ke liye 'gpt-4o-mini' sahi rahta hai.\n\n" +
+                                    "💡 Gemini hamesha 100% free Google AI Studio key ke sath chalta hai!",
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp,
+                                    color = if (isDarkMode) Color.White.copy(0.85f) else Color(0xFF333333)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // 5. ⚙️ Advanced Model Options
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        isDarkMode = isDarkMode,
+                        elevation = 2.dp,
+                        onClick = { showAdvancedModelOptions = !showAdvancedModelOptions }
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Icon(Icons.Default.Tune, contentDescription = null, tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(16.dp))
+                                    Text("Advanced Model Mode", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                                }
+                                Icon(
+                                    if (showAdvancedModelOptions) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    tint = if (isDarkMode) Color.White else Color.Black,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            if (showAdvancedModelOptions) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                HorizontalDivider(color = Color.Gray.copy(alpha = 0.2f))
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Select Model for $activeProvider:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                val availableModels = when (activeProvider) {
+                                    "Gemini" -> listOf("gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro")
+                                    "DeepSeek" -> listOf("deepseek-chat", "deepseek-coder")
+                                    "OpenAI" -> listOf("gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo")
+                                    "Anthropic" -> listOf("claude-3-5-sonnet-20241022", "claude-3-haiku-20240307")
+                                    else -> listOf("default-model")
+                                }
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    availableModels.forEach { m ->
+                                        val isCurrent = if (activeProvider == "Gemini") selectedModelPref == m else true
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (isCurrent && activeProvider == "Gemini") CrimsonPrimary.copy(alpha = 0.15f) else Color.Transparent)
+                                                .clickable {
+                                                    if (activeProvider == "Gemini") preferences.setSelectedModel(m)
+                                                    Toast.makeText(context, "Model set to $m", Toast.LENGTH_SHORT).show()
+                                                }
+                                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(m, fontSize = 11.sp, fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal, color = if (isDarkMode) Color.White else Color.Black)
+                                            if (isCurrent && activeProvider == "Gemini") {
+                                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(14.dp))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // 6. 💬 Saved Chats History
+                    Text("SAVED CHATS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White.copy(0.5f) else Color.Gray)
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    if (savedSessions.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isDarkMode) Color(0xFF1E202B) else Color(0xFFECEFF5))
+                                .padding(12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("No saved chats yet. Current chat will be auto-saved!", fontSize = 11.sp, color = Color.Gray)
+                        }
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            savedSessions.forEach { session ->
+                                val isCurrent = session.id == currentSessionId
+                                GlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    isDarkMode = isDarkMode,
+                                    elevation = if (isCurrent) 3.dp else 1.dp,
+                                    onClick = {
+                                        currentSessionId = session.id
+                                        messages.clear()
+                                        messages.addAll(session.messages)
+                                        isAgentSidebarOpen = false
+                                        Toast.makeText(context, "Loaded \"${session.title}\"", Toast.LENGTH_SHORT).show()
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = session.title,
+                                                fontSize = 12.sp,
+                                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                                color = if (isCurrent) CrimsonPrimary else if (isDarkMode) Color.White else Color.Black,
+                                                maxLines = 1
+                                            )
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = "${session.messages.size} msgs • ${java.text.SimpleDateFormat("MMM d, h:mm a", java.util.Locale.getDefault()).format(Date(session.timestamp))}",
+                                                fontSize = 10.sp,
+                                                color = Color.Gray
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                sessionManager.deleteSession(session.id)
+                                                savedSessions.removeAll { it.id == session.id }
+                                            },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete Chat", tint = Color.Gray, modifier = Modifier.size(14.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
+            }
+        }
+    }
+
+    // Voice Mode Overlay (Gemini Live Style)
+    if (showVoiceOverlay) {
+        val voiceState by voiceManager.voiceState.collectAsState()
+        val userTranscript by voiceManager.userTranscript.collectAsState()
+        val lastSpoken by voiceManager.lastSpokenText.collectAsState()
+        val micLevel by voiceManager.micLevel.collectAsState()
+
+        val infiniteTransition = rememberInfiniteTransition()
+        val pulseScale by infiniteTransition.animateFloat(
+            initialValue = 0.9f,
+            targetValue = 1.15f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200),
+                repeatMode = RepeatMode.Reverse
+            )
+        )
+
+        Dialog(
+            onDismissRequest = { showVoiceOverlay = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = Color.Black.copy(alpha = 0.92f)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // Top Bar
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF4CAF50))
+                            )
+                            Text("AU Agent Live Voice", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    showVoiceOverlay = false
+                                    Toast.makeText(context, "Voice Assistant active in background", Toast.LENGTH_SHORT).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF)),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text("Minimize (Background)", fontSize = 11.sp, color = Color.White)
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    showVoiceOverlay = false
+                                    voiceManager.stopVoiceMode()
+                                }
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "End Voice", tint = Color.White)
+                            }
+                        }
+                    }
+
+                    // Center Animated Orb (Gemini Live Acoustic Wave)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(20.dp)
+                    ) {
+                        val stateColor = when (voiceState) {
+                            VoiceState.LISTENING -> CrimsonPrimary
+                            VoiceState.THINKING -> Color(0xFFF59E0B)
+                            VoiceState.SPEAKING -> Color(0xFF3B82F6)
+                            VoiceState.IDLE -> Color(0xFF8B5CF6)
+                            else -> Color(0xFF8B5CF6)
+                        }
+
+                        Box(
+                            modifier = Modifier.size(170.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            val dynamicScale = if (voiceState == VoiceState.LISTENING) (pulseScale + (micLevel / 10f).coerceIn(0f, 0.4f)) else pulseScale
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                drawCircle(
+                                    color = stateColor.copy(alpha = 0.22f),
+                                    radius = (size.minDimension / 2f) * dynamicScale
+                                )
+                                drawCircle(
+                                    color = stateColor.copy(alpha = 0.45f),
+                                    radius = (size.minDimension / 2.5f) * dynamicScale
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .size(90.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        Brush.radialGradient(
+                                            listOf(stateColor, stateColor.copy(alpha = 0.7f), Color.Black)
+                                        )
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = when (voiceState) {
+                                        VoiceState.LISTENING -> Icons.Default.Mic
+                                        VoiceState.THINKING -> Icons.Default.SmartToy
+                                        VoiceState.SPEAKING -> Icons.Default.VolumeUp
+                                        VoiceState.IDLE -> Icons.Default.RecordVoiceOver
+                                        else -> Icons.Default.RecordVoiceOver
+                                    },
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = when (voiceState) {
+                                VoiceState.LISTENING -> "Sun rahi hoon sir... boliye"
+                                VoiceState.THINKING -> "Soch rahi hoon aur note craft kar rahi hoon..."
+                                VoiceState.SPEAKING -> "AU Agent bol rahi hai..."
+                                VoiceState.IDLE -> "Taiyaar hoon sir"
+                                else -> "Taiyaar hoon sir"
+                            },
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
+                        )
+
+                        if (userTranscript.isNotBlank()) {
+                            Text(
+                                text = "Aapne kaha: \"$userTranscript\"",
+                                fontSize = 12.sp,
+                                color = Color.White.copy(alpha = 0.75f),
+                                maxLines = 2
+                            )
+                        }
+                        if (lastSpoken.isNotBlank()) {
+                            Text(
+                                text = "Assistant: \"${lastSpoken.take(90)}...\"",
+                                fontSize = 12.sp,
+                                color = stateColor,
+                                maxLines = 2
+                            )
+                        }
+                    }
+
+                    // Bottom Controls
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Button(
+                            onClick = {
+                                if (voiceState == VoiceState.SPEAKING) {
+                                    voiceManager.stopSpeaking()
+                                } else {
+                                    voiceManager.startListening()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF)),
+                            shape = CircleShape,
+                            modifier = Modifier.size(56.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Icon(
+                                if (voiceState == VoiceState.SPEAKING) Icons.Default.MicOff else Icons.Default.Mic,
+                                contentDescription = "Toggle Mute",
+                                tint = Color.White
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                showVoiceOverlay = false
+                                voiceManager.stopVoiceMode()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier.height(48.dp)
+                        ) {
+                            Text("End Voice Mode", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

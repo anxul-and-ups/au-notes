@@ -42,6 +42,17 @@ class AiService {
     private fun baseSystemPrompt(): String = """
         You are AU Agent, an autonomous intelligent AI Assistant and Note Craftsman inside AU Notes (built by student developer Anshul).
         You behave like a modern autonomous agent:
+        - Voice & Assistant Persona:
+          You are a calm, respectful, dedicated, and hardworking female assistant ('ek shant aur kaam karne wali female assistant jo user ki baat sunti hai aur turant kaam pura karti hai').
+          Speak naturally and politely in Hindi, Hinglish, or English matching the user's style.
+          Address the user respectfully as 'Ok sir'.
+          Do NOT sound overly enthusiastic, childish, or hyper. Maintain a composed, reliable, focused, and professional tone.
+          Crucial Conversational Flow Examples:
+          - When the user asks to edit or change a note (e.g. "is note ko edit karo"):
+            Respond politely: "Ok sir, isme kya changes karu?"
+          - When changes or tools are executed:
+            Confirm politely: "Ok sir, ye changes kar diye hain. Ab aapko kuch aur karwana hai?"
+          - When user gives a task, acknowledge politely and get straight to work.
         - When the user asks for an explanation (e.g., "Python ke upar ek explanation do", "Explain Machine Learning", "Prepare notes on Indian History", etc.), a tutorial, or a guide:
           DO NOT reply with plain, flat, boring text! You MUST act as an autonomous Agent utilizing AU Note Writer's full set of formatting tools to create an aesthetically structured, rich note:
           1. Headings & Font Sizes: Start with a clear '# Title' (large heading), followed by '## Section Heading' (medium) and '### Subheading' for organized topics.
@@ -185,7 +196,10 @@ class AiService {
         model: String = "gemini-2.0-flash",
         noteContext: String? = null,
         history: List<ConversationTurn> = emptyList(),
-        allowEditCurrentNote: Boolean = false
+        allowEditCurrentNote: Boolean = false,
+        provider: String = "Gemini",
+        customBaseUrl: String = "",
+        onStatus: ((String) -> Unit)? = null
     ): AiActionResult = withContext(Dispatchers.IO) {
         val system = buildString {
             append(baseSystemPrompt())
@@ -201,6 +215,37 @@ class AiService {
             }
         }
 
+        if (provider != "Gemini") {
+            onStatus?.invoke("Connecting to $provider ($model)...")
+            return@withContext try {
+                val responseText = if (provider == "Anthropic") {
+                    callAnthropic(apiKey, model.ifBlank { "claude-3-5-sonnet-20241022" }, system, history, prompt)
+                } else {
+                    val base = when (provider) {
+                        "DeepSeek" -> "https://api.deepseek.com"
+                        "OpenAI" -> "https://api.openai.com/v1"
+                        "Kimi" -> "https://api.moonshot.cn/v1"
+                        else -> {
+                            var b = customBaseUrl.trim()
+                            if (b.isNotBlank() && !b.startsWith("http://") && !b.startsWith("https://")) b = "https://$b"
+                            b.ifBlank { "https://api.openai.com/v1" }
+                        }
+                    }
+                    val chosenModel = when {
+                        model.isNotBlank() -> model
+                        provider == "DeepSeek" -> "deepseek-chat"
+                        provider == "OpenAI" -> "gpt-4o-mini"
+                        else -> "gpt-3.5-turbo"
+                    }
+                    callOpenAiCompatible(base, apiKey, chosenModel, system, history, prompt)
+                }
+                AiActionResult.Text(responseText)
+            } catch (e: Exception) {
+                AiActionResult.Text("⚠️ $provider error: ${e.message ?: "Failed to generate response. Check API key and account balance in API Room."}")
+            }
+        }
+
+        onStatus?.invoke("AU Agent thinking with Gemini tools...")
         val functionDeclarations = JSONArray()
             .put(functionDecl("search_notes", "Search the user's notes by a keyword or topic and return matching titles.",
                 listOf(FnParam("query", "STRING", "Keyword or topic to search for", true))))
@@ -242,6 +287,7 @@ class AiService {
             for (i in 0 until parts.length()) {
                 val fn = parts.getJSONObject(i).optJSONObject("functionCall")
                 if (fn != null && fn.optString("name").isNotBlank()) {
+                    onStatus?.invoke("Executing tool: ${fn.optString("name")}...")
                     return@withContext AiActionResult.FunctionCall(fn.getString("name"), fn.optJSONObject("args") ?: JSONObject())
                 }
             }
@@ -380,6 +426,127 @@ class AiService {
             }
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    private fun callOpenAiCompatible(
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        systemPrompt: String,
+        history: List<ConversationTurn>,
+        userPrompt: String
+    ): String {
+        val cleanBase = baseUrl.trimEnd('/')
+        val endpoint = if (cleanBase.endsWith("/chat/completions")) cleanBase else "$cleanBase/chat/completions"
+        val messages = JSONArray()
+        messages.put(JSONObject().apply {
+            put("role", "system")
+            put("content", systemPrompt)
+        })
+        for (turn in history.takeLast(16)) {
+            if (turn.content.isNotBlank()) {
+                val r = if (turn.role == "bot" || turn.role == "model") "assistant" else "user"
+                messages.put(JSONObject().apply {
+                    put("role", r)
+                    put("content", turn.content)
+                })
+            }
+        }
+        messages.put(JSONObject().apply {
+            put("role", "user")
+            put("content", userPrompt)
+        })
+
+        val reqBody = JSONObject().apply {
+            put("model", model)
+            put("messages", messages)
+            put("temperature", 0.7)
+        }
+
+        val request = Request.Builder()
+            .url(endpoint)
+            .header("Authorization", "Bearer ${apiKey.trim()}")
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+            .post(reqBody.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        client.newCall(request).execute().use { resp ->
+            val body = resp.body?.string() ?: ""
+            if (!resp.isSuccessful) {
+                val errMsg = try {
+                    JSONObject(body).optJSONObject("error")?.optString("message") ?: body.take(200)
+                } catch (_: Exception) { body.take(200) }
+                when (resp.code) {
+                    401 -> throw ApiFailure("Invalid API Key for provider. Check key in API Room.", false)
+                    429 -> throw ApiFailure("Quota/Balance exceeded (HTTP 429). Check provider account balance. $errMsg", true)
+                    else -> throw ApiFailure("Provider returned HTTP ${resp.code}: $errMsg", false)
+                }
+            }
+            val json = JSONObject(body)
+            val choices = json.optJSONArray("choices") ?: JSONArray()
+            if (choices.length() > 0) {
+                val msg = choices.getJSONObject(0).optJSONObject("message")
+                return msg?.optString("content") ?: ""
+            }
+            return ""
+        }
+    }
+
+    private fun callAnthropic(
+        apiKey: String,
+        model: String,
+        systemPrompt: String,
+        history: List<ConversationTurn>,
+        userPrompt: String
+    ): String {
+        val messages = JSONArray()
+        for (turn in history.takeLast(16)) {
+            if (turn.content.isNotBlank()) {
+                val r = if (turn.role == "bot" || turn.role == "model") "assistant" else "user"
+                messages.put(JSONObject().apply {
+                    put("role", r)
+                    put("content", turn.content)
+                })
+            }
+        }
+        messages.put(JSONObject().apply {
+            put("role", "user")
+            put("content", userPrompt)
+        })
+
+        val reqBody = JSONObject().apply {
+            put("model", model)
+            put("max_tokens", 4096)
+            put("system", systemPrompt)
+            put("messages", messages)
+        }
+
+        val request = Request.Builder()
+            .url("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", apiKey.trim())
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+            .post(reqBody.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        client.newCall(request).execute().use { resp ->
+            val body = resp.body?.string() ?: ""
+            if (!resp.isSuccessful) {
+                throw ApiFailure("Anthropic error (HTTP ${resp.code}): ${body.take(200)}", false)
+            }
+            val json = JSONObject(body)
+            val contentArr = json.optJSONArray("content") ?: JSONArray()
+            val sb = StringBuilder()
+            for (i in 0 until contentArr.length()) {
+                val c = contentArr.getJSONObject(i)
+                if (c.optString("type") == "text") {
+                    sb.append(c.optString("text"))
+                }
+            }
+            return sb.toString().trim()
         }
     }
 }

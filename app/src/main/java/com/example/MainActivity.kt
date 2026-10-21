@@ -157,6 +157,7 @@ fun AuNotesApp(
     var isSidebarOpen by remember { mutableStateOf(false) }
     var pendingDeleteNoteId by remember { mutableStateOf<Long?>(null) }
     var isAiChatOpen by remember { mutableStateOf(false) }
+    var returnToAiChatFromApiRoom by remember { mutableStateOf(false) }
 
     // Security Vault unlocked state, hoisted here (rather than local to
     // SecurityAreaScreen) so "When app is closed" / "When screen is locked off"
@@ -231,7 +232,15 @@ fun AuNotesApp(
             isSidebarOpen -> isSidebarOpen = false
             screenNow is Screen.RecycleBin -> currentScreen = screenBeforeRecycleBin
             screenNow is Screen.PdfViewer -> currentScreen = screenNow.returnTo
-            screenNow is Screen.ApiRoom -> currentScreen = Screen.Settings
+            screenNow is Screen.ApiRoom -> {
+                if (returnToAiChatFromApiRoom) {
+                    returnToAiChatFromApiRoom = false
+                    currentScreen = Screen.MainWorkspace()
+                    isAiChatOpen = true
+                } else {
+                    currentScreen = Screen.Settings
+                }
+            }
             screenNow is Screen.ThemeSettings -> currentScreen = Screen.Settings
             screenNow is Screen.SecuritySettings -> currentScreen = Screen.SecurityArea
             screenNow is Screen.MainWorkspace && screenNow.pickForHide -> currentScreen = Screen.SecurityArea
@@ -441,7 +450,15 @@ fun AuNotesApp(
                 ApiRoomScreen(
                     preferences = preferences,
                     isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.Settings }
+                    onBack = {
+                        if (returnToAiChatFromApiRoom) {
+                            returnToAiChatFromApiRoom = false
+                            currentScreen = Screen.MainWorkspace()
+                            isAiChatOpen = true
+                        } else {
+                            currentScreen = Screen.Settings
+                        }
+                    }
                 )
             }
 
@@ -664,6 +681,11 @@ fun AuNotesApp(
             onOpenFolderFromAi = { folder ->
                 isAiChatOpen = false
                 currentScreen = Screen.MainWorkspace(folder)
+            },
+            onOpenApiRoom = {
+                returnToAiChatFromApiRoom = true
+                isAiChatOpen = false
+                currentScreen = Screen.ApiRoom
             }
         )
     }

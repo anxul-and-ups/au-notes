@@ -41,7 +41,10 @@ object ApiConnectivityChecker {
         withContext(Dispatchers.IO) {
             val providerName = providerNameRaw
             val apiKey = apiKeyRaw.trim()
-            val baseUrl = baseUrlRaw.trim()
+            var baseUrl = baseUrlRaw.trim()
+            if (baseUrl.isNotBlank() && !baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+                baseUrl = "https://$baseUrl"
+            }
             if (apiKey.isBlank() && providerName != "Custom") {
                 return@withContext ConnectivityResult(false, "No API key entered.")
             }
@@ -49,15 +52,20 @@ object ApiConnectivityChecker {
                 when (providerName) {
                     "Gemini" -> checkGemini(apiKey)
                     "OpenAI" -> checkOpenAiCompatible("https://api.openai.com/v1/models", apiKey)
-                    "DeepSeek" -> checkOpenAiCompatible("https://api.deepseek.com/v1/models", apiKey)
+                    "DeepSeek" -> {
+                        val res = checkOpenAiCompatible("https://api.deepseek.com/models", apiKey)
+                        if (!res.isActive) checkOpenAiCompatible("https://api.deepseek.com/v1/models", apiKey) else res
+                    }
                     "Kimi" -> checkOpenAiCompatible("https://api.moonshot.cn/v1/models", apiKey)
                     "Anthropic" -> checkAnthropic(apiKey)
                     "Hugging Face" -> checkHuggingFace(apiKey)
                     "OpenCode", "Custom" -> {
                         if (baseUrl.isBlank()) {
-                            ConnectivityResult(false, "Enter a base URL / endpoint to test this provider.")
+                            ConnectivityResult(false, "Enter a base URL / endpoint (e.g. https://api.openai.com/v1) to test this provider.")
                         } else {
-                            checkOpenAiCompatible(baseUrl.trimEnd('/') + "/models", apiKey)
+                            val cleanBase = baseUrl.trimEnd('/')
+                            val url = if (cleanBase.endsWith("/models")) cleanBase else "$cleanBase/models"
+                            checkOpenAiCompatible(url, apiKey)
                         }
                     }
                     else -> ConnectivityResult(false, "Unknown provider.")
@@ -96,12 +104,21 @@ object ApiConnectivityChecker {
         val request = Request.Builder()
             .url(modelsUrl)
             .header("Authorization", "Bearer $apiKey")
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
             .get()
             .build()
         client.newCall(request).execute().use { resp ->
             val body = resp.body?.string() ?: ""
             if (!resp.isSuccessful) {
-                return ConnectivityResult(false, "Request rejected (HTTP ${resp.code}). ${errorText(body).ifBlank { "Check the API key / endpoint." }}", rawInfo = body.take(300))
+                val err = errorText(body)
+                val msg = when (resp.code) {
+                    401 -> "Invalid API Key or unauthorized (HTTP 401). $err"
+                    429 -> "Rate limit / Quota exceeded (HTTP 429). Ensure your account balance is > $0. $err"
+                    403 -> "Forbidden (HTTP 403). Check model permissions. $err"
+                    404 -> "Models endpoint not found (HTTP 404). Check Base URL. $err"
+                    else -> "Request rejected (HTTP ${resp.code}). ${err.ifBlank { "Check API key & balance." }}"
+                }
+                return ConnectivityResult(false, msg.trim(), rawInfo = body.take(300))
             }
             val models = try {
                 val arr = JSONObject(body).optJSONArray("data") ?: JSONArray()
@@ -116,12 +133,19 @@ object ApiConnectivityChecker {
             .url("https://api.anthropic.com/v1/models?limit=1000")
             .header("x-api-key", apiKey)
             .header("anthropic-version", "2023-06-01")
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
             .get()
             .build()
         client.newCall(request).execute().use { resp ->
             val body = resp.body?.string() ?: ""
             if (!resp.isSuccessful) {
-                return ConnectivityResult(false, "Anthropic rejected the key (HTTP ${resp.code}). ${errorText(body)}".trim(), rawInfo = body.take(300))
+                val err = errorText(body)
+                val msg = when (resp.code) {
+                    401 -> "Anthropic rejected the key (HTTP 401). $err"
+                    429 -> "Anthropic quota exceeded (HTTP 429). Check credit balance. $err"
+                    else -> "Anthropic error (HTTP ${resp.code}). $err"
+                }
+                return ConnectivityResult(false, msg.trim(), rawInfo = body.take(300))
             }
             val models = try {
                 val arr = JSONObject(body).optJSONArray("data") ?: JSONArray()

@@ -363,6 +363,14 @@ class AppPreferences(context: Context) {
         _apiRoomLocked.value = locked
     }
 
+    private val _activeProvider = MutableStateFlow(prefs.getString("api_room_active_provider", "Gemini") ?: "Gemini")
+    val activeProvider: StateFlow<String> = _activeProvider.asStateFlow()
+
+    fun setActiveProvider(provider: String) {
+        prefs.edit().putString("api_room_active_provider", provider).apply()
+        _activeProvider.value = provider
+    }
+
     // ---- Security settings: verify PIN before deleting notes / folders ----
     private val _verifyPinOnDelete = MutableStateFlow(prefs.getBoolean("verify_pin_on_delete", true))
     val verifyPinOnDelete: StateFlow<Boolean> = _verifyPinOnDelete.asStateFlow()

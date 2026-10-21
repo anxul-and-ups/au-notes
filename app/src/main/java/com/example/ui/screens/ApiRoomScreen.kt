@@ -119,6 +119,9 @@ fun ApiRoomScreen(
     var expandedProvider by remember { mutableStateOf<String?>(null) }
     var showAddProviderDialog by remember { mutableStateOf(false) }
 
+    val activeProvider by preferences.activeProvider.collectAsState()
+    var showWhyProvidersFail by remember { mutableStateOf(false) }
+
     GlassBackground(isDarkMode = isDarkMode) {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Row(
@@ -154,7 +157,52 @@ fun ApiRoomScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Explainer Card: Why other providers fail
+            GlassCard(
+                shape = RoundedCornerShape(14.dp),
+                isDarkMode = isDarkMode,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { showWhyProvidersFail = !showWhyProvidersFail },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("💡", fontSize = 14.sp)
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "Other Provider fail kyu hota hai? (Guide)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = CrimsonPrimary
+                            )
+                        }
+                        Icon(
+                            if (showWhyProvidersFail) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = null,
+                            tint = CrimsonPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    if (showWhyProvidersFail) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "1. Account Balance: OpenAI and DeepSeek require a funded account (balance > $0). Agar balance 0 hai toh HTTP 429 ya 401 aayega.\n" +
+                            "2. Base URL Format: Custom provider URL me https:// lagana zaroori hai (e.g. https://api.openai.com/v1).\n" +
+                            "3. Model Name: DeepSeek ke liye 'deepseek-chat', OpenAI ke liye 'gpt-4o-mini' select karein.\n" +
+                            "4. Active Provider: Ab aap niche kisi bhi provider par 'Set as Active Engine' tap karke use AU Agent me activate kar sakte hain!",
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            color = if (isDarkMode) Color.White.copy(0.85f) else Color.DarkGray
+                        )
+                    }
+                }
+            }
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // Gemini card — reuses the existing working prefs so nothing
@@ -172,7 +220,9 @@ fun ApiRoomScreen(
                         onModelsDetected = { preferences.setDetectedModels("Gemini", it) },
                         onSetUseInbuilt = preferences::setUseInbuiltApi,
                         onSetApiKey = preferences::setUserApiKey,
-                        onSetModel = preferences::setSelectedModel
+                        onSetModel = preferences::setSelectedModel,
+                        isActive = activeProvider == "Gemini",
+                        onSetActive = { preferences.setActiveProvider("Gemini") }
                     )
                 }
 
@@ -190,7 +240,9 @@ fun ApiRoomScreen(
                         onModelsDetected = { preferences.setDetectedModels(providerName, it) },
                         onSelectModel = { m -> preferences.saveApiProvider(providerName, saved?.apiKey ?: "", saved?.baseUrl ?: "", m) },
                         needsBaseUrl = providerName == "OpenCode",
-                        onSave = { key, baseUrl -> preferences.saveApiProvider(providerName, key, baseUrl) }
+                        onSave = { key, baseUrl -> preferences.saveApiProvider(providerName, key, baseUrl) },
+                        isActive = activeProvider == providerName,
+                        onSetActive = { preferences.setActiveProvider(providerName) }
                     )
                 }
 
@@ -229,7 +281,9 @@ fun ApiRoomScreen(
                         onSelectModel = { m -> preferences.saveApiProvider(entry.name, entry.apiKey, entry.baseUrl, m, isCustom = true) },
                         needsBaseUrl = true,
                         onSave = { key, baseUrl -> preferences.saveApiProvider(entry.name, key, baseUrl, isCustom = true) },
-                        onDelete = { preferences.deleteApiProvider(entry.name) }
+                        onDelete = { preferences.deleteApiProvider(entry.name) },
+                        isActive = activeProvider == entry.name,
+                        onSetActive = { preferences.setActiveProvider(entry.name) }
                     )
                 }
 
@@ -307,7 +361,9 @@ private fun GeminiProviderCard(
     onModelsDetected: (List<String>) -> Unit,
     onSetUseInbuilt: (Boolean) -> Unit,
     onSetApiKey: (String) -> Unit,
-    onSetModel: (String) -> Unit
+    onSetModel: (String) -> Unit,
+    isActive: Boolean,
+    onSetActive: () -> Unit
 ) {
     var keyInput by remember(userApiKey) { mutableStateOf(userApiKey) }
     var keyVisible by remember { mutableStateOf(false) }
@@ -317,9 +373,26 @@ private fun GeminiProviderCard(
 
     GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
         Column(modifier = Modifier.padding(14.dp)) {
-            ProviderHeader("Gemini", "Google AI Studio", isDarkMode, expanded, onToggleExpand)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                ProviderHeader("Gemini", if (isActive) "Active Engine • Google AI Studio" else "Google AI Studio", isDarkMode, expanded, onToggleExpand, modifier = Modifier.weight(1f))
+            }
+            if (isActive) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("● CURRENT ACTIVE AI ENGINE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+            }
             if (expanded) {
                 Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = onSetActive,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isActive) Color(0xFF2E7D32) else CrimsonPrimary.copy(alpha = 0.2f),
+                        contentColor = if (isActive) Color.White else CrimsonPrimary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (isActive) "✓ ACTIVE ENGINE FOR AU AGENT" else "SET AS ACTIVE ENGINE", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
                 Row(modifier = Modifier.fillMaxWidth().clickable { onSetUseInbuilt(true) }, verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = useInbuiltApi, onClick = { onSetUseInbuilt(true) }, colors = RadioButtonDefaults.colors(selectedColor = CrimsonPrimary))
                     Text("Inbuilt API (Auto-Configured)", fontSize = 13.sp, color = if (isDarkMode) Color.White else Color.Black)
@@ -383,7 +456,9 @@ private fun ProviderCard(
     onSelectModel: (String) -> Unit,
     needsBaseUrl: Boolean,
     onSave: (key: String, baseUrl: String) -> Unit,
-    onDelete: (() -> Unit)? = null
+    onDelete: (() -> Unit)? = null,
+    isActive: Boolean = false,
+    onSetActive: () -> Unit = {}
 ) {
     var keyInput by remember(savedKey) { mutableStateOf(savedKey) }
     var urlInput by remember(savedBaseUrl) { mutableStateOf(savedBaseUrl) }
@@ -395,15 +470,29 @@ private fun ProviderCard(
     GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                ProviderHeader(name, if (savedKey.isNotBlank()) "Configured" else "Not configured", isDarkMode, expanded, onToggleExpand, modifier = Modifier.weight(1f))
+                ProviderHeader(name, if (isActive) "Active Engine • Configured" else if (savedKey.isNotBlank()) "Configured" else "Not configured", isDarkMode, expanded, onToggleExpand, modifier = Modifier.weight(1f))
                 if (onDelete != null) {
                     IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Default.Delete, contentDescription = "Delete provider", tint = Color(0xFFFF5252))
                     }
                 }
             }
+            if (isActive) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("● CURRENT ACTIVE AI ENGINE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+            }
             if (expanded) {
                 Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = onSetActive,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isActive) Color(0xFF2E7D32) else CrimsonPrimary.copy(alpha = 0.2f),
+                        contentColor = if (isActive) Color.White else CrimsonPrimary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (isActive) "✓ ACTIVE ENGINE FOR AU AGENT" else "SET AS ACTIVE ENGINE", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                }
                 if (needsBaseUrl) {
                     OutlinedTextField(
                         value = urlInput,
