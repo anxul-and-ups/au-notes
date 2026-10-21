@@ -1122,6 +1122,8 @@ fun AiChatScreen(
                                 onClick = { onClose() }
                             )
                                         }
+                                    }
+
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically
