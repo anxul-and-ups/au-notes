@@ -1068,23 +1068,58 @@ fun AiChatScreen(
                                 onClick = { startNewChat() }
                             )
 
-                            // Expand/Collapse Compact Toggle
+                            // Minimize to compact mode (resets position)
                             NeuIconButton(
-                                icon = if (isCompactMode) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = if (isCompactMode) "Expand Fullscreen" else "Collapse to Compact",
+                                icon = Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Minimize Chat",
                                 isDarkMode = isDarkMode,
                                 size = 34.dp,
-                                iconSize = 18.dp,
+                                iconSize = 20.dp,
                                 tint = if (isDarkMode) Color.White else Color.Black,
                                 onClick = {
-                                    if (isCompactMode) {
+                                    isCompactMode = true
+                                    offsetX = 0f
+                                    offsetY = 0f
+                                }
+                            )
+                            
+                            // Expand Toggle
+                            if (!isCompactMode) {
+                                NeuIconButton(
+                                    icon = Icons.Default.ExpandMore,
+                                    contentDescription = "Collapse to Compact",
+                                    isDarkMode = isDarkMode,
+                                    size = 34.dp,
+                                    iconSize = 18.dp,
+                                    tint = if (isDarkMode) Color.White else Color.Black,
+                                    onClick = { isCompactMode = true }
+                                )
+                            } else {
+                                NeuIconButton(
+                                    icon = Icons.Default.ExpandLess,
+                                    contentDescription = "Expand Fullscreen",
+                                    isDarkMode = isDarkMode,
+                                    size = 34.dp,
+                                    iconSize = 18.dp,
+                                    tint = CrimsonPrimary,
+                                    onClick = {
                                         isCompactMode = false
                                         offsetX = 0f
                                         offsetY = 0f
-                                    } else {
-                                        isCompactMode = true
                                     }
-                                }
+                                )
+                            }
+
+                            // Close Button
+                            NeuIconButton(
+                                icon = Icons.Default.Close,
+                                contentDescription = "Close Chat",
+                                isDarkMode = isDarkMode,
+                                size = 34.dp,
+                                iconSize = 18.dp,
+                                tint = Color(0xFFFF5252),
+                                onClick = { onClose() }
+                            )
                             )
 
                             NeuIconButton(
@@ -1880,13 +1915,20 @@ fun AiChatScreen(
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text("Select Model for $activeProvider:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray)
                                 Spacer(modifier = Modifier.height(6.dp))
-                                val availableModels = when (activeProvider) {
-                                    "Gemini" -> listOf("gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-pro")
-                                    "DeepSeek" -> listOf("deepseek-chat", "deepseek-coder", "deepseek-reasoner")
-                                    "OpenAI" -> listOf("gpt-4o-mini", "gpt-4o")
-                                    "Anthropic" -> listOf("claude-3-5-sonnet-20241022", "claude-3-haiku-20240307")
-                                    "Custom" -> listOf(providerEntries["Custom"]?.model?.ifBlank { "custom-model" } ?: "custom-model")
-                                    else -> listOf("default-model")
+                                var availableModels by remember { mutableStateOf<List<String>>(emptyList()) }
+                                LaunchedEffect(activeProvider) {
+                                    val currentKey = try { preferences.getKeyForProvider(activeProvider) } catch(e: Exception) { "" }
+                                    val baseUrl = providerEntries[activeProvider]?.baseUrl ?: ""
+                                    if (currentKey.isNotBlank()) {
+                                        val res = com.example.data.ai.ApiConnectivityChecker.check(activeProvider, currentKey, baseUrl)
+                                        if (res.isActive && res.availableModels.isNotEmpty()) {
+                                            availableModels = res.availableModels
+                                        } else {
+                                            availableModels = listOf(providerEntries[activeProvider]?.model?.ifBlank { "default-model" } ?: "default-model")
+                                        }
+                                    } else {
+                                        availableModels = listOf(providerEntries[activeProvider]?.model?.ifBlank { "default-model" } ?: "default-model")
+                                    }
                                 }
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     availableModels.forEach { m ->

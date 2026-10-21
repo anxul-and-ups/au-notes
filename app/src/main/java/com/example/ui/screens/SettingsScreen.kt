@@ -150,7 +150,16 @@ fun SettingsScreen(
         )
     }
 
-    val models = listOf("gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash")
+    var models by remember { mutableStateOf(listOf("gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro")) }
+    LaunchedEffect(Unit) {
+        val key = try { preferences.getKeyForProvider("Gemini") } catch(e: Exception) { "" }
+        if (key.isNotBlank()) {
+            val res = com.example.data.ai.ApiConnectivityChecker.check("Gemini", key)
+            if (res.isActive && res.availableModels.isNotEmpty()) {
+                models = res.availableModels
+            }
+        }
+    }
 
     GlassBackground(isDarkMode = isDarkMode) {
         Column(
