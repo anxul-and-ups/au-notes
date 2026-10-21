@@ -1,7 +1,11 @@
 package com.example.ui.screens
 
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.widget.Toast
@@ -64,6 +68,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -298,6 +303,7 @@ fun AiChatScreen(
     // Rendered PDF page images (base64 PNG) — set instead of attachedContent for PDFs,
     // since PdfRenderer gives page bitmaps, not extractable text.
     var attachedPdfImages by remember { mutableStateOf<List<String>?>(null) }
+    var screenCaptureStatus by remember { mutableStateOf<String?>(null) }
 
     // The last document sent in this chat stays available for follow-up questions
     var sessionAttachmentText by remember { mutableStateOf<String?>(null) }
@@ -316,6 +322,65 @@ fun AiChatScreen(
     val listState = rememberLazyListState()
 
     // File picker for attachments
+    // Android system consent is required before AU Agent can capture the current screen.
+    val screenCaptureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
+            val captureIntent = Intent(context, com.example.data.ai.ScreenCaptureService::class.java).apply {
+                putExtra(com.example.data.ai.ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(com.example.data.ai.ScreenCaptureService.EXTRA_RESULT_DATA, result.data)
+            }
+            try {
+                ContextCompat.startForegroundService(context, captureIntent)
+                screenCaptureStatus = "Capturing screen…"
+            } catch (e: Exception) {
+                screenCaptureStatus = "Screen capture couldn't start: ${e.message ?: "try again"}"
+                Toast.makeText(context, screenCaptureStatus, Toast.LENGTH_LONG).show()
+            }
+        } else {
+            screenCaptureStatus = "Screen capture cancelled"
+        }
+    }
+
+    DisposableEffect(context) {
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                val path = intent?.getStringExtra(com.example.data.ai.ScreenCaptureService.EXTRA_CAPTURE_PATH)
+                if (path.isNullOrBlank()) {
+                    screenCaptureStatus = "Couldn't capture screen"
+                    Toast.makeText(context, screenCaptureStatus, Toast.LENGTH_LONG).show()
+                    return
+                }
+                try {
+                    val encoded = android.util.Base64.encodeToString(java.io.File(path).readBytes(), android.util.Base64.NO_WRAP)
+                    attachedPdfImages = listOf(encoded)
+                    attachedFileName = "Current screen"
+                    screenCaptureStatus = "Screen attached — ask AU Agent to analyze it"
+                    Toast.makeText(context, screenCaptureStatus, Toast.LENGTH_LONG).show()
+                } catch (_: Exception) {
+                    screenCaptureStatus = "Couldn't read screen capture"
+                    Toast.makeText(context, screenCaptureStatus, Toast.LENGTH_LONG).show()
+                } finally {
+                    try { java.io.File(path).delete() } catch (_: Exception) {}
+                }
+            }
+        }
+        val filter = IntentFilter(com.example.data.ai.ScreenCaptureService.ACTION_CAPTURE_READY)
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        onDispose { try { context.unregisterReceiver(receiver) } catch (_: Exception) {} }
+    }
+
+    fun requestScreenCapture() {
+        try {
+            val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            screenCaptureLauncher.launch(manager.createScreenCaptureIntent())
+        } catch (_: Exception) {
+            screenCaptureStatus = "Screen sharing isn't available on this device"
+            Toast.makeText(context, screenCaptureStatus, Toast.LENGTH_LONG).show()
+        }
+    }
+
     val attachmentPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -510,9 +575,24 @@ fun AiChatScreen(
                 if (newContent.isBlank()) {
                     messages.add(ChatMessage(sender = "bot", text = "Ok sir, isme kya changes karu? Aap bataiye main abhi update kar deti hoon."))
                 } else {
-                    val results = try { repository.searchNotes(title).first() } catch (e: Exception) { emptyList() }
-                    val target = results.find { it.title.equals(title, ignoreCase = true) }
-                        ?: results.firstOrNull()
+                    // Prefer the note currently open in AU Notes when the user says
+                    // "edit this/current note"; never silently edit an unrelated first result.
+                    val activeTitle = currentNoteTitle?.trim().orEmpty()
+                    val activeContent = currentNoteContent.orEmpty()
+                    val activeResults = if (activeTitle.isNotBlank()) {
+                        try { repository.searchNotes(activeTitle).first() } catch (_: Exception) { emptyList() }
+                    } else emptyList()
+                    val activeTarget = activeResults.firstOrNull {
+                        it.title.equals(activeTitle, ignoreCase = true) &&
+                            (activeContent.isBlank() || it.content == activeContent)
+                    } ?: activeResults.firstOrNull { it.title.equals(activeTitle, ignoreCase = true) }
+
+                    val results = if (title.isNotBlank()) {
+                        try { repository.searchNotes(title).first() } catch (_: Exception) { emptyList() }
+                    } else emptyList()
+                    val target = if (title.isBlank()) activeTarget else
+                        results.find { it.title.equals(title, ignoreCase = true) }
+                            ?: activeTarget
                     if (target != null) {
                         val updated = target.copy(content = newContent, updatedAt = System.currentTimeMillis())
                         repository.saveNote(updated)
@@ -1392,6 +1472,18 @@ fun AiChatScreen(
                                             )
                                         }
 
+                                        IconButton(
+                                            onClick = { requestScreenCapture() },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Visibility,
+                                                contentDescription = "Share current screen with AU Agent",
+                                                tint = if (screenCaptureStatus == "Capturing screen…") CrimsonPrimary else (if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+
                                         TextField(
                                             value = inputText,
                                             onValueChange = { inputText = it },
@@ -1910,7 +2002,7 @@ fun AiChatScreen(
         }
     }
 
-    // Voice Mode Overlay (Gemini Live Style)
+    // Premium live voice experience: animated aurora, responsive orb, transcript cards and compact controls.
     if (showVoiceOverlay) {
         val voiceState by voiceManager.voiceState.collectAsState()
         val userTranscript by voiceManager.userTranscript.collectAsState()
@@ -1919,202 +2011,267 @@ fun AiChatScreen(
 
         val infiniteTransition = rememberInfiniteTransition()
         val pulseScale by infiniteTransition.animateFloat(
-            initialValue = 0.9f,
-            targetValue = 1.15f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(1200),
-                repeatMode = RepeatMode.Reverse
-            )
+            initialValue = 0.88f,
+            targetValue = 1.10f,
+            animationSpec = infiniteRepeatable(animation = tween(1450), repeatMode = RepeatMode.Reverse)
         )
+        val orbit by infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(animation = tween(9000), repeatMode = RepeatMode.Restart)
+        )
+        val wavePhase by infiniteTransition.animateFloat(
+            initialValue = 0.55f,
+            targetValue = 1.45f,
+            animationSpec = infiniteRepeatable(animation = tween(620), repeatMode = RepeatMode.Reverse)
+        )
+
+        val stateColor = when (voiceState) {
+            VoiceState.LISTENING -> Color(0xFF76E4D2)
+            VoiceState.THINKING -> Color(0xFFFFC477)
+            VoiceState.SPEAKING -> Color(0xFF9DB8FF)
+            VoiceState.IDLE -> Color(0xFFC5A7FF)
+            else -> Color(0xFFC5A7FF)
+        }
+        val stateLabel = when (voiceState) {
+            VoiceState.LISTENING -> "LISTENING"
+            VoiceState.THINKING -> "THINKING"
+            VoiceState.SPEAKING -> "SPEAKING"
+            VoiceState.IDLE -> "READY WHEN YOU ARE"
+            else -> "READY WHEN YOU ARE"
+        }
+        val stateMessage = when (voiceState) {
+            VoiceState.LISTENING -> "I'm listening. Go ahead."
+            VoiceState.THINKING -> "Give me a moment to think…"
+            VoiceState.SPEAKING -> "Here's what I think."
+            VoiceState.IDLE -> "Talk naturally — I'm here to help."
+            else -> "Talk naturally — I'm here to help."
+        }
 
         Dialog(
             onDismissRequest = { showVoiceOverlay = false },
             properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color.Black.copy(alpha = 0.92f)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(Color(0xFF090D1C), Color(0xFF11152B), Color(0xFF17102A), Color(0xFF090D1C))
+                        )
+                    )
             ) {
+                // Soft ambient light blooms behind the voice orb.
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val w = size.width
+                    val h = size.height
+                    drawCircle(
+                        brush = Brush.radialGradient(listOf(stateColor.copy(alpha = 0.19f), Color.Transparent)),
+                        radius = size.minDimension * 0.54f,
+                        center = androidx.compose.ui.geometry.Offset(w * (0.48f + 0.035f * kotlin.math.sin(Math.toRadians(orbit.toDouble())).toFloat()), h * 0.43f)
+                    )
+                    drawCircle(
+                        brush = Brush.radialGradient(listOf(Color(0xFF6E5BFF).copy(alpha = 0.12f), Color.Transparent)),
+                        radius = size.minDimension * 0.42f,
+                        center = androidx.compose.ui.geometry.Offset(w * 0.78f, h * 0.65f)
+                    )
+                }
+
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .statusBarsPadding()
                         .navigationBarsPadding()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.SpaceBetween
+                        .padding(horizontal = 22.dp, vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Top Bar
+                    // Header
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF4CAF50))
-                            )
-                            Text("AU Agent Live Voice", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                        }
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    showVoiceOverlay = false
-                                    Toast.makeText(context, "Voice Assistant active in background", Toast.LENGTH_SHORT).show()
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF)),
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Text("Minimize (Background)", fontSize = 11.sp, color = Color.White)
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    showVoiceOverlay = false
-                                    voiceManager.stopVoiceMode()
-                                }
-                            ) {
-                                Icon(Icons.Default.Close, contentDescription = "End Voice", tint = Color.White)
-                            }
-                        }
-                    }
-
-                    // Center Animated Orb (Gemini Live Acoustic Wave)
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(20.dp)
-                    ) {
-                        val stateColor = when (voiceState) {
-                            VoiceState.LISTENING -> CrimsonPrimary
-                            VoiceState.THINKING -> Color(0xFFF59E0B)
-                            VoiceState.SPEAKING -> Color(0xFF3B82F6)
-                            VoiceState.IDLE -> Color(0xFF8B5CF6)
-                            else -> Color(0xFF8B5CF6)
-                        }
-
                         Box(
-                            modifier = Modifier.size(170.dp),
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(15.dp))
+                                .background(Brush.linearGradient(listOf(Color(0xFF6D5BFF), Color(0xFF4BA9D8)))),
                             contentAlignment = Alignment.Center
                         ) {
-                            val dynamicScale = if (voiceState == VoiceState.LISTENING) (pulseScale + (micLevel / 10f).coerceIn(0f, 0.4f)) else pulseScale
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                drawCircle(
-                                    color = stateColor.copy(alpha = 0.22f),
-                                    radius = (size.minDimension / 2f) * dynamicScale
-                                )
-                                drawCircle(
-                                    color = stateColor.copy(alpha = 0.45f),
-                                    radius = (size.minDimension / 2.5f) * dynamicScale
-                                )
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .size(90.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        Brush.radialGradient(
-                                            listOf(stateColor, stateColor.copy(alpha = 0.7f), Color.Black)
-                                        )
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (voiceState == VoiceState.THINKING) {
-                                    Image(
-                                        painter = painterResource(R.drawable.au_bot_icon_1790271144581),
-                                        contentDescription = "AU Agent Thinking",
-                                        modifier = Modifier
-                                            .size(42.dp)
-                                            .clip(CircleShape)
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = when (voiceState) {
-                                            VoiceState.LISTENING -> Icons.Default.Mic
-                                            VoiceState.SPEAKING -> Icons.Default.VolumeUp
-                                            VoiceState.IDLE -> Icons.Default.RecordVoiceOver
-                                            else -> Icons.Default.RecordVoiceOver
-                                        },
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(36.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        Text(
-                            text = when (voiceState) {
-                                VoiceState.LISTENING -> "Sun rahi hoon sir... boliye"
-                                VoiceState.THINKING -> "Soch rahi hoon aur note craft kar rahi hoon..."
-                                VoiceState.SPEAKING -> "AU Agent bol rahi hai..."
-                                VoiceState.IDLE -> "Taiyaar hoon sir"
-                                else -> "Taiyaar hoon sir"
-                            },
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White
-                        )
-
-                        if (userTranscript.isNotBlank()) {
-                            Text(
-                                text = "Aapne kaha: \"$userTranscript\"",
-                                fontSize = 12.sp,
-                                color = Color.White.copy(alpha = 0.75f),
-                                maxLines = 2
+                            Image(
+                                painter = painterResource(R.drawable.au_bot_icon_1790271144581),
+                                contentDescription = "AU Agent",
+                                modifier = Modifier.size(28.dp).clip(CircleShape)
                             )
                         }
-                        if (lastSpoken.isNotBlank()) {
-                            Text(
-                                text = "Assistant: \"${lastSpoken.take(90)}...\"",
-                                fontSize = 12.sp,
-                                color = stateColor,
-                                maxLines = 2
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("AU Agent", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Box(Modifier.size(6.dp).clip(CircleShape).background(if (voiceManager.isVoiceModeActive) Color(0xFF63E6BE) else Color.Gray))
+                                Text("LIVE VOICE", fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.6.sp, color = Color.White.copy(alpha = 0.58f))
+                            }
+                        }
+                        IconButton(onClick = {
+                            showVoiceOverlay = false
+                            Toast.makeText(context, "Voice assistant is continuing in the background", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Icon(Icons.Default.ExpandMore, contentDescription = "Minimize voice assistant", tint = Color.White.copy(alpha = 0.82f), modifier = Modifier.size(27.dp))
+                        }
+                        IconButton(onClick = {
+                            showVoiceOverlay = false
+                            voiceManager.stopVoiceMode()
+                        }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close voice assistant", tint = Color.White.copy(alpha = 0.82f))
+                        }
+                    }
+
+                    Spacer(Modifier.weight(0.55f))
+
+                    // Main reactive voice orb.
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(250.dp)) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+                            val base = size.minDimension * 0.31f
+                            val audioBoost = if (voiceState == VoiceState.LISTENING || voiceState == VoiceState.SPEAKING) (micLevel / 10f).coerceIn(0f, 0.24f) else 0f
+                            drawCircle(stateColor.copy(alpha = 0.07f), radius = base * 2.7f * pulseScale, center = center)
+                            drawCircle(stateColor.copy(alpha = 0.11f), radius = base * 2.25f * pulseScale, center = center)
+                            drawCircle(stateColor.copy(alpha = 0.18f), radius = base * (1.72f + audioBoost), center = center)
+                            drawCircle(
+                                brush = Brush.radialGradient(listOf(stateColor.copy(alpha = 0.44f), Color(0xFF7566FF).copy(alpha = 0.16f), Color.Transparent), center = center, radius = base * 1.75f),
+                                radius = base * 1.75f,
+                                center = center
+                            )
+                            // A subtle animated ring gives the orb a sense of depth without heavy effects.
+                            drawCircle(
+                                color = Color.White.copy(alpha = 0.16f),
+                                radius = base * 1.85f,
+                                center = center,
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx())
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size((112f * pulseScale).dp)
+                                .shadow(28.dp, CircleShape, ambientColor = stateColor.copy(alpha = 0.25f), spotColor = stateColor.copy(alpha = 0.35f))
+                                .clip(CircleShape)
+                                .background(Brush.linearGradient(listOf(Color(0xFF313A66), Color(0xFF171B36), Color(0xFF292047))))
+                                .border(1.dp, Color.White.copy(alpha = 0.22f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Image(
+                                painter = painterResource(R.drawable.au_bot_icon_1790271144581),
+                                contentDescription = "AU Agent voice assistant",
+                                modifier = Modifier.size(70.dp).clip(CircleShape)
                             )
                         }
                     }
 
-                    // Bottom Controls
+                    Spacer(Modifier.height(14.dp))
+                    Surface(
+                        color = stateColor.copy(alpha = 0.13f),
+                        shape = RoundedCornerShape(50),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, stateColor.copy(alpha = 0.28f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        ) {
+                            Box(Modifier.size(6.dp).clip(CircleShape).background(stateColor))
+                            Text(stateLabel, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp, color = stateColor)
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(stateMessage, fontSize = 21.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Hindi or English · Speak naturally", fontSize = 12.sp, color = Color.White.copy(alpha = 0.52f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+
+                    // Lightweight animated sound bars.
+                    Spacer(Modifier.height(22.dp))
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        modifier = Modifier.height(34.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Button(
-                            onClick = {
-                                if (voiceState == VoiceState.SPEAKING) {
-                                    voiceManager.stopSpeaking()
-                                } else {
-                                    voiceManager.startListening()
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF)),
-                            shape = CircleShape,
-                            modifier = Modifier.size(56.dp),
-                            contentPadding = PaddingValues(0.dp)
-                        ) {
-                            Icon(
-                                if (voiceState == VoiceState.SPEAKING) Icons.Default.MicOff else Icons.Default.Mic,
-                                contentDescription = "Toggle Mute",
-                                tint = Color.White
+                        repeat(25) { index ->
+                            val distance = kotlin.math.abs(index - 12) / 12f
+                            val variation = 0.28f + (1f - distance) * (0.38f + 0.34f * wavePhase)
+                            val active = voiceState == VoiceState.LISTENING || voiceState == VoiceState.SPEAKING
+                            val barHeight = if (active) (7f + 24f * variation * (0.35f + micLevel.coerceIn(0f, 10f) / 14f)).coerceIn(7f, 31f) else (6f + 8f * variation).coerceIn(6f, 14f)
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .height(barHeight.dp)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(if (active) stateColor.copy(alpha = 0.55f + (1f - distance) * 0.45f) else Color.White.copy(alpha = 0.24f))
                             )
                         }
+                    }
 
+                    Spacer(Modifier.weight(0.35f))
+
+                    // Transcript cards stay readable but never dominate the screen.
+                    if (userTranscript.isNotBlank() || lastSpoken.isNotBlank()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(Color.White.copy(alpha = 0.055f))
+                                .border(1.dp, Color.White.copy(alpha = 0.09f), RoundedCornerShape(20.dp))
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            if (userTranscript.isNotBlank()) {
+                                Text("YOU SAID", fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp, color = Color.White.copy(alpha = 0.48f))
+                                Text(userTranscript.takeLast(220), fontSize = 13.sp, lineHeight = 19.sp, color = Color.White.copy(alpha = 0.9f), maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            }
+                            if (lastSpoken.isNotBlank()) {
+                                if (userTranscript.isNotBlank()) Spacer(Modifier.height(1.dp))
+                                Text("AU AGENT", fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp, color = stateColor)
+                                Text(lastSpoken.takeLast(260), fontSize = 13.sp, lineHeight = 19.sp, color = Color.White.copy(alpha = 0.82f), maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                    } else {
+                        Spacer(Modifier.height(18.dp))
+                    }
+
+                    // Controls
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(58.dp).clickable {
+                                if (voiceState == VoiceState.SPEAKING) voiceManager.stopSpeaking() else voiceManager.startListening()
+                            },
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.09f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.15f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = if (voiceState == VoiceState.SPEAKING) Icons.Default.MicOff else Icons.Default.Mic,
+                                    contentDescription = if (voiceState == VoiceState.SPEAKING) "Stop speaking" else "Start listening",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(23.dp)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(18.dp))
                         Button(
                             onClick = {
                                 showVoiceOverlay = false
                                 voiceManager.stopVoiceMode()
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.height(48.dp)
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65B78)),
+                            shape = RoundedCornerShape(18.dp),
+                            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 15.dp)
                         ) {
-                            Text("End Voice Mode", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(17.dp), tint = Color.White)
+                            Spacer(Modifier.width(8.dp))
+                            Text("End conversation", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
                         }
                     }
                 }

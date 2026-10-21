@@ -106,16 +106,24 @@ class VoiceAssistantManager(
 
             val voices = engine.voices
             if (!voices.isNullOrEmpty()) {
-                val femaleVoice = voices.find { v: Voice ->
-                    !v.isNetworkConnectionRequired && (
+                val femaleCandidates = voices.filter { v: Voice ->
+                    v.name.contains("female", ignoreCase = true) ||
+                        v.features?.contains("gender=female") == true ||
                         v.name.contains("hi-in-x-hie", ignoreCase = true) ||
-                        v.name.contains("hi-in", ignoreCase = true) ||
-                        v.name.contains("female", ignoreCase = true) ||
-                        v.name.contains("en-in-x-ahp", ignoreCase = true) ||
-                        v.features?.contains("gender=female") == true
-                    )
-                } ?: voices.find { v: Voice ->
-                    v.locale.language.startsWith("hi") || v.locale.language.startsWith("en")
+                        v.name.contains("en-in-x-ahp", ignoreCase = true)
+                }
+                // Prefer a high-quality installed female voice, but allow the device's
+                // network voice when that is the only natural-sounding option.
+                val femaleVoice = femaleCandidates.firstOrNull {
+                    !it.isNetworkConnectionRequired &&
+                        (it.locale.language == "hi" || it.locale.language == "en")
+                } ?: femaleCandidates.firstOrNull {
+                    it.locale.language == "hi" || it.locale.language == "en"
+                } ?: voices.firstOrNull {
+                    !it.isNetworkConnectionRequired &&
+                        (it.locale.language == "hi" || it.locale.language == "en")
+                } ?: voices.firstOrNull {
+                    it.locale.language == "hi" || it.locale.language == "en"
                 }
                 if (femaleVoice != null) {
                     engine.voice = femaleVoice
