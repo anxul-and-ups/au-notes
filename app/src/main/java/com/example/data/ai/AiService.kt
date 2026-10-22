@@ -306,6 +306,80 @@ class AiService {
         }
     }
 
+    /**
+     * One plain chat turn for ANY provider (no native function calling — tools are
+     * handled by the text protocol in [AgentTools]). Errors come back as "⚠️ ..." text.
+     */
+    /** Alternating roles, starting with the user (Anthropic rejects anything else). */
+    private fun normalizeTurns(history: List<ConversationTurn>): List<ConversationTurn> {
+        val out = mutableListOf<ConversationTurn>()
+        for (t in history) {
+            if (t.content.isBlank()) continue
+            val role = if (t.role == "bot" || t.role == "model") "bot" else "user"
+            if (out.isNotEmpty() && out.last().role == role) {
+                out[out.lastIndex] = ConversationTurn(role, out.last().content + "\n\n" + t.content)
+            } else out.add(ConversationTurn(role, t.content))
+        }
+        while (out.isNotEmpty() && out.first().role != "user") out.removeAt(0)
+        if (out.isNotEmpty() && out.last().role == "user") out.removeAt(out.lastIndex)
+        return out
+    }
+
+    suspend fun chatOnce(
+        provider: String,
+        apiKey: String,
+        baseUrl: String,
+        model: String,
+        system: String,
+        history: List<ConversationTurn>,
+        prompt: String,
+        imagesBase64: List<String> = emptyList()
+    ): String = withContext(Dispatchers.IO) {
+        try {
+            if (provider == "Gemini") {
+                val latest = JSONObject().apply {
+                    put("role", "user")
+                    val parts = JSONArray().put(JSONObject().put("text", prompt))
+                    for (img in imagesBase64.take(8)) {
+                        parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", "image/png").put("data", img)))
+                    }
+                    put("parts", parts)
+                }
+                val body = JSONObject().apply {
+                    put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
+                    put("contents", buildContents(history, latest))
+                    put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 8192))
+                }
+                joinText(generate(apiKey, model, body)).ifBlank { "I couldn't come up with an answer. Could you rephrase that?" }
+            } else if (provider == "Anthropic") {
+                callAnthropic(apiKey, model.ifBlank { "claude-3-5-sonnet-20241022" }, system, normalizeTurns(history), prompt)
+            } else {
+                val base = when (provider) {
+                    "DeepSeek" -> "https://api.deepseek.com"
+                    "OpenAI" -> "https://api.openai.com/v1"
+                    "Kimi" -> "https://api.moonshot.cn/v1"
+                    else -> {
+                        var b = baseUrl.trim()
+                        if (b.isNotBlank() && !b.startsWith("http://") && !b.startsWith("https://")) b = "https://$b"
+                        b.ifBlank { "https://api.openai.com/v1" }
+                    }
+                }
+                val chosen = model.ifBlank {
+                    when (provider) {
+                        "DeepSeek" -> "deepseek-chat"
+                        "OpenAI" -> "gpt-4o-mini"
+                        else -> "gpt-3.5-turbo"
+                    }
+                }
+                callOpenAiCompatible(base, apiKey, chosen, system, normalizeTurns(history), prompt)
+            }
+        } catch (f: ApiFailure) {
+            "⚠️ ${f.userMessage}"
+        } catch (e: Exception) {
+            "⚠️ $provider error: ${e.message ?: "Failed to generate response. Check API key in API Room."}"
+        }
+    }
+
     private data class FnParam(val name: String, val type: String, val description: String, val required: Boolean)
 
     private fun functionDecl(name: String, description: String, params: List<FnParam>): JSONObject {

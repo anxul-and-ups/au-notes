@@ -1,11 +1,8 @@
 package com.example
 
 import android.Manifest
-import android.app.PictureInPictureParams
-import android.content.res.Configuration
-import android.os.Build
-import android.util.Rational
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -80,33 +77,6 @@ sealed class Screen {
 }
 
 class MainActivity : FragmentActivity() {
-    /**
-     * Android's native PiP gives AU Notes a true system-managed small window.
-     * Returning from PiP reuses the same activity/Compose state, so the AU Agent
-     * drawer/chat state is not recreated just because the user restored the app.
-     */
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !isInPictureInPictureMode) {
-            try {
-                val params = PictureInPictureParams.Builder()
-                    .setAspectRatio(Rational(9, 16))
-                    .build()
-                enterPictureInPictureMode(params)
-            } catch (_: Exception) {
-                // Device/launcher may not support PiP; keep the normal app behavior.
-            }
-        }
-    }
-
-    override fun onPictureInPictureModeChanged(
-        isInPictureInPictureMode: Boolean,
-        newConfig: Configuration
-    ) {
-        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        // Compose stays in the same activity; no navigation reset here by design.
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must run before super.onCreate: shows the system splash instantly on
         // launch so there is no 2-3s blank gap before the Compose splash appears.

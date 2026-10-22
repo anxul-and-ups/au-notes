@@ -571,7 +571,7 @@ private fun ModelDetectorRow(
     if (models.isNotEmpty()) {
         Spacer(modifier = Modifier.height(10.dp))
         Text(
-            text = "Detected models — tap to select",
+            text = if (isRealList) "Detected models — tap to select" else "Default models (run Model Detector for your real list)",
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             color = if (isDarkMode) Color.White else Color.Black
@@ -596,12 +596,5 @@ private fun ModelDetectorRow(
                 }
             }
         }
-    } else {
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            "No models detected yet. Run Model Detector to fetch the provider's actual model list.",
-            fontSize = 11.sp,
-            color = if (isDarkMode) Color.LightGray else Color.DarkGray
-        )
     }
 }

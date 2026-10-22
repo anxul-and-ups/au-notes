@@ -63,6 +63,11 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.ui.zIndex
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
@@ -97,6 +102,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.ai.AiService
+import com.example.data.ai.AgentTools
 import com.example.data.ai.AiActionResult
 import com.example.data.ai.ConversationTurn
 import com.example.data.model.NoteEntity
@@ -169,6 +175,13 @@ data class PendingAiAction(
     val noteTitle: String,
     val targetFolder: String? = null,
     val status: String = "pending" // pending | confirmed | cancelled
+)
+
+/** What running one agent tool produced: text for the model plus optional UI extras. */
+data class ToolOutcome(
+    val result: String,
+    val noteResults: List<com.example.data.model.NoteEntity>? = null,
+    val pending: PendingAiAction? = null
 )
 
 data class ArchivedChat(
@@ -270,10 +283,17 @@ fun AiChatScreen(
     var isCompactMode by remember { mutableStateOf(false) }
     var offsetX by remember { mutableStateOf(0f) }
     var offsetY by remember { mutableStateOf(0f) }
+    var compactW by remember { mutableStateOf(340f) }
+    var compactH by remember { mutableStateOf(430f) }
     var isAgentSidebarOpen by remember { mutableStateOf(false) }
     var showAdvancedModelOptions by remember { mutableStateOf(false) }
-    var currentActionStatus by remember { mutableStateOf<String?>(null) }
     var showVoiceOverlay by remember { mutableStateOf(false) }
+    val userName by preferences.agentUserName.collectAsState()
+    val namePrompted by preferences.agentNamePrompted.collectAsState()
+    val disabledTools by preferences.agentDisabledTools.collectAsState()
+    var showToolsSheet by remember { mutableStateOf(false) }
+    // Notes created / opened / edited in this chat — gives the model "which note did we just talk about".
+    val sessionNotes = remember { mutableStateListOf<Pair<Long, String>>() }
 
     var inputText by remember { mutableStateOf("") }
     var showMaximizedInput by remember { mutableStateOf(false) }
@@ -437,199 +457,154 @@ fun AiChatScreen(
         }
     }
 
-    // Item 20: the model's requested full replacement text for the note
-    // currently open in the editor (only reachable when onModifyCurrentNote
-    // was provided, i.e. this chat is running as the Write Mode floating
-    // assistant rather than the home-screen chatbot).
-    fun handleEditCurrentNote(args: org.json.JSONObject) {
-        val newContent = args.optString("new_content", "")
-        if (newContent.isBlank()) {
-            messages.add(ChatMessage(sender = "bot", text = "Ok sir, isme kya changes karu? Bataiye main abhi update kar deti hoon."))
-            return
-        }
-        if (onModifyCurrentNote != null) {
-            onModifyCurrentNote.invoke(newContent)
-            messages.add(ChatMessage(sender = "bot", text = "Ok sir, maine is note me ye changes kar diye hain. Ab aapko kuch aur karwana hai?"))
-        } else if (!currentNoteTitle.isNullOrBlank()) {
-            coroutineScope.launch {
-                val matches = try { repository.searchNotes(currentNoteTitle).first() } catch (e: Exception) { emptyList() }
-                val target = matches.find { it.title.equals(currentNoteTitle, ignoreCase = true) } ?: matches.firstOrNull()
-                if (target != null) {
-                    val updated = target.copy(content = newContent, updatedAt = System.currentTimeMillis())
-                    repository.saveNote(updated)
-                    messages.add(ChatMessage(sender = "bot", text = "Ok sir, \"${target.title}\" me ye changes kar diye hain. Ab aapko kuch aur karwana hai?", noteResults = listOf(updated)))
-                } else {
-                    messages.add(ChatMessage(sender = "bot", text = "Ok sir, active note nahi mila."))
-                }
-            }
-        } else {
-            messages.add(ChatMessage(sender = "bot", text = "Ok sir, abhi koi note open nahi hai. Kis note ko edit karna hai uska naam bataiye?"))
-        }
+    fun trackNote(n: com.example.data.model.NoteEntity) {
+        sessionNotes.removeAll { it.first == n.id }
+        sessionNotes.add(0, n.id to n.title)
     }
 
-    // Executes a model-requested function call. Read-only (search) runs immediately;
-    // create is non-destructive so it runs immediately too; move/delete only ever
-    // post a confirmation card — see onResolveAiAction for where they actually run.
-    suspend fun handleFunctionCall(name: String, args: org.json.JSONObject) {
-        when (name) {
+    fun agentVisible(n: com.example.data.model.NoteEntity) = !n.isLocked && !n.isHidden && !n.isTrash
+    fun snippetOf(n: com.example.data.model.NoteEntity) = n.content.replace("\n", " ").take(80)
+
+    // Runs one tool the model asked for and returns what the MODEL should see.
+    // Read-only and create run immediately; move/delete only post a confirmation card.
+    suspend fun runTool(name: String, args: org.json.JSONObject): ToolOutcome {
+        if (name in disabledTools) return ToolOutcome("Tool '$name' is switched off by the user.")
+        val systemFolders = listOf("All Notes", "Favorites", "APIs Keys", "Code", "Media", "Personal")
+        return when (name) {
             "search_notes" -> {
-                val query = args.optString("query", "")
-                val results = try { repository.searchNotes(query).first() } catch (e: Exception) { emptyList() }
-                if (results.isEmpty()) {
-                    messages.add(ChatMessage(sender = "bot", text = "I couldn't find any notes matching \"$query\"."))
-                } else {
-                    messages.add(
-                        ChatMessage(
-                            sender = "bot",
-                            text = "Found ${results.size} note(s) for \"$query\" — tap one to open it:",
-                            noteResults = results.take(5)
-                        )
-                    )
-                }
+                val q = args.optString("query", "").trim()
+                val res = (try { repository.searchNotes(q).first() } catch (e: Exception) { emptyList() })
+                    .filter { agentVisible(it) }.take(8)
+                if (res.isEmpty()) ToolOutcome("No notes found for \"$q\" (locked/hidden notes are not accessible).")
+                else ToolOutcome(
+                    res.joinToString("\n") { "id=${it.id} | ${it.title} | folder=${it.folder} | ${snippetOf(it)}" },
+                    noteResults = res
+                )
             }
+            "read_note" -> {
+                val note = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
+                if (note == null || !agentVisible(note)) ToolOutcome("Note not found or not accessible.")
+                else { trackNote(note); ToolOutcome("Title: ${note.title}\nFolder: ${note.folder}\n\n${note.content.take(15000)}") }
+            }
+            "list_notes" -> {
+                val folder = args.optString("folder", "").trim()
+                val all = try { repository.allActiveNotes.first() } catch (e: Exception) { emptyList() }
+                val res = all.filter { agentVisible(it) && (folder.isBlank() || it.folder.equals(folder, true)) }.take(25)
+                ToolOutcome(if (res.isEmpty()) "No notes." else res.joinToString("\n") { "id=${it.id} | ${it.title} | folder=${it.folder}" }, noteResults = res.take(8))
+            }
+            "list_folders" -> ToolOutcome((systemFolders + preferences.customFolders.value).joinToString(", "))
             "create_note" -> {
                 val title = args.optString("title", "Untitled Note")
                 val content = args.optString("content", "")
                 val category = args.optString("category", "General")
-                val tableData = args.optString("table_data", "")
-                val fullRaw = if (tableData.isNotBlank() && !content.contains("|")) "$content\n\n$tableData" else content
-                val richNote = NoteAgentFormatter.convertToRichNote(fullRaw, defaultTitle = title, forcedCategory = category)
-                val newId = repository.saveNote(richNote)
+                val folderArg = args.optString("folder", "").trim()
+                var rich = NoteAgentFormatter.convertToRichNote(content, defaultTitle = title, forcedCategory = category)
+                val folderMatch = (systemFolders + preferences.customFolders.value).find { it.equals(folderArg, true) }
+                if (folderMatch != null) rich = rich.copy(folder = folderMatch, originalFolder = folderMatch)
+                val newId = repository.saveNote(rich)
                 val saved = repository.getNoteByIdOnce(newId)
-                messages.add(
-                    ChatMessage(
-                        sender = "bot",
-                        text = "Created a rich note with Note Writer tools: \"${richNote.title}\" — tap below to open it:",
-                        noteResults = if (saved != null) listOf(saved) else null
-                    )
-                )
+                if (saved != null) trackNote(saved)
+                ToolOutcome("Created note id=$newId title=\"${rich.title}\".", noteResults = saved?.let { listOf(it) })
             }
             "edit_note" -> {
-                val title = args.optString("title", "").trim()
+                val target = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
                 val newContent = args.optString("new_content", "")
-                if (newContent.isBlank()) {
-                    messages.add(ChatMessage(sender = "bot", text = "Ok sir, isme kya changes karu? Aap bataiye main abhi update kar deti hoon."))
-                } else {
-                    val results = try { repository.searchNotes(title).first() } catch (e: Exception) { emptyList() }
-                    val target = results.find { it.title.equals(title, ignoreCase = true) }
-                        ?: results.firstOrNull()
-                    if (target != null) {
-                        val updated = target.copy(content = newContent, updatedAt = System.currentTimeMillis())
-                        repository.saveNote(updated)
-                        if (onModifyCurrentNote != null && (currentNoteTitle.equals(target.title, ignoreCase = true) || currentNoteContent == target.content)) {
-                            onModifyCurrentNote.invoke(newContent)
-                        }
-                        messages.add(
-                            ChatMessage(
-                                sender = "bot",
-                                text = "Ok sir, maine \"${target.title}\" me ye changes kar diye hain. Ab aapko kuch aur karwana hai?",
-                                noteResults = listOf(updated)
+                val append = args.optString("mode", "replace").equals("append", true)
+                when {
+                    target == null || !agentVisible(target) -> ToolOutcome("Note not found or not accessible. Use search_notes to get a valid id.")
+                    newContent.isBlank() -> ToolOutcome("new_content was empty — ask the user what to change.")
+                    else -> {
+                        val rich = NoteAgentFormatter.convertToRichNote(newContent, defaultTitle = target.title)
+                        val updated = if (append) {
+                            val shift = target.content.length + 2
+                            val oldSpans = RichTextFormatter.deserializeSpans(target.styleSpansJson)
+                            val newSpans = RichTextFormatter.deserializeSpans(rich.styleSpansJson)
+                                .map { it.copy(start = it.start + shift, end = it.end + shift) }
+                            target.copy(
+                                content = target.content + "\n\n" + rich.content,
+                                styleSpansJson = RichTextFormatter.serializeSpans(oldSpans + newSpans),
+                                tableData = target.tableData.ifBlank { rich.tableData },
+                                updatedAt = System.currentTimeMillis()
                             )
-                        )
-                    } else if (onModifyCurrentNote != null) {
-                        onModifyCurrentNote.invoke(newContent)
-                        messages.add(ChatMessage(sender = "bot", text = "Ok sir, maine note me changes kar diye hain. Ab aapko kuch aur karwana hai?"))
-                    } else {
-                        messages.add(ChatMessage(sender = "bot", text = "Ok sir, mujhe \"$title\" naam ka note nahi mila. Kya main is naam se naya note create kar doon?"))
-                    }
-                }
-            }
-            "capture_screen" -> {
-                val screenDesc = buildString {
-                    if (!currentNoteTitle.isNullOrBlank()) {
-                        append("Active Note: \"$currentNoteTitle\"\n")
-                    }
-                    if (!currentNoteContent.isNullOrBlank()) {
-                        append("Note Content:\n$currentNoteContent\n")
-                    }
-                }
-                messages.add(
-                    ChatMessage(
-                        sender = "bot",
-                        text = if (screenDesc.isNotBlank()) {
-                            "Ok sir, maine screen aur open note dekh liya hai:\n$screenDesc\nBoliye, isme kya changes karu ya kya help chahiye?"
                         } else {
-                            "Ok sir, maine screen capture kar li hai aur dekh rahi hoon! Boliye, screen ke bare me kya poochna hai ya kya karwana hai?"
+                            target.copy(
+                                content = rich.content,
+                                tableData = rich.tableData,
+                                styleSpansJson = rich.styleSpansJson,
+                                updatedAt = System.currentTimeMillis()
+                            )
                         }
-                    )
-                )
-            }
-            "copy_screen_text" -> {
-                val custom = args.optString("text_to_copy", "")
-                val textToCopy = if (custom.isNotBlank()) custom else currentNoteContent.orEmpty()
-                if (textToCopy.isNotBlank()) {
-                    clipboard.setText(AnnotatedString(textToCopy))
-                    messages.add(ChatMessage(sender = "bot", text = "Ok sir, maine screen ka text clipboard me copy kar diya hai! Aap kahin bhi paste kar sakte hain."))
-                } else {
-                    messages.add(ChatMessage(sender = "bot", text = "Ok sir, screen par copy karne ke liye koi text nahi mila."))
+                        repository.saveNote(updated)
+                        trackNote(updated)
+                        if (currentNoteTitle.equals(target.title, ignoreCase = true)) {
+                            val spans = RichTextFormatter.deserializeSpans(updated.styleSpansJson)
+                            if (onApplyAgentNoteToEditor != null) onApplyAgentNoteToEditor.invoke(updated.content, updated.tableData, spans)
+                            else onModifyCurrentNote?.invoke(updated.content)
+                        }
+                        ToolOutcome("Note \"${target.title}\" updated (${if (append) "appended" else "replaced"}).", noteResults = listOf(updated))
+                    }
                 }
+            }
+            "edit_current_note" -> {
+                val newContent = args.optString("new_content", "")
+                if (newContent.isBlank()) ToolOutcome("new_content was empty — ask the user what to change.")
+                else if (onApplyAgentNoteToEditor != null) {
+                    val rich = NoteAgentFormatter.convertToRichNote(newContent, defaultTitle = currentNoteTitle ?: "Note")
+                    onApplyAgentNoteToEditor.invoke(rich.content, rich.tableData, RichTextFormatter.deserializeSpans(rich.styleSpansJson))
+                    ToolOutcome("The open note was updated in the editor.")
+                } else if (onModifyCurrentNote != null) {
+                    onModifyCurrentNote.invoke(newContent)
+                    ToolOutcome("The open note was updated in the editor.")
+                } else ToolOutcome("No note is open right now.")
             }
             "move_note_to_folder" -> {
-                val noteId = args.optLong("note_id", -1L)
+                val note = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
                 val folder = args.optString("folder", "")
-                val note = if (noteId >= 0) repository.getNoteByIdOnce(noteId) else null
-                if (note == null) {
-                    messages.add(ChatMessage(sender = "bot", text = "I need to find that note first — try asking me to search for it by name."))
-                } else {
-                    messages.add(
-                        ChatMessage(
-                            sender = "bot",
-                            text = "Move \"${note.title}\" to $folder?",
-                            pendingAction = PendingAiAction("move", note.id, note.title, folder)
-                        )
-                    )
-                }
+                if (note == null || !agentVisible(note)) ToolOutcome("Note not found or not accessible.")
+                else ToolOutcome(
+                    "A confirmation card was shown to the user. Tell them to tap Confirm to move it.",
+                    pending = PendingAiAction("move", note.id, note.title, folder)
+                )
             }
             "delete_note" -> {
-                val noteId = args.optLong("note_id", -1L)
-                val note = if (noteId >= 0) repository.getNoteByIdOnce(noteId) else null
-                if (note == null) {
-                    messages.add(ChatMessage(sender = "bot", text = "I need to find that note first — try asking me to search for it by name."))
-                } else {
-                    messages.add(
-                        ChatMessage(
-                            sender = "bot",
-                            text = "Move \"${note.title}\" to the recycle bin?",
-                            pendingAction = PendingAiAction("delete", note.id, note.title)
-                        )
-                    )
-                }
+                val note = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
+                if (note == null || !agentVisible(note)) ToolOutcome("Note not found or not accessible.")
+                else ToolOutcome(
+                    "A confirmation card was shown to the user. Tell them to tap Confirm to delete it.",
+                    pending = PendingAiAction("delete", note.id, note.title)
+                )
             }
-            "edit_current_note" -> handleEditCurrentNote(args)
             "create_folder" -> {
-                val name = args.optString("name", "").trim()
-                if (name.isBlank()) {
-                    messages.add(ChatMessage(sender = "bot", text = "I need a folder name to create one."))
-                } else {
-                    preferences.addCustomFolder(name)
-                    messages.add(ChatMessage(sender = "bot", text = "Created folder \"$name\"."))
-                }
+                val n = args.optString("name", "").trim()
+                if (n.isBlank()) ToolOutcome("Folder name missing.") else { preferences.addCustomFolder(n); ToolOutcome("Folder \"$n\" created.") }
             }
             "delete_folder" -> {
-                val name = args.optString("name", "").trim()
-                val match = preferences.customFolders.value.find { it.equals(name, ignoreCase = true) }
-                if (match == null) {
-                    messages.add(ChatMessage(sender = "bot", text = "I couldn't find a custom folder named \"$name\"."))
-                } else {
-                    preferences.deleteCustomFolder(match)
-                    messages.add(ChatMessage(sender = "bot", text = "Deleted folder \"$match\"."))
-                }
+                val n = args.optString("name", "").trim()
+                val match = preferences.customFolders.value.find { it.equals(n, true) }
+                if (match == null) ToolOutcome("No custom folder named \"$n\".") else { preferences.deleteCustomFolder(match); ToolOutcome("Folder \"$match\" deleted.") }
             }
             "open_folder" -> {
-                val name = args.optString("name", "").trim()
-                val systemFolders = listOf("All Notes", "Favorites", "APIs Keys", "Code", "Media", "Personal")
-                val allFolders = systemFolders + preferences.customFolders.value
-                val match = allFolders.find { it.equals(name, ignoreCase = true) } ?: allFolders.find { it.contains(name, ignoreCase = true) }
-                if (match != null) {
-                    messages.add(ChatMessage(sender = "bot", text = "Opening folder \"$match\"."))
-                    onOpenFolderFromAi(match)
-                } else {
-                    messages.add(ChatMessage(sender = "bot", text = "I couldn't find a folder named \"$name\". Your folders: ${allFolders.joinToString(", ")}."))
-                }
+                val n = args.optString("name", "").trim()
+                val all = systemFolders + preferences.customFolders.value
+                val match = all.find { it.equals(n, true) } ?: all.find { it.contains(n, true) }
+                if (match == null) ToolOutcome("No folder named \"$n\". Folders: ${all.joinToString(", ")}")
+                else { onOpenFolderFromAi(match); ToolOutcome("Opened folder \"$match\".") }
             }
-            else -> {
-                messages.add(ChatMessage(sender = "bot", text = "I tried to run an action I don't recognize, so I skipped it."))
+            "open_note" -> {
+                val note = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
+                if (note == null || note.isTrash) ToolOutcome("Note not found.")
+                else { trackNote(note); openNoteRespectingLock(note); ToolOutcome("Opening \"${note.title}\" for the user.") }
             }
+            "copy_to_clipboard" -> {
+                val custom = args.optString("text", "")
+                val text = if (custom.isNotBlank()) custom else currentNoteContent.orEmpty()
+                if (text.isBlank()) ToolOutcome("Nothing to copy.") else { clipboard.setText(AnnotatedString(text)); ToolOutcome("Copied to clipboard.") }
+            }
+            "read_screen" -> ToolOutcome(
+                if (currentNoteTitle.isNullOrBlank() && currentNoteContent.isNullOrBlank()) "No note is open on screen."
+                else "Title: ${currentNoteTitle.orEmpty()}\n\n${currentNoteContent.orEmpty().take(15000)}"
+            )
+            else -> ToolOutcome("Unknown tool '$name'.")
         }
     }
 
@@ -714,13 +689,7 @@ fun AiChatScreen(
         attachedContent = null
         attachedPdfImages = null
 
-        messages.add(
-            ChatMessage(
-                sender = "user",
-                text = userMsg,
-                attachedFileName = currentAttachmentName
-            )
-        )
+        messages.add(ChatMessage(sender = "user", text = userMsg, attachedFileName = currentAttachmentName))
         isLoading = true
 
         val botMsgId = java.util.UUID.randomUUID().toString()
@@ -735,91 +704,78 @@ fun AiChatScreen(
                 }
             }
 
-            val history = messages.filter { it.id != botMsgId }.dropLast(1).map { ConversationTurn(it.sender, it.text) }
+            val turns = messages.filter { it.id != botMsgId }.dropLast(1)
+                .map { ConversationTurn(it.sender, it.text) }.toMutableList()
 
-            val combinedNoteContext = buildString {
-                if (!currentNoteTitle.isNullOrBlank()) {
-                    append("Active Note Title: \"$currentNoteTitle\"\n")
-                }
-                if (!currentNoteContent.isNullOrBlank()) {
-                    append("Active Note Content:\n$currentNoteContent\n")
-                }
+            val openNoteContext = buildString {
+                if (!currentNoteTitle.isNullOrBlank()) append("Title: \"$currentNoteTitle\"\n")
+                if (!currentNoteContent.isNullOrBlank()) append("Content:\n$currentNoteContent\n")
             }.ifBlank { null }
 
-            currentActionStatus = "⚡ AU Agent soch rahi hai..."
+            val enabled = AgentTools.ALL.filter {
+                it.id !in disabledTools &&
+                    (it.id != "edit_current_note" || onModifyCurrentNote != null || onApplyAgentNoteToEditor != null)
+            }
+            val notesIndex = try {
+                repository.allActiveNotes.first().filter { agentVisible(it) }.take(40)
+                    .joinToString("\n") { "${it.id} | ${it.title} | ${it.folder}" }
+            } catch (e: Exception) { "" }
+            val sessionText = sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" }
+            val system = AgentTools.buildSystemPrompt(userName, enabled, openNoteContext, notesIndex, sessionText)
 
-            suspend fun streamLiveText(fullText: String) {
-                val words = fullText.split(" ")
-                val sb = StringBuilder()
-                for (i in words.indices) {
-                    sb.append(words[i]).append(" ")
-                    if (i % 2 == 0 || i == words.lastIndex) {
-                        val idx = messages.indexOfFirst { it.id == botMsgId }
-                        if (idx != -1) {
-                            messages[idx] = messages[idx].copy(text = sb.toString())
-                        }
-                        delay(22)
-                    }
+            var prompt = buildString {
+                if (!docText.isNullOrBlank()) {
+                    append("The user attached this document. Read it fully and use it.\n=== DOCUMENT START ===\n")
+                    append(docText).append("\n=== DOCUMENT END ===\n\n")
+                } else if (!docImages.isNullOrEmpty()) {
+                    append("The user attached ${docImages.size} image(s)/page(s). Read them carefully.\n\n")
                 }
-                val firstUser = messages.firstOrNull { it.sender == "user" }?.text?.take(30) ?: "Chat Session"
-                sessionManager.saveSession(ChatSession(currentSessionId, firstUser, System.currentTimeMillis(), messages.toList()))
-                savedSessions.clear()
-                savedSessions.addAll(sessionManager.loadAllSessions())
+                append(userMsg)
+            }
+            var images: List<String> = if (activeProvider == "Gemini") docImages ?: emptyList() else emptyList()
 
-                if (voiceManager.isVoiceModeActive) {
-                    voiceManager.speak(fullText)
+            var finalText = ""
+            var results: List<NoteEntity>? = null
+            var pending: PendingAiAction? = null
+            var steps = 0
+            while (true) {
+                val reply = aiService.chatOnce(activeProvider, key, baseUrl, chosenModel, system, turns, prompt, images)
+                val call = if (enabled.isNotEmpty() && !reply.startsWith("⚠️")) AgentTools.parse(reply) else null
+                if (call == null) { finalText = reply; break }
+                if (steps >= 6) { finalText = call.textBefore.ifBlank { "Maine kaam kar diya." }; break }
+                steps++
+                val outcome = try {
+                    runTool(call.name, call.args)
+                } catch (e: Exception) {
+                    ToolOutcome("Tool failed: ${e.message}")
                 }
+                outcome.noteResults?.let { results = it }
+                outcome.pending?.let { pending = it }
+                turns.add(ConversationTurn("user", prompt))
+                turns.add(ConversationTurn("bot", reply))
+                prompt = "[TOOL RESULT: ${call.name}]\n${outcome.result}\n\nContinue. If everything is done, answer the user in plain text."
+                images = emptyList()
             }
 
-            if (!docText.isNullOrBlank() || !docImages.isNullOrEmpty()) {
-                currentActionStatus = "📄 Document read kar rahi hoon..."
-                val response = aiService.generateResponse(
-                    prompt = userMsg,
-                    apiKey = key,
-                    model = chosenModel,
-                    noteContext = combinedNoteContext,
-                    attachmentContent = docText,
-                    history = history,
-                    attachmentImagesBase64 = docImages ?: emptyList()
-                )
-                isLoading = false
-                currentActionStatus = null
-                streamLiveText(response)
-            } else {
-                when (val result = aiService.generateWithTools(
-                    prompt = userMsg,
-                    apiKey = key,
-                    model = chosenModel,
-                    noteContext = combinedNoteContext,
-                    history = history,
-                    allowEditCurrentNote = onModifyCurrentNote != null,
-                    provider = activeProvider,
-                    customBaseUrl = baseUrl,
-                    onStatus = { s -> currentActionStatus = s }
-                )) {
-                    is AiActionResult.Text -> {
-                        isLoading = false
-                        currentActionStatus = null
-                        streamLiveText(result.text)
-                    }
-                    is AiActionResult.FunctionCall -> {
-                        currentActionStatus = "🛠️ Tool execute ho raha hai: ${result.name}..."
-                        val idx = messages.indexOfFirst { it.id == botMsgId }
-                        if (idx != -1) messages.removeAt(idx)
-                        handleFunctionCall(result.name, result.args)
-                        isLoading = false
-                        currentActionStatus = null
-                        val firstUser = messages.firstOrNull { it.sender == "user" }?.text?.take(30) ?: "Chat Session"
-                        sessionManager.saveSession(ChatSession(currentSessionId, firstUser, System.currentTimeMillis(), messages.toList()))
-                        savedSessions.clear()
-                        savedSessions.addAll(sessionManager.loadAllSessions())
-                        val lastBotMsg = messages.lastOrNull { it.sender == "bot" }?.text.orEmpty()
-                        if (voiceManager.isVoiceModeActive && lastBotMsg.isNotBlank()) {
-                            voiceManager.speak(lastBotMsg)
-                        }
-                    }
+            isLoading = false
+            val words = finalText.ifBlank { "Done." }.split(" ")
+            val sb = StringBuilder()
+            for (i in words.indices) {
+                sb.append(words[i]).append(" ")
+                if (i % 3 == 0 || i == words.lastIndex) {
+                    val idx = messages.indexOfFirst { it.id == botMsgId }
+                    if (idx != -1) messages[idx] = messages[idx].copy(text = sb.toString().trim())
+                    delay(18)
                 }
             }
+            val idx = messages.indexOfFirst { it.id == botMsgId }
+            if (idx != -1) messages[idx] = messages[idx].copy(noteResults = results, pendingAction = pending)
+
+            val firstUser = messages.firstOrNull { it.sender == "user" }?.text?.take(30) ?: "Chat Session"
+            sessionManager.saveSession(ChatSession(currentSessionId, firstUser, System.currentTimeMillis(), messages.toList()))
+            savedSessions.clear()
+            savedSessions.addAll(sessionManager.loadAllSessions())
+            if (voiceManager.isVoiceModeActive && finalText.isNotBlank()) voiceManager.speak(finalText)
         }
     }
 
@@ -874,9 +830,8 @@ fun AiChatScreen(
                     .then(
                         if (isCompactMode) Modifier
                             .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
-                            .widthIn(max = 350.dp)
-                            .fillMaxWidth(0.92f)
-                            .height(420.dp)
+                            .width(compactW.dp)
+                            .height(compactH.dp)
                             .padding(vertical = 4.dp)
                             .shadow(16.dp, RoundedCornerShape(22.dp))
                             .clip(RoundedCornerShape(22.dp))
@@ -900,6 +855,25 @@ fun AiChatScreen(
                         }
                     )
             ) {
+                if (isCompactMode) {
+                    // Drag this corner handle to resize the floating window.
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .zIndex(2f)
+                            .size(34.dp)
+                            .pointerInput(Unit) {
+                                detectDragGestures { change, drag ->
+                                    change.consume()
+                                    compactW = (compactW + drag.x / density).coerceIn(250f, 420f)
+                                    compactH = (compactH + drag.y / density).coerceIn(280f, 700f)
+                                }
+                            },
+                        contentAlignment = Alignment.BottomEnd
+                    ) {
+                        Icon(Icons.Default.DragHandle, contentDescription = "Resize", tint = CrimsonPrimary.copy(alpha = 0.8f), modifier = Modifier.padding(6.dp).size(16.dp))
+                    }
+                }
                 Column(modifier = Modifier.fillMaxSize()) {
                     if (isCompactMode) {
                         Box(
@@ -922,8 +896,9 @@ fun AiChatScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
+                            modifier = Modifier.weight(1f),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             // Hamburger menu to open Sidebar
                             NeuIconButton(
@@ -944,7 +919,7 @@ fun AiChatScreen(
                                     .clip(CircleShape)
                             )
 
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = "AU Agent - $activeModelDisplayName",
                                     fontSize = 13.sp,
@@ -990,8 +965,8 @@ fun AiChatScreen(
 
                             // Expand/Collapse Compact Toggle
                             NeuIconButton(
-                                icon = if (isCompactMode) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = if (isCompactMode) "Expand Fullscreen" else "Collapse to Compact",
+                                icon = if (isCompactMode) Icons.Default.Fullscreen else Icons.Default.FullscreenExit,
+                                contentDescription = if (isCompactMode) "Maximize" else "Minimize to floating window",
                                 isDarkMode = isDarkMode,
                                 size = 34.dp,
                                 iconSize = 18.dp,
@@ -1042,38 +1017,6 @@ fun AiChatScreen(
                         }
                     }
 
-                    // Live Action & Tool Status Banner
-                    AnimatedVisibility(visible = currentActionStatus != null) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 3.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(if (isDarkMode) Color(0x33FF2D55) else Color(0x18FF2D55))
-                                    .border(1.dp, CrimsonPrimary.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(13.dp),
-                                    strokeWidth = 2.dp,
-                                    color = CrimsonPrimary
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = currentActionStatus ?: "",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = CrimsonPrimary
-                                )
-                            }
-                        }
-                    }
-
                     // Full-screen Chat Messages List
                     LazyColumn(
                         state = listState,
@@ -1087,10 +1030,7 @@ fun AiChatScreen(
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clip(RoundedCornerShape(16.dp))
-                                            .background(if (isDarkMode) Color(0x388B152A) else Color(0x1AFF2D55))
-                                            .border(1.dp, if (isDarkMode) Color(0x66FF2D55) else Color(0x44FF2D55), RoundedCornerShape(16.dp))
-                                            .padding(12.dp)
+                                            .padding(vertical = 4.dp)
                                     ) {
                                         Column {
                                             Row(
@@ -1108,7 +1048,7 @@ fun AiChatScreen(
                                                     )
                                                     Spacer(Modifier.width(6.dp))
                                                     Text(
-                                                        text = "AU Agent - $activeModelDisplayName",
+                                                        text = "AU Agent",
                                                         fontSize = 11.sp,
                                                         fontWeight = FontWeight.Bold,
                                                         color = CrimsonPrimary
@@ -1116,24 +1056,6 @@ fun AiChatScreen(
                                                 }
 
                                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                    // Save as rich note button
-                                                    IconButton(
-                                                        onClick = {
-                                                            coroutineScope.launch {
-                                                                val richNote = NoteAgentFormatter.convertToRichNote(msg.text)
-                                                                val savedId = repository.saveNote(richNote)
-                                                                val saved = repository.getNoteByIdOnce(savedId)
-                                                                if (saved != null) {
-                                                                    Toast.makeText(context, "Saved as Formatted Note!", Toast.LENGTH_SHORT).show()
-                                                                    onOpenNoteFromAi(saved)
-                                                                }
-                                                            }
-                                                        },
-                                                        modifier = Modifier.size(24.dp)
-                                                    ) {
-                                                        Icon(Icons.Default.NoteAdd, contentDescription = "Save Note", tint = CrimsonPrimary, modifier = Modifier.size(15.dp))
-                                                    }
-
                                                     // Copy response button
                                                     IconButton(
                                                         onClick = {
@@ -1152,70 +1074,13 @@ fun AiChatScreen(
                                             // Render rich formatted agent message with tables, checkboxes, highlights, headings, callouts, and code blocks
                                             RenderAgentRichMessage(msg.text, isDarkMode)
 
-                                            // Quick Action Bar: "Create Note with Tools" / "Apply to Editor"
-                                            if (msg.text.length > 40 && !msg.text.startsWith("⚠️")) {
-                                                Spacer(modifier = Modifier.height(10.dp))
-                                                HorizontalDivider(
-                                                    color = if (isDarkMode) Color(0x33FF2D55) else Color(0x22FF2D55),
-                                                    thickness = 0.5.dp
-                                                )
-                                                Spacer(modifier = Modifier.height(8.dp))
-
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Button(
-                                                        onClick = {
-                                                            coroutineScope.launch {
-                                                                val richNote = NoteAgentFormatter.convertToRichNote(msg.text)
-                                                                val savedId = repository.saveNote(richNote)
-                                                                val saved = repository.getNoteByIdOnce(savedId)
-                                                                if (saved != null) {
-                                                                    Toast.makeText(context, "Opened note with all Note Writer tools!", Toast.LENGTH_SHORT).show()
-                                                                    onOpenNoteFromAi(saved)
-                                                                }
-                                                            }
-                                                        },
-                                                        colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
-                                                        shape = RoundedCornerShape(8.dp),
-                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                        modifier = Modifier.height(30.dp)
-                                                    ) {
-                                                        Icon(Icons.Default.NoteAdd, contentDescription = null, modifier = Modifier.size(13.dp), tint = Color.White)
-                                                        Spacer(Modifier.width(4.dp))
-                                                        Text("Create Note with Tools", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                                    }
-
-                                                    if (onModifyCurrentNote != null || onApplyAgentNoteToEditor != null) {
-                                                        OutlinedButton(
-                                                            onClick = {
-                                                                val richNote = NoteAgentFormatter.convertToRichNote(msg.text)
-                                                                if (onApplyAgentNoteToEditor != null) {
-                                                                    val spans = RichTextFormatter.deserializeSpans(richNote.styleSpansJson)
-                                                                    onApplyAgentNoteToEditor.invoke(richNote.content, richNote.tableData, spans)
-                                                                } else {
-                                                                    onModifyCurrentNote?.invoke(richNote.content)
-                                                                }
-                                                                Toast.makeText(context, "Applied to Note Editor!", Toast.LENGTH_SHORT).show()
-                                                            },
-                                                            shape = RoundedCornerShape(8.dp),
-                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                            modifier = Modifier.height(30.dp)
-                                                        ) {
-                                                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(12.dp), tint = CrimsonPrimary)
-                                                            Spacer(Modifier.width(4.dp))
-                                                            Text("Apply to Editor", fontSize = 11.sp, color = CrimsonPrimary)
-                                                        }
-                                                    }
-                                                }
-                                            }
-
                                             // Note search results — tap to pick which one you meant.
                                             msg.noteResults?.let { results ->
                                                 Spacer(modifier = Modifier.height(8.dp))
-                                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Column(
+                                                    modifier = Modifier.heightIn(max = 190.dp).verticalScroll(rememberScrollState()),
+                                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
                                                     results.forEach { note ->
                                                         Box(
                                                             modifier = Modifier
@@ -1287,7 +1152,7 @@ fun AiChatScreen(
                                         Box(
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(16.dp))
-                                                .background(Color(0xFF2563EB))
+                                                .background(CrimsonPrimary.copy(alpha = 0.92f))
                                                 .padding(horizontal = 14.dp, vertical = 9.dp)
                                         ) {
                                             SelectionContainer {
@@ -1305,7 +1170,7 @@ fun AiChatScreen(
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = CrimsonPrimary, strokeWidth = 2.dp)
-                                        Text("AU Bot is thinking...", fontSize = 12.sp, color = CrimsonPrimary)
+                                        Text("Soch rahi hoon…", fontSize = 12.sp, color = CrimsonPrimary)
                                     }
                                 }
                             }
@@ -1392,6 +1257,18 @@ fun AiChatScreen(
                                             )
                                         }
 
+                                        IconButton(
+                                            onClick = { showToolsSheet = true },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Build,
+                                                contentDescription = "Agent tools",
+                                                tint = if (disabledTools.isEmpty()) (if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray) else CrimsonPrimary,
+                                                modifier = Modifier.size(19.dp)
+                                            )
+                                        }
+
                                         TextField(
                                             value = inputText,
                                             onValueChange = { inputText = it },
@@ -1422,20 +1299,6 @@ fun AiChatScreen(
                                                     }
                                                 }
                                         )
-
-                                        if (inputText.length > 60) {
-                                            IconButton(
-                                                onClick = { showMaximizedInput = true },
-                                                modifier = Modifier.size(32.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.OpenInFull,
-                                                    contentDescription = "Expand editor",
-                                                    tint = CrimsonPrimary,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                            }
-                                        }
 
                                         IconButton(
                                             onClick = {
@@ -1488,6 +1351,60 @@ fun AiChatScreen(
                 }
             }
         }
+
+    // First open: ask the user's name so the agent can use it.
+    if (isOpen && !namePrompted) {
+        var nameInput by remember { mutableStateOf("") }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { preferences.setAgentNamePrompted() },
+            title = { Text("Aapka naam kya hai?") },
+            text = {
+                Column {
+                    Text("AU Agent aapko isi naam se bulayega.", fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = nameInput, onValueChange = { nameInput = it }, singleLine = true, placeholder = { Text("Your name") })
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    if (nameInput.isNotBlank()) preferences.setAgentUserName(nameInput)
+                    preferences.setAgentNamePrompted()
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { preferences.setAgentNamePrompted() }) { Text("Skip") }
+            }
+        )
+    }
+
+    // Tools picker: choose what the agent is allowed to do.
+    if (showToolsSheet) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showToolsSheet = false },
+            title = { Text("Agent tools") },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    AgentTools.ALL.groupBy { it.group }.forEach { (group, tools) ->
+                        Text(group.uppercase(), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary, modifier = Modifier.padding(top = 8.dp, bottom = 2.dp))
+                        tools.forEach { tool ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(tool.label, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                                androidx.compose.material3.Switch(
+                                    checked = tool.id !in disabledTools,
+                                    onCheckedChange = { preferences.setAgentToolEnabled(tool.id, it) }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { showToolsSheet = false }) { Text("Done") } }
+        )
+    }
 
     // Item 22: full-screen editing view for long messages, opened via the
     // input box's maximize icon.
@@ -1672,7 +1589,7 @@ fun AiChatScreen(
                                 }
                             }
                             Spacer(modifier = Modifier.height(8.dp))
-                            val providersList = listOf("Gemini", "DeepSeek", "OpenAI", "Anthropic", "Custom")
+                            val providersList = listOf("Gemini") + providerEntries.values.filter { it.apiKey.isNotBlank() }.map { it.name }
                             Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 providersList.forEach { p ->
                                     val isSelected = activeProvider == p
@@ -1691,67 +1608,6 @@ fun AiChatScreen(
                                 }
                             }
 
-                            // Custom Provider Configuration UI when Custom is selected
-                            if (activeProvider == "Custom") {
-                                Spacer(modifier = Modifier.height(10.dp))
-                                HorizontalDivider(color = Color.Gray.copy(alpha = 0.2f))
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text("Configure Custom Provider:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary)
-                                Spacer(modifier = Modifier.height(6.dp))
-
-                                val currentCustom = providerEntries["Custom"]
-                                var customBaseUrl by remember(currentCustom) { mutableStateOf(currentCustom?.baseUrl.orEmpty()) }
-                                var customModel by remember(currentCustom) { mutableStateOf(currentCustom?.model.orEmpty()) }
-                                var customKey by remember(currentCustom) { mutableStateOf(currentCustom?.apiKey.orEmpty()) }
-
-                                OutlinedTextField(
-                                    value = customBaseUrl,
-                                    onValueChange = { customBaseUrl = it },
-                                    label = { Text("Base URL / Endpoint", fontSize = 10.sp) },
-                                    placeholder = { Text("https://api.openai.com/v1", fontSize = 10.sp) },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                OutlinedTextField(
-                                    value = customModel,
-                                    onValueChange = { customModel = it },
-                                    label = { Text("Model Name", fontSize = 10.sp) },
-                                    placeholder = { Text("e.g. llama-3.3-70b-instruct", fontSize = 10.sp) },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                OutlinedTextField(
-                                    value = customKey,
-                                    onValueChange = { customKey = it },
-                                    label = { Text("API Key (optional if local)", fontSize = 10.sp) },
-                                    placeholder = { Text("sk-...", fontSize = 10.sp) },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Button(
-                                    onClick = {
-                                        preferences.saveApiProvider(
-                                            name = "Custom",
-                                            apiKey = customKey.trim(),
-                                            baseUrl = customBaseUrl.trim(),
-                                            model = customModel.trim(),
-                                            isCustom = true
-                                        )
-                                        Toast.makeText(context, "Custom provider settings saved!", Toast.LENGTH_SHORT).show()
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text("Save Custom Provider", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                }
-                            }
                         }
                     }
 
@@ -1773,7 +1629,7 @@ fun AiChatScreen(
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Icon(Icons.Default.Tune, contentDescription = null, tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(16.dp))
-                                    Text("Advanced Model Mode", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                                    Text("Models", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
                                 }
                                 Icon(
                                     if (showAdvancedModelOptions) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
@@ -1788,13 +1644,14 @@ fun AiChatScreen(
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text("Select Model for $activeProvider:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray)
                                 Spacer(modifier = Modifier.height(6.dp))
-                                val availableModels = when (activeProvider) {
-                                    "Gemini" -> listOf("gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-pro")
-                                    "DeepSeek" -> listOf("deepseek-chat", "deepseek-coder", "deepseek-reasoner")
-                                    "OpenAI" -> listOf("gpt-4o-mini", "gpt-4o")
-                                    "Anthropic" -> listOf("claude-3-5-sonnet-20241022", "claude-3-haiku-20240307")
-                                    "Custom" -> listOf(providerEntries["Custom"]?.model?.ifBlank { "custom-model" } ?: "custom-model")
-                                    else -> listOf("default-model")
+                                val detectedModelsMap by preferences.detectedModels.collectAsState()
+                                val availableModels = detectedModelsMap[activeProvider].orEmpty()
+                                if (availableModels.isEmpty()) {
+                                    Text(
+                                        "Abhi koi model detect nahi hua. Settings → API Room me $activeProvider ka key daalo aur 'Model Detector' chalao — wahi real models yahan dikhenge.",
+                                        fontSize = 11.sp,
+                                        color = Color.Gray
+                                    )
                                 }
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     availableModels.forEach { m ->

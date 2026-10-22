@@ -371,6 +371,36 @@ class AppPreferences(context: Context) {
         _activeProvider.value = provider
     }
 
+    // ---- AU Agent: user's name (asked on first open) + which tools the agent may use ----
+    private val _agentUserName = MutableStateFlow(prefs.getString("agent_user_name", "") ?: "")
+    val agentUserName: StateFlow<String> = _agentUserName.asStateFlow()
+
+    fun setAgentUserName(name: String) {
+        val clean = name.trim().take(40)
+        prefs.edit().putString("agent_user_name", clean).apply()
+        _agentUserName.value = clean
+    }
+
+    private val _agentNamePrompted = MutableStateFlow(prefs.getBoolean("agent_name_prompted", false))
+    val agentNamePrompted: StateFlow<Boolean> = _agentNamePrompted.asStateFlow()
+
+    fun setAgentNamePrompted() {
+        prefs.edit().putBoolean("agent_name_prompted", true).apply()
+        _agentNamePrompted.value = true
+    }
+
+    // Tool ids the user switched OFF in the chat's Tools sheet (default: everything on).
+    private val _agentDisabledTools = MutableStateFlow(
+        (prefs.getString("agent_disabled_tools", "") ?: "").split(",").filter { it.isNotBlank() }.toSet()
+    )
+    val agentDisabledTools: StateFlow<Set<String>> = _agentDisabledTools.asStateFlow()
+
+    fun setAgentToolEnabled(toolId: String, enabled: Boolean) {
+        val updated = if (enabled) _agentDisabledTools.value - toolId else _agentDisabledTools.value + toolId
+        _agentDisabledTools.value = updated
+        prefs.edit().putString("agent_disabled_tools", updated.joinToString(",")).apply()
+    }
+
     // ---- Security settings: verify PIN before deleting notes / folders ----
     private val _verifyPinOnDelete = MutableStateFlow(prefs.getBoolean("verify_pin_on_delete", true))
     val verifyPinOnDelete: StateFlow<Boolean> = _verifyPinOnDelete.asStateFlow()
