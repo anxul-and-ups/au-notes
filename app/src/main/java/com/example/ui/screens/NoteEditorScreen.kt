@@ -20,6 +20,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.ui.input.pointer.PointerEventPass
+import com.example.ui.components.PdfToolSheet
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -60,6 +69,7 @@ import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -80,7 +90,6 @@ import androidx.compose.material.icons.filled.FormatStrikethrough
 import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.OpenInFull
-import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Title
@@ -186,7 +195,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun NoteEditorScreen(
     initialNote: NoteEntity?,
@@ -331,12 +340,9 @@ fun NoteEditorScreen(
     // Dialogs & Modals state
     // (Alarm dialog moved to ReadNoteScreen — Item 14)
     var showImageEditModal by remember { mutableStateOf<RichTextFormatter.AttachmentInfo?>(null) }
-    var showAiChatbotModal by remember { mutableStateOf(false) }
+    var showPdfMode by remember { mutableStateOf(false) }
     var showTableFullscreen by remember { mutableStateOf(false) }
 
-    // Floating Chatbot Position
-    var botOffsetX by remember { mutableFloatStateOf(0f) }
-    var botOffsetY by remember { mutableFloatStateOf(0f) }
 
     // Image Attachment picker
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -543,6 +549,34 @@ fun NoteEditorScreen(
         contentValue = TextFieldValue(newText, selection = TextRange(caret))
     }
 
+    /** Inserts an empty code box ("```" fences) at the caret, caret placed inside it. */
+    fun insertCodeBox() {
+        val text = contentValue.text
+        val sel = contentValue.selection
+        val pos = sel.max.coerceIn(0, text.length)
+        val lineStart = text.lastIndexOf('\n', pos - 1) + 1
+        val lineEnd = text.indexOf('\n', pos).let { if (it < 0) text.length else it }
+        val line = text.substring(lineStart, lineEnd)
+        pushUndo()
+        val selected = if (!sel.collapsed) text.substring(sel.min, sel.max) else ""
+        val newText: String
+        val caret: Int
+        if (selected.isNotEmpty()) {
+            // wrap the selected text in a box
+            val block = (if (sel.min > 0 && text[sel.min - 1] != '\n') "\n" else "") + "```\n" + selected + "\n```" + (if (sel.max < text.length && text[sel.max] != '\n') "\n" else "")
+            newText = text.substring(0, sel.min) + block + text.substring(sel.max)
+            caret = sel.min + block.length
+        } else if (line.isBlank()) {
+            newText = text.substring(0, lineStart) + "```\n\n```" + text.substring(lineEnd)
+            caret = lineStart + 4
+        } else {
+            newText = text.substring(0, lineEnd) + "\n```\n\n```" + text.substring(lineEnd)
+            caret = lineEnd + 5
+        }
+        spans = RichTextFormatter.adjustSpansForEdit(spans, text, newText)
+        contentValue = TextFieldValue(newText, selection = TextRange(caret.coerceAtMost(newText.length)))
+    }
+
     /** Tapping the box inside the note: empty -> checked -> crossed -> empty. */
     fun cycleCheckboxAt(markerStart: Int) {
         val text = contentValue.text
@@ -699,6 +733,29 @@ fun NoteEditorScreen(
         }
     }
 
+    /**
+     * Backspace right after a list marker ("[ ] ", "• ", "3. ", "b. ", "IV. ") removes the WHOLE marker in one
+     * tap instead of eating it character by character (which used to show "[ ]" half-erased first).
+     */
+    fun eraseMarkerAtomically(old: TextFieldValue, new: TextFieldValue): TextFieldValue {
+        val oldText = old.text
+        val newText = new.text
+        if (newText.length != oldText.length - 1 || !old.selection.collapsed || !new.selection.collapsed) return new
+        val cursorOld = old.selection.start
+        if (cursorOld < 1 || new.selection.start != cursorOld - 1) return new
+        val lineStart = oldText.lastIndexOf('\n', cursorOld - 1) + 1
+        val m = listPrefixRegex.matchEntire(oldText.substring(lineStart, oldText.indexOf('\n', cursorOld).let { if (it < 0) oldText.length else it })) ?: return new
+        val indent = m.groupValues[1].length
+        val prefix = m.groupValues[2]
+        if (prefix.isEmpty()) return new
+        val markerStart = lineStart + indent
+        val markerEnd = markerStart + prefix.length
+        // the user deleted a character from inside the marker, with the caret at/inside it
+        if (cursorOld < markerStart + 1 || cursorOld > markerEnd) return new
+        val cleared = oldText.substring(0, markerStart) + oldText.substring(markerEnd)
+        return TextFieldValue(cleared, selection = TextRange(markerStart))
+    }
+
     /** Enter on a list line continues the list; Enter on an empty list item ends it. */
     fun continueListOnEnter(old: TextFieldValue, new: TextFieldValue): TextFieldValue {
         val oldText = old.text
@@ -733,6 +790,36 @@ fun NoteEditorScreen(
         val insertion = indent + nextPrefix
         val result = newText.substring(0, cursor) + insertion + newText.substring(cursor)
         return TextFieldValue(result, selection = TextRange(cursor + insertion.length))
+    }
+
+    // ---- Writing timer: starts on the first keystroke, keeps running until the editor is closed ----
+    val initialTitleForTimer = remember { initialNote?.title ?: "" }
+    val initialTextForTimer = remember { initialNote?.content ?: "" }
+    var writeStarted by remember { mutableStateOf(false) }
+    var writeSeconds by remember { mutableStateOf(0L) }
+    var writeSecondsSaved by remember { mutableStateOf(0L) }
+    LaunchedEffect(title, contentValue.text) {
+        if (!writeStarted && (title != initialTitleForTimer || contentValue.text != initialTextForTimer)) writeStarted = true
+    }
+    LaunchedEffect(writeStarted) {
+        if (writeStarted) {
+            while (true) {
+                kotlinx.coroutines.delay(1000)
+                writeSeconds += 1
+                if (writeSeconds % 15L == 0L && currentNoteId > 0L) {
+                    preferences.addNoteWriteSeconds(currentNoteId, writeSeconds - writeSecondsSaved)
+                    writeSecondsSaved = writeSeconds
+                }
+            }
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            if (currentNoteId > 0L && writeSeconds > writeSecondsSaved) {
+                preferences.addNoteWriteSeconds(currentNoteId, writeSeconds - writeSecondsSaved)
+                writeSecondsSaved = writeSeconds
+            }
+        }
     }
 
     val mainScrollState = rememberScrollState()
@@ -893,6 +980,22 @@ fun NoteEditorScreen(
                     elevation = 3.dp
                 ) {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        // Writing timer (same clock icon as the alarm)
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
+                            Icon(
+                                Icons.Default.Alarm, contentDescription = "Writing timer",
+                                tint = if (writeStarted) CrimsonPrimary else Color.Gray, modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = String.format("%02d:%02d", writeSeconds / 60, writeSeconds % 60),
+                                fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                                color = if (writeStarted) CrimsonPrimary else Color.Gray
+                            )
+                            if (!writeStarted) {
+                                Text("  starts when you type", fontSize = 10.sp, color = Color.Gray.copy(alpha = 0.7f))
+                            }
+                        }
                         BasicTextField(
                             value = title,
                             onValueChange = { title = it },
@@ -1037,7 +1140,7 @@ fun NoteEditorScreen(
                     BasicTextField(
                         value = contentValue,
                         onValueChange = { rawVal ->
-                            val newVal = continueListOnEnter(contentValue, rawVal)
+                            val newVal = continueListOnEnter(contentValue, eraseMarkerAtomically(contentValue, rawVal))
                             val oldText = contentValue.text
                             val newText = newVal.text
                             if (newText != oldText) {
@@ -1076,7 +1179,7 @@ fun NoteEditorScreen(
                                 if (isJsonMode) {
                                     buildJsonHighlightedText(text.text)
                                 } else {
-                                    decorateListMarkers(
+                                    com.example.ui.util.LinkText.highlight(decorateCodeFences(decorateListMarkers(
                                         RichTextFormatter.buildStyledText(
                                             text = text.text,
                                             spans = spans,
@@ -1090,7 +1193,7 @@ fun NoteEditorScreen(
                                                 (AttachmentRenderer.frameHeightPx(att, fieldWidthPx * att.widthFraction) + 10.dp.toPx()).toSp()
                                             }
                                         }
-                                    )
+                                    )))
                                 },
                                 OffsetMapping.Identity
                             )
@@ -1137,8 +1240,41 @@ fun NoteEditorScreen(
                                     modifier = Modifier
                                         .offset { IntOffset(0, top.roundToInt()) }
                                         .width(with(density) { (fieldWidthPx * att.widthFraction).toDp() })
+                                        // two-finger pinch on the image resizes it right inside the note
+                                        .pinchToResize(att.id) { scale ->
+                                            attachments = attachments.map {
+                                                if (it.id == att.id && !it.locked) it.copy(widthFraction = (it.widthFraction * scale).coerceIn(0.2f, 1f)) else it
+                                            }
+                                        }
                                         .clickable { showImageEditModal = att }
                                 )
+                                // visible controls on the image: edit / smaller / bigger
+                                Row(
+                                    modifier = Modifier
+                                        .offset {
+                                            IntOffset(
+                                                (fieldWidthPx * att.widthFraction - with(density) { 108.dp.toPx() }).roundToInt().coerceAtLeast(0),
+                                                top.roundToInt() + 6
+                                            )
+                                        }
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(Color(0xAA000000)),
+                                    horizontalArrangement = Arrangement.spacedBy(0.dp)
+                                ) {
+                                    listOf(
+                                        Triple<androidx.compose.ui.graphics.vector.ImageVector, String, () -> Unit>(Icons.Default.Edit, "Edit image", { showImageEditModal = att }),
+                                        Triple<androidx.compose.ui.graphics.vector.ImageVector, String, () -> Unit>(Icons.Default.Remove, "Smaller", {
+                                            attachments = attachments.map { if (it.id == att.id && !it.locked) it.copy(widthFraction = (it.widthFraction - 0.1f).coerceIn(0.2f, 1f)) else it }
+                                        }),
+                                        Triple<androidx.compose.ui.graphics.vector.ImageVector, String, () -> Unit>(Icons.Default.Add, "Bigger", {
+                                            attachments = attachments.map { if (it.id == att.id && !it.locked) it.copy(widthFraction = (it.widthFraction + 0.1f).coerceIn(0.2f, 1f)) else it }
+                                        })
+                                    ).forEach { (icon, desc, action) ->
+                                        Box(Modifier.size(36.dp).clickable { action() }, contentAlignment = Alignment.Center) {
+                                            Icon(icon, desc, tint = Color.White, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                }
                                 if (att.locked) {
                                     Icon(
                                         Icons.Default.Lock, "Locked",
@@ -1189,10 +1325,99 @@ fun NoteEditorScreen(
                             }
                         }
                     }
+
+                    // "Copy" chip on every code box (copies only that box's code)
+                    textLayout?.let { layout ->
+                        val full = contentValue.text
+                        if (layout.layoutInput.text.length == full.length && fieldWidthPx > 0f) {
+                            com.example.ui.components.CodeFences.find(full).forEach { f ->
+                                val line = layout.getLineForOffset(f.start)
+                                val top = layout.getLineTop(line)
+                                Row(
+                                    modifier = Modifier
+                                        .offset { IntOffset((fieldWidthPx - with(density) { 74.dp.toPx() }).roundToInt().coerceAtLeast(0), top.roundToInt()) }
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(CrimsonPrimary.copy(alpha = 0.9f))
+                                        .clickable {
+                                            clipboard.setText(AnnotatedString(f.code))
+                                            Toast.makeText(context, "Code copied", Toast.LENGTH_SHORT).show()
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Copy", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
                     }
 
                     // Safe Bottom Space so typing near the bottom never slips behind the toolbar
                     Spacer(modifier = Modifier.height(160.dp))
+                }
+
+                // Quick format bar: sits right above the keyboard, so text styles change live while typing
+                if (WindowInsets.isImeVisible) {
+                    val qSel = contentValue.selection
+                    fun qActive(type: String, typing: Boolean) =
+                        if (qSel.collapsed) typing else RichTextFormatter.isPropertyActiveThroughout(spans, type, qSel.min, qSel.max)
+                    val qBold = qActive("bold", isBold)
+                    val qItalic = qActive("italic", isItalic)
+                    val qUnder = qActive("underline", isUnderline)
+                    val qStrike = qActive("strikethrough", isStrikethrough)
+                    val qHi = qActive("highlight", activeHighlight)
+                    val qSize = if (qSel.collapsed) (activeFontSize ?: fontSize)
+                    else spans.lastOrNull { it.type == "fontsize" && it.start <= qSel.min && it.end >= qSel.max }?.value?.toIntOrNull() ?: fontSize
+                    val qColor: String? = if (qSel.collapsed) activeColorHex
+                    else spans.lastOrNull { it.type == "color" && it.start <= qSel.min && it.end >= qSel.max }?.value
+                    val qIdle = if (isDarkMode) Color.White else Color(0xFF222222)
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        isDarkMode = isDarkMode,
+                        elevation = 4.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            @Composable
+                            fun QBtn(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, on: Boolean, onClick: () -> Unit) {
+                                Box(
+                                    Modifier.size(36.dp).clip(RoundedCornerShape(10.dp))
+                                        .background(if (on) CrimsonPrimary.copy(alpha = 0.25f) else Color.Transparent)
+                                        .clickable(onClick = onClick),
+                                    contentAlignment = Alignment.Center
+                                ) { Icon(icon, desc, tint = if (on) CrimsonPrimary else qIdle, modifier = Modifier.size(20.dp)) }
+                            }
+                            QBtn(Icons.Default.FormatBold, "Bold", qBold) { applyOrToggleBooleanFormat("bold", isBold) { isBold = it } }
+                            QBtn(Icons.Default.FormatItalic, "Italic", qItalic) { applyOrToggleBooleanFormat("italic", isItalic) { isItalic = it } }
+                            QBtn(Icons.Default.FormatUnderlined, "Underline", qUnder) { applyOrToggleBooleanFormat("underline", isUnderline) { isUnderline = it } }
+                            QBtn(Icons.Default.FormatStrikethrough, "Strikethrough", qStrike) { applyOrToggleBooleanFormat("strikethrough", isStrikethrough) { isStrikethrough = it } }
+                            QBtn(Icons.Default.Highlight, "Highlight", qHi) { applyOrToggleHighlight() }
+                            ToolDivider(isDarkMode)
+                            QBtn(Icons.Default.Remove, "Smaller text", false) { applyOrSetFontSize((qSize - 1).coerceAtLeast(10)) }
+                            Text("$qSize", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = qIdle, modifier = Modifier.padding(horizontal = 2.dp))
+                            QBtn(Icons.Default.Add, "Bigger text", false) { applyOrSetFontSize((qSize + 1).coerceAtMost(48)) }
+                            ToolDivider(isDarkMode)
+                            listOf<String?>(null, "#E53935", "#FB8C00", "#43A047", "#1E88E5", "#8E24AA").forEach { hex ->
+                                val swatch = hex?.let { Color(android.graphics.Color.parseColor(it)) } ?: qIdle
+                                val picked = qColor.equals(hex, ignoreCase = true)
+                                Box(
+                                    Modifier.size(34.dp).clickable { applyOrSetColor(hex) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Box(
+                                        Modifier.size(if (picked) 24.dp else 20.dp).clip(CircleShape).background(swatch)
+                                            .border(if (picked) 2.dp else 1.dp, if (picked) CrimsonPrimary else Color.Gray.copy(0.5f), CircleShape)
+                                    )
+                                }
+                            }
+                            ToolDivider(isDarkMode)
+                            QBtn(Icons.Default.MoreHoriz, "More text styles", false) { showFormatSheet = true }
+                        }
+                    }
                 }
 
                 // Bottom toolbar — Samsung Notes style: one scrolling row of tools
@@ -1215,16 +1440,7 @@ fun NoteEditorScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // Text styles (bold / italic / underline / strike / highlight / size / colour)
-                        EditorTool(
-                            icon = Icons.Default.TextFormat, label = "Text styles",
-                            active = isBold || isItalic || isUnderline || isStrikethrough || activeHighlight ||
-                                activeColorHex != null || activeFontSize != null,
-                            idleTint = idleTint
-                        ) { showFormatSheet = true }
-
-                        ToolDivider(isDarkMode)
-
+                        // (Text styles now live in the quick format bar above the keyboard)
                         EditorTool(icon = Icons.Default.FormatListNumbered, label = "Paragraph style",
                             active = currentListKind != "none" && currentListKind != "check" || alignment != "left", idleTint = idleTint) { showParagraphStyleSheet = true }
 
@@ -1243,6 +1459,13 @@ fun NoteEditorScreen(
 
                         ToolDivider(isDarkMode)
 
+                        // Code box: copyable block with title + maximize (Read mode has a Copy button on it)
+                        EditorTool(icon = Icons.Default.ContentPaste, label = "Code box", active = false, idleTint = idleTint) {
+                            insertCodeBox()
+                        }
+
+                        ToolDivider(isDarkMode)
+
                         // Insert / edit table
                         EditorTool(
                             painter = painterResource(R.drawable.ic_insert_table), label = "Insert table",
@@ -1254,39 +1477,18 @@ fun NoteEditorScreen(
                             painter = painterResource(R.drawable.ic_svg_media), label = "Insert image",
                             active = false, idleTint = idleTint
                         ) { imagePickerLauncher.launch("image/*") }
+
+                        ToolDivider(isDarkMode)
+
+                        // PDF mode: page preview + PDF / single page / image export
+                        EditorTool(
+                            icon = Icons.Default.PictureAsPdf, label = "PDF",
+                            active = false, idleTint = idleTint
+                        ) { showPdfMode = true }
                     }
                 }
             }
 
-            // SINGLE Floating AU AI Chatbot with custom sphere mascot icon (PART F Item 2 & 3 & 4)
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .offset { IntOffset(botOffsetX.roundToInt(), botOffsetY.roundToInt()) }
-                    .padding(end = 20.dp, bottom = 80.dp)
-                    .pointerInput(Unit) {
-                        detectDragGestures { change, dragAmount ->
-                            change.consume()
-                            botOffsetX += dragAmount.x
-                            botOffsetY += dragAmount.y
-                        }
-                    }
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(54.dp)
-                        .shadow(10.dp, CircleShape)
-                        .clip(CircleShape)
-                        .background(Color.Black)
-                        .clickable { showAiChatbotModal = true }
-                ) {
-                    Image(
-                        painter = painterResource(R.drawable.au_bot_icon_1790271144581),
-                        contentDescription = "AU Chatbot",
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-            }
         }
     }
 
@@ -1524,43 +1726,22 @@ fun NoteEditorScreen(
         )
     }
 
-    // Floating Chatbot with live editor access — Item 20. Reuses the same
-    // AiChatScreen used elsewhere in the app (with its file/image OCR
-    // attachment support), but wired here with the CURRENT editor content and
-    // a callback that lets the model actually rewrite/insert into this note.
-    AiChatScreen(
-        isOpen = showAiChatbotModal,
-        isDarkMode = isDarkMode,
-        preferences = preferences,
-        repository = repository,
-        currentNoteContent = "Title: $title\n\n${ImageMarkers.strip(contentValue.text)}",
-        onClose = { showAiChatbotModal = false },
-        onCreateNoteFromAi = { noteTitle, noteContent, noteCat ->
-            coroutineScope.launch {
-                val entity = NoteEntity(title = noteTitle, content = noteContent, category = noteCat)
-                repository.saveNote(entity)
-                showAiChatbotModal = false
-                Toast.makeText(context, "Note created: $noteTitle", Toast.LENGTH_SHORT).show()
-            }
-        },
-        onModifyCurrentNote = { newContent ->
-            pushUndo()
-            contentValue = TextFieldValue(newContent, selection = TextRange(newContent.length))
-            Toast.makeText(context, "Note updated by AU Agent", Toast.LENGTH_SHORT).show()
-        },
-        onApplyAgentNoteToEditor = { newContent, newTable, newSpans ->
-            pushUndo()
-            contentValue = TextFieldValue(newContent, selection = TextRange(newContent.length))
-            if (newTable.isNotBlank()) {
-                tableData = newTable
-            }
-            if (newSpans.isNotEmpty()) {
-                spans = newSpans
-            }
-            showAiChatbotModal = false
-            Toast.makeText(context, "Note updated with AU Agent tools!", Toast.LENGTH_SHORT).show()
+    if (showPdfMode) {
+        val snapshot = remember {
+            NoteEntity(
+                id = currentNoteId,
+                title = title,
+                content = contentValue.text,
+                category = selectedCategory,
+                fontSize = fontSize,
+                isCodeFormat = isCodeFormat,
+                tableData = tableData,
+                styleSpansJson = RichTextFormatter.serializeSpans(spans),
+                attachmentsJson = RichTextFormatter.serializeAttachments(attachments)
+            )
         }
-    )
+        PdfToolSheet(note = snapshot, isDarkMode = isDarkMode, onDismiss = { showPdfMode = false })
+    }
 
     // Image Edit Modal (Move, Crop, Resize, Rename - PART F Item 5)
     showImageEditModal?.let { imgAtt ->
@@ -1661,4 +1842,40 @@ private fun ToolDivider(isDarkMode: Boolean) {
             .height(22.dp)
             .background(if (isDarkMode) Color(0x33FFFFFF) else Color(0x22000000))
     )
+}
+
+/** Two-finger pinch only (one finger keeps scrolling / tapping): reports the scale change between moves. */
+private fun Modifier.pinchToResize(key: Any?, onScale: (Float) -> Unit): Modifier = this.pointerInput(key) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false)
+        var prevDist = 0f
+        do {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val down = event.changes.filter { it.pressed }
+            if (down.size >= 2) {
+                val d = (down[0].position - down[1].position).getDistance()
+                if (prevDist > 0f && d > 0f) {
+                    onScale(d / prevDist)
+                    event.changes.forEach { it.consume() }
+                }
+                prevDist = d
+            } else {
+                prevDist = 0f
+            }
+        } while (event.changes.any { it.pressed })
+    }
+}
+
+/** Code boxes in the editor: monospace + soft background (same length, so offsets never change). */
+private fun decorateCodeFences(base: AnnotatedString): AnnotatedString {
+    val fences = com.example.ui.components.CodeFences.find(base.text)
+    if (fences.isEmpty()) return base
+    return androidx.compose.ui.text.buildAnnotatedString {
+        append(base)
+        fences.forEach { f ->
+            addStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0x2A8A94A6)), f.start, f.end.coerceAtMost(base.length))
+            // the ``` lines themselves are faint
+            addStyle(SpanStyle(color = Color(0x778A94A6)), f.start, f.openLineEnd.coerceAtMost(base.length))
+        }
+    }
 }

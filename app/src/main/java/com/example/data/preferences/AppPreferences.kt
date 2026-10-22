@@ -371,6 +371,23 @@ class AppPreferences(context: Context) {
         _activeProvider.value = provider
     }
 
+    // ---- Writing timer: seconds a user actively spent typing in each note (shown in Read mode) ----
+    private val _noteWriteSeconds = MutableStateFlow(
+        (prefs.getString("note_write_seconds", "") ?: "").split(",").mapNotNull {
+            val p = it.split(":")
+            if (p.size == 2) (p[0].toLongOrNull() ?: return@mapNotNull null) to (p[1].toLongOrNull() ?: return@mapNotNull null) else null
+        }.toMap()
+    )
+    val noteWriteSeconds: StateFlow<Map<Long, Long>> = _noteWriteSeconds.asStateFlow()
+
+    /** Adds [seconds] to the stored writing time of a note. */
+    fun addNoteWriteSeconds(noteId: Long, seconds: Long) {
+        if (noteId <= 0 || seconds <= 0) return
+        val updated = _noteWriteSeconds.value + (noteId to ((_noteWriteSeconds.value[noteId] ?: 0L) + seconds))
+        _noteWriteSeconds.value = updated
+        prefs.edit().putString("note_write_seconds", updated.entries.joinToString(",") { "${it.key}:${it.value}" }).apply()
+    }
+
     // ---- AU Agent: user's name (asked on first open) + which tools the agent may use ----
     private val _agentUserName = MutableStateFlow(prefs.getString("agent_user_name", "") ?: "")
     val agentUserName: StateFlow<String> = _agentUserName.asStateFlow()

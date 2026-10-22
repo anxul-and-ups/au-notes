@@ -341,7 +341,7 @@ class AiService {
                     put("role", "user")
                     val parts = JSONArray().put(JSONObject().put("text", prompt))
                     for (img in imagesBase64.take(8)) {
-                        parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", "image/png").put("data", img)))
+                        parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", if (img.startsWith("/9j/")) "image/jpeg" else "image/png").put("data", img)))
                     }
                     put("parts", parts)
                 }

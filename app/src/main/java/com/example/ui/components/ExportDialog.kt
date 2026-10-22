@@ -86,7 +86,7 @@ fun ExportDialog(
         )
     }
 
-    val extensions = listOf(".txt", ".pdf", ".docx", ".html", ".py", ".xml", ".json")
+    val extensions = listOf(".txt", ".pdf", ".png", ".docx", ".html", ".py", ".xml", ".json")
 
     var savedPath by remember { mutableStateOf<String?>(null) }
     var isWorking by remember { mutableStateOf(false) }
@@ -184,6 +184,7 @@ fun ExportDialog(
                         }
                         val accent = when (ext) {
                             ".pdf" -> Color(0xFFE53935)
+                            ".png" -> Color(0xFF26A69A)
                             ".docx" -> Color(0xFF1E88E5)
                             ".json" -> Color(0xFFFFB300)
                             ".xml" -> Color(0xFF8E24AA)

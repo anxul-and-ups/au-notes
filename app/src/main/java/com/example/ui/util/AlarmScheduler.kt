@@ -26,6 +26,26 @@ data class SystemRingtoneItem(
 
 object AlarmScheduler {
 
+    /**
+     * Copies a tone picked from device storage into the app's own folder, so it is still readable when the
+     * alarm fires later (a picked content:// URI loses its permission after a while / a restart).
+     */
+    fun persistTone(context: Context, uri: android.net.Uri?, noteId: Long): android.net.Uri? {
+        if (uri == null) return null
+        if (uri.scheme == "file") return uri
+        return try {
+            val dir = java.io.File(context.filesDir, "alarm_tones").apply { mkdirs() }
+            val target = java.io.File(dir, "tone_$noteId")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                java.io.FileOutputStream(target).use { out -> input.copyTo(out) }
+            } ?: return uri
+            if (target.length() <= 0L) uri else android.net.Uri.fromFile(target)
+        } catch (e: Exception) {
+            uri
+        }
+    }
+
+
     fun scheduleAlarm(
         context: Context,
         triggerTimeMillis: Long,

@@ -398,6 +398,22 @@ private fun scheduleTempMailBackgroundChecks(context: Context) {
     WorkManager.getInstance(context).enqueueUniquePeriodicWork("au_temp_mail_background_check", ExistingPeriodicWorkPolicy.UPDATE, request)
 }
 
+/** Used by AU Agent: the newest temp-mail messages with sender, subject and any OTP / verification code. */
+fun tempMailSummaryForAgent(context: Context): String {
+    val deleted = TempMailStore.deletedMessages(context)
+    val list = TempMailStore.cachedMessages(context)
+        .filter { it.id !in deleted }
+        .sortedByDescending { it.createdAt }
+        .take(10)
+    if (list.isEmpty()) return "The temp mail inbox is empty (no messages received yet)."
+    return list.joinToString("\n") { m ->
+        val otp = extractOtpOrVerification(m.body.ifBlank { m.intro }, m.subject)
+        "From: ${m.fromName.ifBlank { m.from }} <${m.from}> | Subject: ${m.subject}" +
+            (if (otp != null) " | OTP/CODE: $otp" else "") +
+            " | Preview: ${m.body.ifBlank { m.intro }.replace("\n", " ").take(160)}"
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TempMailScreen(
@@ -423,6 +439,24 @@ fun TempMailScreen(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf("Ready") }
+
+    // AU Agent announcement for a freshly arrived mail / OTP (shown as a banner and read aloud)
+    var announced by remember { mutableStateOf<MailMessage?>(null) }
+    var announcedOtp by remember { mutableStateOf<String?>(null) }
+    var firstLoadDone by remember { mutableStateOf(false) }
+    val ttsHolder = remember { arrayOfNulls<android.speech.tts.TextToSpeech>(1) }
+    DisposableEffect(Unit) {
+        ttsHolder[0] = android.speech.tts.TextToSpeech(context) { st ->
+            if (st == android.speech.tts.TextToSpeech.SUCCESS) ttsHolder[0]?.language = java.util.Locale.getDefault()
+        }
+        onDispose { ttsHolder[0]?.stop(); ttsHolder[0]?.shutdown() }
+    }
+    fun speakAnnouncement(m: MailMessage, otp: String?) {
+        val sender = m.fromName.ifBlank { m.from }
+        val text = "New mail from $sender. Subject: ${m.subject}." +
+            (if (otp != null) " The code is ${otp.toCharArray().joinToString(" ")}." else "")
+        ttsHolder[0]?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "TempMailAnnounce")
+    }
     val deletedMessages = remember { mutableStateOf(TempMailStore.deletedMessages(context)) }
 
     // System BackHandler: if full screen mail is open, go back to inbox
@@ -445,6 +479,14 @@ fun TempMailScreen(
                 if (notify && oldIds.isNotEmpty() && newMessages.isNotEmpty()) {
                     showTempMailNotification(context, newMessages.size, newMessages.first().subject, account.address)
                 }
+                if (newMessages.isNotEmpty() && (firstLoadDone || oldIds.isNotEmpty())) {
+                    val newest = newMessages.first()
+                    val otp = extractOtpOrVerification(newest.body.ifBlank { newest.intro }, newest.subject)
+                    announced = newest
+                    announcedOtp = otp
+                    speakAnnouncement(newest, otp)
+                }
+                firstLoadDone = true
                 TempMailStore.saveKnownIds(context, account.address, oldIds + ids)
                 messages = fresh
                 TempMailStore.saveMessages(context, fresh)
@@ -731,6 +773,43 @@ fun TempMailScreen(
             }
 
             Spacer(Modifier.height(12.dp))
+
+            announced?.let { m ->
+                val bannerFg = if (isDarkMode) Color.White else Color(0xFF111111)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFFFF2D55).copy(alpha = 0.14f))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("AU Agent: new mail received", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF2D55))
+                        Text(
+                            "From ${m.fromName.ifBlank { m.from }} — ${m.subject}",
+                            fontSize = 13.sp, color = bannerFg, maxLines = 2
+                        )
+                        if (announcedOtp != null) {
+                            Text("Code: $announcedOtp", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFFFF2D55))
+                        }
+                    }
+                    if (announcedOtp != null) {
+                        androidx.compose.material3.TextButton(onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("OTP", announcedOtp))
+                            android.widget.Toast.makeText(context, "Code copied", android.widget.Toast.LENGTH_SHORT).show()
+                        }) { Text("Copy", color = Color(0xFFFF2D55), fontWeight = FontWeight.Bold) }
+                    }
+                    androidx.compose.material3.TextButton(onClick = { speakAnnouncement(m, announcedOtp) }) {
+                        Text("Read", color = Color(0xFFFF2D55), fontWeight = FontWeight.Bold)
+                    }
+                    androidx.compose.material3.TextButton(onClick = { announced = null; ttsHolder[0]?.stop() }) {
+                        Text("✕", color = bannerFg.copy(alpha = 0.7f))
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
 
             val visibleInbox = messages.filter { it.id !in deletedMessages.value }
             val tabs = listOf(

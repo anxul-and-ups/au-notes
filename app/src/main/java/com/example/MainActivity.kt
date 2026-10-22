@@ -77,6 +77,12 @@ sealed class Screen {
 }
 
 class MainActivity : FragmentActivity() {
+    override fun onResume() {
+        super.onResume()
+        // opening the app silences a ringing reminder
+        com.example.ui.util.AlarmSoundPlayer.stop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must run before super.onCreate: shows the system splash instantly on
         // launch so there is no 2-3s blank gap before the Compose splash appears.
@@ -343,8 +349,8 @@ fun AuNotesApp(
                             }
                             Unit
                         }
-                        if (com.example.ui.components.needsDeleteVerification(preferences)) pendingDeleteNoteId = noteId
-                        else doDelete()
+                        // PIN is only asked for permanent delete in the Recycle Bin
+                        doDelete()
                     },
                     onToggleLock = { noteId, isUnlocked ->
                         coroutineScope.launch {

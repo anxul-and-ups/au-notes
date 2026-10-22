@@ -56,6 +56,10 @@ import com.example.R
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.StopScreenShare
+import androidx.compose.material.icons.filled.ScreenShare
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -288,6 +292,9 @@ fun AiChatScreen(
     var isAgentSidebarOpen by remember { mutableStateOf(false) }
     var showAdvancedModelOptions by remember { mutableStateOf(false) }
     var showVoiceOverlay by remember { mutableStateOf(false) }
+    var screenShareOn by remember { mutableStateOf(com.example.data.ai.ScreenShare.active) }
+    var voiceTextMode by remember { mutableStateOf(false) }
+    var voiceTextInput by remember { mutableStateOf("") }
     val userName by preferences.agentUserName.collectAsState()
     val namePrompted by preferences.agentNamePrompted.collectAsState()
     val disabledTools by preferences.agentDisabledTools.collectAsState()
@@ -600,6 +607,7 @@ fun AiChatScreen(
                 val text = if (custom.isNotBlank()) custom else currentNoteContent.orEmpty()
                 if (text.isBlank()) ToolOutcome("Nothing to copy.") else { clipboard.setText(AnnotatedString(text)); ToolOutcome("Copied to clipboard.") }
             }
+            "read_temp_mail" -> ToolOutcome(tempMailSummaryForAgent(context))
             "read_screen" -> ToolOutcome(
                 if (currentNoteTitle.isNullOrBlank() && currentNoteContent.isNullOrBlank()) "No note is open on screen."
                 else "Title: ${currentNoteTitle.orEmpty()}\n\n${currentNoteContent.orEmpty().take(15000)}"
@@ -630,6 +638,29 @@ fun AiChatScreen(
             voiceManager.startVoiceMode()
         } else {
             Toast.makeText(context, "Microphone permission is required for voice assistant", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val screenShareLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        val data = res.data
+        if (res.resultCode == android.app.Activity.RESULT_OK && data != null) {
+            com.example.data.ai.ScreenShare.start(context, res.resultCode, data)
+            screenShareOn = true
+            if (activeProvider != "Gemini") {
+                Toast.makeText(context, "Screen sharing works with Gemini models (it sends screenshots).", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            Toast.makeText(context, "Screen sharing was not allowed", Toast.LENGTH_SHORT).show()
+        }
+    }
+    fun toggleScreenShare() {
+        if (screenShareOn || com.example.data.ai.ScreenShare.active) {
+            com.example.data.ai.ScreenShare.stop(context)
+            screenShareOn = false
+        } else {
+            screenShareLauncher.launch(com.example.data.ai.ScreenShare.createIntent(context))
         }
     }
 
@@ -733,6 +764,12 @@ fun AiChatScreen(
                 append(userMsg)
             }
             var images: List<String> = if (activeProvider == "Gemini") docImages ?: emptyList() else emptyList()
+            if (com.example.data.ai.ScreenShare.active && activeProvider == "Gemini") {
+                com.example.data.ai.ScreenShare.captureBase64()?.let { shot ->
+                    images = images + shot
+                    prompt = "[The user is sharing their screen live. The LAST attached image is their CURRENT screen. Use it to understand what 'this', 'ye', 'isko' refers to (for example an Instagram bio they want saved in a note) and copy the real text from it.]\n\n" + prompt
+                }
+            }
 
             var finalText = ""
             var results: List<NoteEntity>? = null
@@ -1773,205 +1810,192 @@ fun AiChatScreen(
         val userTranscript by voiceManager.userTranscript.collectAsState()
         val lastSpoken by voiceManager.lastSpokenText.collectAsState()
         val micLevel by voiceManager.micLevel.collectAsState()
+        val agentName by preferences.agentUserName.collectAsState()
+        val who = agentName.ifBlank { "" }
 
-        val infiniteTransition = rememberInfiniteTransition()
-        val pulseScale by infiniteTransition.animateFloat(
-            initialValue = 0.9f,
-            targetValue = 1.15f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(1200),
-                repeatMode = RepeatMode.Reverse
-            )
+        val infinite = rememberInfiniteTransition(label = "voice_wave")
+        val phase by infinite.animateFloat(
+            initialValue = 0f,
+            targetValue = (2 * Math.PI).toFloat(),
+            animationSpec = infiniteRepeatable(animation = tween(1400, easing = androidx.compose.animation.core.LinearEasing)),
+            label = "phase"
         )
+
+        val stateColor = when (voiceState) {
+            VoiceState.LISTENING -> CrimsonPrimary
+            VoiceState.THINKING -> Color(0xFFF59E0B)
+            VoiceState.SPEAKING -> Color(0xFF38BDF8)
+            else -> Color(0xFF8B5CF6)
+        }
+        val stateTitle = when (voiceState) {
+            VoiceState.LISTENING -> if (who.isBlank()) "Listening…" else "Listening, $who…"
+            VoiceState.THINKING -> "Thinking…"
+            VoiceState.SPEAKING -> "Speaking…"
+            else -> "Ready"
+        }
 
         Dialog(
             onDismissRequest = { showVoiceOverlay = false },
             properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color.Black.copy(alpha = 0.92f)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Brush.verticalGradient(listOf(Color(0xFF080B14), Color(0xFF15102B), Color(0xFF080B14))))
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .statusBarsPadding()
                         .navigationBarsPadding()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.SpaceBetween
+                        .imePadding()
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Top Bar
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF4CAF50))
-                            )
-                            Text("AU Agent Live Voice", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    // Top bar
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(9.dp).clip(CircleShape).background(stateColor))
+                        Spacer(Modifier.width(8.dp))
+                        Text("AU Agent", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        Spacer(Modifier.width(8.dp))
+                        Text("LIVE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = stateColor,
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(stateColor.copy(alpha = 0.15f)).padding(horizontal = 6.dp, vertical = 2.dp))
+                        Spacer(Modifier.weight(1f))
+                        IconButton(onClick = {
+                            showVoiceOverlay = false
+                            Toast.makeText(context, "Voice assistant keeps listening in the background", Toast.LENGTH_SHORT).show()
+                        }) { Icon(Icons.Default.KeyboardArrowDown, "Minimize", tint = Color.White) }
+                        IconButton(onClick = {
+                            showVoiceOverlay = false
+                            voiceManager.stopVoiceMode()
+                        }) { Icon(Icons.Default.Close, "End voice", tint = Color.White) }
+                    }
+
+                    if (screenShareOn) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF16A34A).copy(alpha = 0.18f)).padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.ScreenShare, null, tint = Color(0xFF4ADE80), modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Screen sharing is ON — I can see your screen", fontSize = 11.sp, color = Color(0xFF86EFAC))
                         }
+                    }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    showVoiceOverlay = false
-                                    Toast.makeText(context, "Voice Assistant active in background", Toast.LENGTH_SHORT).show()
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF)),
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Text("Minimize (Background)", fontSize = 11.sp, color = Color.White)
-                            }
+                    Spacer(Modifier.weight(1f))
 
+                    // Sound-wave bars that move with the state / microphone level
+                    val amp = when (voiceState) {
+                        VoiceState.LISTENING -> (0.25f + micLevel / 10f).coerceIn(0.25f, 1f)
+                        VoiceState.SPEAKING -> 0.75f
+                        VoiceState.THINKING -> 0.4f
+                        else -> 0.15f
+                    }
+                    androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(130.dp)) {
+                        val bars = 11
+                        val gap = 9.dp.toPx()
+                        val barW = ((size.width.coerceAtMost(330.dp.toPx())) - gap * (bars - 1)) / bars
+                        val startX = (size.width - (barW * bars + gap * (bars - 1))) / 2f
+                        for (i in 0 until bars) {
+                            val centerBoost = 1f - kotlin.math.abs(i - bars / 2f + 0.5f) / (bars / 2f) * 0.55f
+                            val wave = kotlin.math.abs(kotlin.math.sin(phase + i * 0.55f))
+                            val h = (size.height * (0.12f + amp * wave * centerBoost)).coerceAtLeast(10.dp.toPx())
+                            drawRoundRect(
+                                brush = Brush.verticalGradient(listOf(stateColor, stateColor.copy(alpha = 0.35f))),
+                                topLeft = androidx.compose.ui.geometry.Offset(startX + i * (barW + gap), (size.height - h) / 2f),
+                                size = androidx.compose.ui.geometry.Size(barW, h),
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(barW / 2f)
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(14.dp))
+                    Text(stateTitle, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                    Spacer(Modifier.height(14.dp))
+
+                    if (userTranscript.isNotBlank()) {
+                        Text(
+                            text = userTranscript,
+                            fontSize = 14.sp,
+                            color = Color.White.copy(alpha = 0.85f),
+                            maxLines = 3,
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = 0.07f)).padding(12.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    if (lastSpoken.isNotBlank()) {
+                        Text(
+                            text = lastSpoken.take(220),
+                            fontSize = 13.sp,
+                            color = stateColor.copy(alpha = 0.95f),
+                            maxLines = 4,
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(stateColor.copy(alpha = 0.10f)).padding(12.dp)
+                        )
+                    }
+
+                    Spacer(Modifier.weight(1f))
+
+                    // Optional typing: for when the speech-to-text did not catch the words
+                    if (voiceTextMode) {
+                        Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            androidx.compose.material3.OutlinedTextField(
+                                value = voiceTextInput,
+                                onValueChange = { voiceTextInput = it },
+                                placeholder = { Text("Type what you want to say…", fontSize = 13.sp, color = Color.White.copy(alpha = 0.45f)) },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(24.dp),
+                                maxLines = 3,
+                                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+                                    focusedBorderColor = stateColor, unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                                    cursorColor = stateColor
+                                )
+                            )
+                            Spacer(Modifier.width(8.dp))
                             IconButton(
                                 onClick = {
-                                    showVoiceOverlay = false
-                                    voiceManager.stopVoiceMode()
-                                }
-                            ) {
-                                Icon(Icons.Default.Close, contentDescription = "End Voice", tint = Color.White)
-                            }
+                                    val t = voiceTextInput.trim()
+                                    if (t.isNotBlank()) {
+                                        voiceTextInput = ""
+                                        voiceManager.stopSpeaking()
+                                        coroutineScope.launch { handleSendAction?.invoke(t) }
+                                    }
+                                },
+                                modifier = Modifier.size(48.dp).clip(CircleShape).background(stateColor)
+                            ) { Icon(Icons.Default.Send, "Send", tint = Color.White) }
                         }
                     }
 
-                    // Center Animated Orb (Gemini Live Acoustic Wave)
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(20.dp)
-                    ) {
-                        val stateColor = when (voiceState) {
-                            VoiceState.LISTENING -> CrimsonPrimary
-                            VoiceState.THINKING -> Color(0xFFF59E0B)
-                            VoiceState.SPEAKING -> Color(0xFF3B82F6)
-                            VoiceState.IDLE -> Color(0xFF8B5CF6)
-                            else -> Color(0xFF8B5CF6)
-                        }
-
-                        Box(
-                            modifier = Modifier.size(170.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            val dynamicScale = if (voiceState == VoiceState.LISTENING) (pulseScale + (micLevel / 10f).coerceIn(0f, 0.4f)) else pulseScale
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                drawCircle(
-                                    color = stateColor.copy(alpha = 0.22f),
-                                    radius = (size.minDimension / 2f) * dynamicScale
-                                )
-                                drawCircle(
-                                    color = stateColor.copy(alpha = 0.45f),
-                                    radius = (size.minDimension / 2.5f) * dynamicScale
-                                )
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .size(90.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        Brush.radialGradient(
-                                            listOf(stateColor, stateColor.copy(alpha = 0.7f), Color.Black)
-                                        )
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (voiceState == VoiceState.THINKING) {
-                                    Image(
-                                        painter = painterResource(R.drawable.au_bot_icon_1790271144581),
-                                        contentDescription = "AU Agent Thinking",
-                                        modifier = Modifier
-                                            .size(42.dp)
-                                            .clip(CircleShape)
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = when (voiceState) {
-                                            VoiceState.LISTENING -> Icons.Default.Mic
-                                            VoiceState.SPEAKING -> Icons.Default.VolumeUp
-                                            VoiceState.IDLE -> Icons.Default.RecordVoiceOver
-                                            else -> Icons.Default.RecordVoiceOver
-                                        },
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(36.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        Text(
-                            text = when (voiceState) {
-                                VoiceState.LISTENING -> "Sun rahi hoon sir... boliye"
-                                VoiceState.THINKING -> "Soch rahi hoon aur note craft kar rahi hoon..."
-                                VoiceState.SPEAKING -> "AU Agent bol rahi hai..."
-                                VoiceState.IDLE -> "Taiyaar hoon sir"
-                                else -> "Taiyaar hoon sir"
-                            },
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White
-                        )
-
-                        if (userTranscript.isNotBlank()) {
-                            Text(
-                                text = "Aapne kaha: \"$userTranscript\"",
-                                fontSize = 12.sp,
-                                color = Color.White.copy(alpha = 0.75f),
-                                maxLines = 2
-                            )
-                        }
-                        if (lastSpoken.isNotBlank()) {
-                            Text(
-                                text = "Assistant: \"${lastSpoken.take(90)}...\"",
-                                fontSize = 12.sp,
-                                color = stateColor,
-                                maxLines = 2
-                            )
-                        }
-                    }
-
-                    // Bottom Controls
+                    // Controls
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        Modifier.fillMaxWidth().padding(bottom = 6.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Button(
-                            onClick = {
-                                if (voiceState == VoiceState.SPEAKING) {
-                                    voiceManager.stopSpeaking()
-                                } else {
-                                    voiceManager.startListening()
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF)),
-                            shape = CircleShape,
-                            modifier = Modifier.size(56.dp),
-                            contentPadding = PaddingValues(0.dp)
-                        ) {
-                            Icon(
-                                if (voiceState == VoiceState.SPEAKING) Icons.Default.MicOff else Icons.Default.Mic,
-                                contentDescription = "Toggle Mute",
-                                tint = Color.White
-                            )
+                        @Composable
+                        fun RoundCtl(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, on: Boolean, bg: Color? = null, onClick: () -> Unit) {
+                            Box(
+                                Modifier.size(58.dp).clip(CircleShape)
+                                    .background(bg ?: if (on) stateColor.copy(alpha = 0.30f) else Color.White.copy(alpha = 0.12f))
+                                    .clickable(onClick = onClick),
+                                contentAlignment = Alignment.Center
+                            ) { Icon(icon, desc, tint = Color.White, modifier = Modifier.size(26.dp)) }
                         }
-
-                        Button(
-                            onClick = {
-                                showVoiceOverlay = false
-                                voiceManager.stopVoiceMode()
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.height(48.dp)
+                        RoundCtl(
+                            if (voiceState == VoiceState.SPEAKING) Icons.Default.MicOff else Icons.Default.Mic,
+                            "Mic", voiceState == VoiceState.LISTENING
                         ) {
-                            Text("End Voice Mode", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            if (voiceState == VoiceState.SPEAKING) voiceManager.stopSpeaking() else voiceManager.startListening()
+                        }
+                        RoundCtl(
+                            if (screenShareOn) Icons.Default.StopScreenShare else Icons.Default.ScreenShare,
+                            "Share screen", screenShareOn
+                        ) { toggleScreenShare() }
+                        RoundCtl(Icons.Default.Keyboard, "Type instead", voiceTextMode) { voiceTextMode = !voiceTextMode }
+                        RoundCtl(Icons.Default.Close, "End", false, bg = Color(0xFFDC2626)) {
+                            showVoiceOverlay = false
+                            voiceManager.stopVoiceMode()
                         }
                     }
                 }

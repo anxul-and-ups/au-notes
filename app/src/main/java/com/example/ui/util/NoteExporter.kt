@@ -41,7 +41,7 @@ data class SavedExport(val uri: Uri?, val displayPath: String, val file: File?)
 object NoteExporter {
 
     /** Formats that can carry images/attachments. Everything else gets a warning. */
-    val FORMATS_WITH_MEDIA_SUPPORT = setOf(".pdf", ".docx", ".html")
+    val FORMATS_WITH_MEDIA_SUPPORT = setOf(".pdf", ".docx", ".html", ".png")
 
     const val MEDIA_WARNING =
         "This format may not support images or attachments. Some content may not be included in the exported file."
@@ -53,6 +53,7 @@ object NoteExporter {
 
     fun mimeFor(extension: String): String = when (extension) {
         ".pdf" -> "application/pdf"
+        ".png" -> "image/png"
         ".docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ".html" -> "text/html"
         ".xml" -> "application/xml"
@@ -67,6 +68,7 @@ object NoteExporter {
         val target = File(dir, fileName)
         when (extension) {
             ".pdf" -> writePdf(note, target)
+            ".png" -> return buildPageImage(context, note, fileName)
             ".docx" -> writeDocx(note, target)
             ".html" -> target.writeText(buildHtml(note), Charsets.UTF_8)
             ".json" -> target.writeText(buildJson(note), Charsets.UTF_8)
@@ -74,6 +76,32 @@ object NoteExporter {
             else -> target.writeText(buildPlainText(note), Charsets.UTF_8)
         }
         return target
+    }
+
+    /**
+     * Exports many notes into ONE zip, each note converted to [extension].
+     * Formats without image support (txt, json, xml, py ...) keep only the attachment
+     * FILE NAMES for images, exactly like the single-note export does.
+     */
+    fun buildZip(context: Context, notes: List<NoteEntity>, extension: String, zipName: String): File {
+        val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+        val zipFile = File(dir, zipName)
+        val used = HashSet<String>()
+        ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
+            notes.forEachIndexed { i, note ->
+                val base = note.title.ifBlank { "Untitled" }.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").trim().take(60).ifBlank { "note" }
+                var name = base + extension
+                var n = 2
+                while (!used.add(name.lowercase())) { name = "$base ($n)$extension"; n++ }
+                // build into a throw-away temp name so notes with the same title never clash
+                val tmp = buildFile(context, note, "bulk_${i}_${System.nanoTime()}$extension", extension)
+                zos.putNextEntry(ZipEntry(name))
+                tmp.inputStream().use { it.copyTo(zos) }
+                zos.closeEntry()
+                tmp.delete()
+            }
+        }
+        return zipFile
     }
 
     /**
@@ -246,25 +274,28 @@ object NoteExporter {
     private const val PAGE_H = 842
     private const val MARGIN = 40f
 
-    private class Pager {
+    /** Tallest page we create when the whole note is exported as ONE continuous page. */
+    private const val MAX_SINGLE_PAGE_H = 14000
+
+    private class Pager(val pageH: Int = PAGE_H, val single: Boolean = false) {
         val doc = PdfDocument()
         var page: PdfDocument.Page? = null
         var canvas: Canvas? = null
         var pageNo = 0
         var y = MARGIN
-        val bottom = PAGE_H - MARGIN
+        val bottom = pageH - MARGIN
         val contentW = PAGE_W - 2 * MARGIN
 
         fun newPage() {
             page?.let { doc.finishPage(it) }
             pageNo++
-            page = doc.startPage(PdfDocument.PageInfo.Builder(PAGE_W, PAGE_H, pageNo).create())
+            page = doc.startPage(PdfDocument.PageInfo.Builder(PAGE_W, pageH, pageNo).create())
             canvas = page!!.canvas
             canvas!!.drawColor(AColor.WHITE)
             y = MARGIN
         }
 
-        fun ensure(height: Float) { if (page == null || y + height > bottom) newPage() }
+        fun ensure(height: Float) { if (page == null || (!single && y + height > bottom)) newPage() }
 
         fun finish(file: File) {
             page?.let { doc.finishPage(it) }
@@ -292,6 +323,10 @@ object NoteExporter {
                 }
                 "color" -> span.value?.let { hex ->
                     try { sp.setSpan(ForegroundColorSpan(AColor.parseColor(hex)), s, e, flag) } catch (_: Exception) {}
+                }
+                "highlight" -> sp.setSpan(BackgroundColorSpan(AColor.argb(150, 255, 235, 59)), s, e, flag)
+                "fontsize" -> span.value?.toFloatOrNull()?.let { sz ->
+                    sp.setSpan(AbsoluteSizeSpan((sz * 0.8f).toInt().coerceIn(7, 40), false), s, e, flag)
                 }
             }
         }
@@ -335,7 +370,7 @@ object NoteExporter {
         var w = pager.contentW * att.widthFraction.coerceIn(0.2f, 1f)
         var h = AttachmentRenderer.frameHeightPx(att, w)
         if (h > maxH) { w *= maxH / h; h = maxH }
-        val bmp = AttachmentRenderer.frameBitmap(att, (w * 2).toInt().coerceIn(200, 2400))
+        val bmp = AttachmentRenderer.frameBitmap(att, (w * 4).toInt().coerceIn(400, 3600))
         if (bmp == null) {
             drawLayout(pager, makeLayout("[Image could not be loaded: ${att.fileName}]", paint, cw), MARGIN)
             return
@@ -347,8 +382,9 @@ object NoteExporter {
         pager.y += h + 6f
     }
 
-    private fun writePdf(note: NoteEntity, target: File) {
-        val pager = Pager()
+    /** Writes the PDF; returns how far down the last page was filled (used to size single-page PDFs). */
+    private fun writePdfPass(note: NoteEntity, target: File, pageH: Int, single: Boolean): Float {
+        val pager = Pager(pageH, single)
         pager.newPage()
         val cw = pager.contentW.toInt()
 
@@ -419,7 +455,69 @@ object NoteExporter {
                 drawLayout(pager, makeLayout("Attachment: ${att.fileName}", bodyPaint, cw), MARGIN)
             }
         }
+        val usedY = pager.y
         pager.finish(target)
+        return usedY
+    }
+
+    private fun writePdf(note: NoteEntity, target: File, singlePage: Boolean = false) {
+        if (!singlePage) { writePdfPass(note, target, PAGE_H, false); return }
+        // pass 1 measures the content height on a very tall page, pass 2 writes the exact-size page
+        val measure = File(target.parentFile, "measure_${System.nanoTime()}.pdf")
+        val used = try { writePdfPass(note, measure, MAX_SINGLE_PAGE_H, true) } finally { measure.delete() }
+        if (used + MARGIN > MAX_SINGLE_PAGE_H) {
+            writePdfPass(note, target, PAGE_H, false) // too long for one page: fall back to normal pages
+        } else {
+            writePdfPass(note, target, kotlin.math.ceil(used + MARGIN).toInt().coerceAtLeast(PAGE_H / 3), true)
+        }
+    }
+
+    /** PDF with exactly the options the user picked in the editor's PDF tool. */
+    fun buildPdf(context: Context, note: NoteEntity, fileName: String, singlePage: Boolean): File {
+        val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+        return File(dir, fileName).also { writePdf(note, it, singlePage) }
+    }
+
+    /** One PNG picture of the whole note laid out as a single page. */
+    fun buildPageImage(context: Context, note: NoteEntity, fileName: String): File {
+        val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+        val pdf = File(dir, "single_${System.nanoTime()}.pdf")
+        writePdf(note, pdf, true)
+        val out = File(dir, fileName)
+        val pfd = android.os.ParcelFileDescriptor.open(pdf, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+        try {
+            val r = android.graphics.pdf.PdfRenderer(pfd)
+            val page = r.openPage(0)
+            val scale = minOf(3f, 7000f / page.height).coerceAtLeast(1f)
+            val bmp = Bitmap.createBitmap((page.width * scale).toInt(), (page.height * scale).toInt(), Bitmap.Config.ARGB_8888)
+            bmp.eraseColor(AColor.WHITE)
+            page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
+            page.close(); r.close()
+            FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        } finally {
+            pfd.close(); pdf.delete()
+        }
+        return out
+    }
+
+    /** Renders every page of [pdf] to bitmaps for the in-app preview (the same file that gets exported). */
+    fun renderPages(pdf: File, scale: Float = 1.8f, maxPages: Int = 40): List<Bitmap> {
+        val pfd = android.os.ParcelFileDescriptor.open(pdf, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+        val pages = mutableListOf<Bitmap>()
+        try {
+            val r = android.graphics.pdf.PdfRenderer(pfd)
+            for (i in 0 until minOf(r.pageCount, maxPages)) {
+                val page = r.openPage(i)
+                val sc = minOf(scale, 6000f / page.height)
+                val bmp = Bitmap.createBitmap((page.width * sc).toInt(), (page.height * sc).toInt(), Bitmap.Config.ARGB_8888)
+                bmp.eraseColor(AColor.WHITE)
+                page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
+                pages.add(bmp)
+            }
+            r.close()
+        } finally { pfd.close() }
+        return pages
     }
 
     private fun drawTable(pager: Pager, rows: List<List<String>>, contentW: Int) {

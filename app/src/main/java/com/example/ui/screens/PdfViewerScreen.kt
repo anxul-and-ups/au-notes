@@ -364,11 +364,13 @@ fun PdfViewerScreen(
 private fun renderPage(renderer: PdfRenderer, pageIndex: Int, onResult: (Bitmap) -> Unit) {
     try {
         val page = renderer.openPage(pageIndex)
-        val width = page.width * 2
-        val height = page.height * 2
+        // render ~3.2x the page size so zooming in stays sharp (was 2x and got blurry)
+        val factor = minOf(3.2f, 5200f / page.height.toFloat())
+        val width = (page.width * factor).toInt()
+        val height = (page.height * factor).toInt()
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         bitmap.eraseColor(android.graphics.Color.WHITE)
-        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
         page.close()
         onResult(bitmap)
     } catch (e: Exception) {

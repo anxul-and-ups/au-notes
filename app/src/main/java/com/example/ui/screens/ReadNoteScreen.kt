@@ -138,13 +138,48 @@ fun ReadNoteScreen(
     DisposableEffect(Unit) {
         tts = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.US
+                tts?.setSpeechRate(0.97f)
+                tts?.setPitch(1.0f)
+                tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+                    override fun onDone(utteranceId: String?) { if (utteranceId?.endsWith("_last") == true) isSpeaking = false }
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) { isSpeaking = false }
+                })
             }
         }
         onDispose {
             tts?.stop()
             tts?.shutdown()
         }
+    }
+
+    // Natural voice: pick the language from the note text and the best installed (offline, high quality) voice.
+    fun speakNote() {
+        val engine = tts ?: return
+        val text = "${note.title}. ${com.example.ui.util.ImageMarkers.strip(note.content)}"
+            .replace(Regex("[*_#>`|=]+"), " ")
+        val hasDevanagari = text.any { it in '\u0900'..'\u097F' }
+        val wanted = if (hasDevanagari) Locale("hi", "IN") else Locale.getDefault().takeIf { it.language == "en" } ?: Locale("en", "IN")
+        if (engine.isLanguageAvailable(wanted) >= TextToSpeech.LANG_AVAILABLE) engine.language = wanted else engine.language = Locale.US
+        try {
+            val best = engine.voices
+                ?.filter { it.locale.language == engine.language.language && !it.isNetworkConnectionRequired }
+                ?.maxByOrNull { it.quality }
+            if (best != null) engine.voice = best
+        } catch (_: Exception) {}
+        // The engine refuses very long strings, so read the note sentence-group by sentence-group.
+        val chunks = text.split(Regex("(?<=[.!?।\n])\\s+")).fold(mutableListOf<String>()) { acc, sentence ->
+            if (acc.isNotEmpty() && acc.last().length + sentence.length < 600) acc[acc.lastIndex] = acc.last() + " " + sentence
+            else acc.add(sentence)
+            acc
+        }.filter { it.isNotBlank() }
+        engine.stop()
+        chunks.forEachIndexed { i, chunk ->
+            val id = if (i == chunks.lastIndex) "NoteTTS_${i}_last" else "NoteTTS_$i"
+            engine.speak(chunk.take(3500), if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, null, id)
+        }
+        isSpeaking = chunks.isNotEmpty()
     }
 
     val dateFormatter = remember {
@@ -254,6 +289,30 @@ fun ReadNoteScreen(
                         .verticalScroll(rememberScrollState())
                 ) {
                     Spacer(modifier = Modifier.height(8.dp))
+
+                    // Words / reading time / time spent writing
+                    run {
+                        val plain = com.example.ui.util.ImageMarkers.strip(note.content)
+                        val words = plain.split(Regex("\\s+")).count { it.isNotBlank() }
+                        val readMin = kotlin.math.max(1, kotlin.math.ceil(words / 200.0).toInt())
+                        val writeSecs = preferences.noteWriteSeconds.collectAsState().value[note.id] ?: 0L
+                        val writeText = when {
+                            writeSecs <= 0L -> null
+                            writeSecs < 60 -> "${writeSecs}s"
+                            writeSecs < 3600 -> "${writeSecs / 60}m ${writeSecs % 60}s"
+                            else -> "${writeSecs / 3600}h ${(writeSecs % 3600) / 60}m"
+                        }
+                        Text(
+                            text = buildString {
+                                append("$words words  •  ~$readMin min read")
+                                if (writeText != null) append("  •  written in $writeText")
+                            },
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (isDarkMode) Color.White.copy(0.65f) else Color(0xFF555555),
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                        )
+                    }
 
                 // Active Alarm Details — Item 17: note name, time, countdown,
                 // ringtone, status, and an edit (pencil) icon to reopen the dialog.
@@ -422,9 +481,7 @@ fun ReadNoteScreen(
                                                 tts?.stop()
                                                 isSpeaking = false
                                             } else {
-                                                val toSpeak = "${note.title}. ${com.example.ui.util.ImageMarkers.strip(note.content)}"
-                                                tts?.speak(toSpeak, TextToSpeech.QUEUE_FLUSH, null, "NoteTTS")
-                                                isSpeaking = true
+                                                speakNote()
                                             }
                                         }
                                         .padding(4.dp)
@@ -592,13 +649,16 @@ fun ReadNoteScreen(
                                 }
                             }
 
+                            val linkedText = remember(styledText) { com.example.ui.util.LinkText.linkify(styledText, context) }
+
                             val hasRichLines = remember(displayContent) {
                                 displayContent.contains("[img:") ||
+                                    displayContent.contains("```") ||
                                     Regex("(?m)^[ \\t]*\\[( |x|!)] ").containsMatchIn(displayContent)
                             }
                             if (!hasRichLines) {
                                 Text(
-                                    text = styledText,
+                                    text = linkedText,
                                     fontSize = note.fontSize.sp,
                                     color = currentFontColor,
                                     lineHeight = (note.fontSize + 6).sp
@@ -606,7 +666,7 @@ fun ReadNoteScreen(
                             } else {
                                 ReadRichBody(
                                     content = displayContent,
-                                    styled = styledText,
+                                    styled = linkedText,
                                     attachments = allAttachments,
                                     fontSize = note.fontSize,
                                     color = currentFontColor,
@@ -835,7 +895,9 @@ fun ReadNoteScreen(
                         // Replace any previous alarm for this note first
                         activeAlarm?.let { AlarmScheduler.cancelAlarm(context, it.triggerMillis, note.id) }
 
-                        val chosenUri = if (ringtoneType == "device") selectedDeviceMusic?.uri else selectedSystemRingtone?.uri
+                        val pickedUri = if (ringtoneType == "device") selectedDeviceMusic?.uri else selectedSystemRingtone?.uri
+                        // keep a private copy of device tones so the alarm can still play them later
+                        val chosenUri = if (ringtoneType == "device") AlarmScheduler.persistTone(context, pickedUri, note.id) else pickedUri
                         val chosenName = if (ringtoneType == "device") (selectedDeviceMusic?.title ?: "Default") else (selectedSystemRingtone?.title ?: "Default")
                         val scheduled = AlarmScheduler.scheduleAlarm(
                             context = context,
@@ -1006,12 +1068,28 @@ private fun ReadRichBody(
     var acc = 0
     lines.forEachIndexed { i, l -> starts[i] = acc; acc += l.length + 1 }
 
+    val fences = remember(content) { com.example.ui.components.CodeFences.find(content) }
     var i = 0
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         while (i < lines.size) {
             val imgId = com.example.ui.util.ImageMarkers.idOf(lines[i])
             val check = checkRegex.matchEntire(lines[i])
+            val fence = fences.firstOrNull { it.start == starts[i] }
             when {
+                fence != null -> {
+                    Spacer(Modifier.height(4.dp))
+                    com.example.ui.components.CodeBoxCard(
+                        title = fence.title,
+                        code = fence.code,
+                        isDarkMode = isDarkMode,
+                        modifier = Modifier.fillMaxWidth(),
+                        fontSize = (fontSize - 3).coerceAtLeast(11)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    var k = i
+                    while (k < lines.size && starts[k] < fence.end) k++
+                    i = if (k > i) k else i + 1
+                }
                 imgId != null -> {
                     val att = attachments.firstOrNull { it.id == imgId }
                     if (att != null) {
@@ -1064,7 +1142,8 @@ private fun ReadRichBody(
                     var j = i
                     while (j < lines.size &&
                         com.example.ui.util.ImageMarkers.idOf(lines[j]) == null &&
-                        !checkRegex.matches(lines[j])
+                        !checkRegex.matches(lines[j]) &&
+                        fences.none { it.start == starts[j] }
                     ) j++
                     val from = starts[i]
                     val to = (starts[j - 1] + lines[j - 1].length).coerceAtMost(styled.length)

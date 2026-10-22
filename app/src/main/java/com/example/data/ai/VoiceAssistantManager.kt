@@ -128,7 +128,7 @@ class VoiceAssistantManager(
         isVoiceModeActive = true
         _userTranscript.value = ""
         // Greet user in calm, respectful assistant tone
-        speak("Ok sir, main sun rahi hoon. Boliye, kya kaam karna hai?")
+        speak("Main sun rahi hoon. Boliye, kya kaam karna hai?")
     }
 
     fun stopVoiceMode() {

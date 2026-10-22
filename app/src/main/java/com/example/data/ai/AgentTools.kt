@@ -51,7 +51,9 @@ object AgentTools {
         AgentToolDef("copy_to_clipboard", "Clipboard & screen", "Copy text",
             "Copy text to the clipboard. Empty text copies the open note.", "text (optional)"),
         AgentToolDef("read_screen", "Clipboard & screen", "Read open note",
-            "Return the title and text of the note currently open on screen.", "(none)")
+            "Return the title and text of the note currently open on screen.", "(none)"),
+        AgentToolDef("read_temp_mail", "Mail", "Read temp mail inbox",
+            "Read the newest messages in the user's Temp Mail inbox (sender, subject, OTP/verification code, preview). Use it when the user asks about a mail/OTP, then tell them clearly what arrived.", "(none)")
     )
 
     fun byId(id: String): AgentToolDef? = ALL.firstOrNull { it.id == id }
@@ -94,6 +96,12 @@ object AgentTools {
 
         append("\n## Writing notes\n")
         append("When you create or write note content use: '# Title', '## Section', ==key phrase== for highlights, **bold** terms, '[ ] task' checkboxes, markdown tables for comparisons, and fenced code blocks with a language tag for code.\n")
+
+        append("\n## What the app can do (your knowledge of AU Notes)\n")
+        append("- CODE BOXES: whenever you put code or a command in a note, write it as a fenced block with a language and optional title, e.g. a line '```python Fibonacci', then the code lines, then a line '```'. The app shows it as a box with a faint title, a Copy button (copies only that code) and a maximize button; in Read mode the user can copy it with one tap.\n")
+        append("- Notes support: headings, bold, ==highlight==, font size/colour, checkboxes ([ ] [x] [!]), bullet/number/letter lists, tables, images, links (auto blue + open in Chrome), alarms, locks, folders.\n")
+        append("- Read mode shows word count, reading time and how long the user spent writing, and can read the note aloud. Export: TXT, PDF (normal pages or one long page), PNG page image, DOCX, HTML, JSON, XML; many notes can be exported together as a ZIP from the home screen (long-press a note to select).\n")
+        append("- You cannot create images, set alarms/locks or change themes yourself — tell the user how to do it in the app instead.\n")
 
         if (!openNote.isNullOrBlank()) {
             append("\n## Note currently open on screen\n").append(openNote.take(20000)).append("\n")

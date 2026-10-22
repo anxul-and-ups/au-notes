@@ -53,6 +53,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -167,10 +170,17 @@ fun MainWorkspaceScreen(
     val blinkOnAlarmActive by preferences.blinkOnAlarmActive.collectAsState()
     val hasActiveAlarmAnywhere = noteAlarms.isNotEmpty()
     var pickedIds by remember { mutableStateOf(setOf<Long>()) }
+    // Long-press a note -> select mode (delete / export many notes)
+    var bulkMode by remember { mutableStateOf(false) }
+    var bulkIds by remember { mutableStateOf(setOf<Long>()) }
+    var showBulkExport by remember { mutableStateOf(false) }
+    var bulkExt by remember { mutableStateOf(".pdf") }
+    var bulkWorking by remember { mutableStateOf(false) }
     // Delete actions wait here for PIN verification when "Verify PIN while deleting" is on
     var pendingDeleteVerify by remember { mutableStateOf<(() -> Unit)?>(null) }
     fun guardDelete(action: () -> Unit) {
-        if (com.example.ui.components.needsDeleteVerification(preferences)) pendingDeleteVerify = action else action()
+        // PIN is only required for PERMANENT delete (Recycle Bin). Moving to the bin is instant.
+        action()
     }
     var showAddFolderDialog by remember { mutableStateOf(false) }
     var newFolderNameInput by remember { mutableStateOf("") }
@@ -209,6 +219,7 @@ fun MainWorkspaceScreen(
     }
 
     androidx.activity.compose.BackHandler(enabled = pickForHide) { onPickForHideCancel() }
+    androidx.activity.compose.BackHandler(enabled = bulkMode && !pickForHide) { bulkMode = false; bulkIds = emptySet() }
 
     // Observe active notes
     val allNotes by repository.allActiveNotes.collectAsState(initial = emptyList())
@@ -313,25 +324,15 @@ fun MainWorkspaceScreen(
                     }
                 }
 
-                val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
                 val zipName = "${folderName.replace(" ", "_")}_notes.zip"
-                val zipFile = File(exportDir, zipName)
-                ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
-                    notesInFolder.forEachIndexed { index, note ->
-                        val fileName = "${index + 1}_${note.title.replace("[^a-zA-Z0-9.-]".toRegex(), "_")}.txt"
-                        val entry = ZipEntry(fileName)
-                        zos.putNextEntry(entry)
-                        val noteBody = "TITLE: ${note.title}\nCATEGORY: ${note.category}\nDATE: ${Date(note.updatedAt)}\n\n${com.example.ui.util.ImageMarkers.strip(note.content)}"
-                        zos.write(noteBody.toByteArray())
-                        zos.closeEntry()
-                    }
-                }
-
+                // locked notes are never exported silently
+                val exportable = notesInFolder.filter { !it.isLocked }
+                val zipFile = com.example.ui.util.NoteExporter.buildZip(context, exportable, ".txt", zipName)
                 // Item 28/36: save into shared storage (Downloads/AU Notes), not app-private files.
                 val saved = com.example.ui.util.NoteExporter.saveToDevice(context, zipFile, zipName, "application/zip")
                 launch(kotlinx.coroutines.Dispatchers.Main) {
                     if (saved != null) {
-                        Toast.makeText(context, "Exported ${notesInFolder.size} notes to ${saved.displayPath}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Exported ${exportable.size} notes to ${saved.displayPath}", Toast.LENGTH_LONG).show()
                     } else {
                         Toast.makeText(context, "Export failed: could not write to device storage", Toast.LENGTH_LONG).show()
                     }
@@ -400,14 +401,14 @@ fun MainWorkspaceScreen(
 
                         Column {
                             Text(
-                                text = if (pickForHide) "SELECT NOTES TO HIDE" else "AU NOTES",
+                                text = if (pickForHide) "SELECT NOTES TO HIDE" else if (bulkMode) "SELECT NOTES" else "AU NOTES",
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = CrimsonPrimary,
                                 letterSpacing = 1.sp
                             )
                             Text(
-                                text = if (pickForHide) "${pickedIds.size} selected" else "${filteredNotes.size} notes in $selectedFolder",
+                                text = if (pickForHide) "${pickedIds.size} selected" else if (bulkMode) "${bulkIds.size} selected" else "${filteredNotes.size} notes in $selectedFolder",
                                 fontSize = 11.sp,
                                 color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color(0xFF666666),
                                 fontWeight = FontWeight.Medium
@@ -429,6 +430,31 @@ fun MainWorkspaceScreen(
                                 },
                                 colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = CrimsonPrimary)
                             ) { Text("Done", fontWeight = FontWeight.Bold) }
+                        } else if (bulkMode) {
+                            IconButton(onClick = {
+                                bulkIds = if (bulkIds.size == filteredNotes.size) emptySet() else filteredNotes.map { it.id }.toSet()
+                            }) { Icon(Icons.Default.SelectAll, contentDescription = "Select all", tint = CrimsonPrimary) }
+                            IconButton(onClick = {
+                                if (bulkIds.isEmpty()) Toast.makeText(context, "Select at least one note", Toast.LENGTH_SHORT).show()
+                                else showBulkExport = true
+                            }) { Icon(Icons.Default.FileUpload, contentDescription = "Export selected", tint = CrimsonPrimary) }
+                            IconButton(onClick = {
+                                val chosen = allNotes.filter { it.id in bulkIds }
+                                val deletable = chosen.filter { !it.isLocked }
+                                if (deletable.isEmpty()) {
+                                    Toast.makeText(context, if (chosen.isEmpty()) "Select at least one note" else "Locked notes can't be deleted from here", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    coroutineScope.launch {
+                                        repository.moveToTrash(deletable.map { it.id })
+                                        Toast.makeText(context, "Moved ${deletable.size} note(s) to Recycle Bin", Toast.LENGTH_SHORT).show()
+                                    }
+                                    bulkMode = false
+                                    bulkIds = emptySet()
+                                }
+                            }) { Icon(Icons.Default.Delete, contentDescription = "Delete selected", tint = Color(0xFFFF5252)) }
+                            IconButton(onClick = { bulkMode = false; bulkIds = emptySet() }) {
+                                Icon(Icons.Default.Close, contentDescription = "Cancel selection", tint = if (isDarkMode) Color.White else Color.DarkGray)
+                            }
                         } else {
                             NeuIconButton(
                                 painter = painterResource(R.drawable.ic_settings_gear),
@@ -508,7 +534,7 @@ fun MainWorkspaceScreen(
                 }
                 val chipSpacingPx = with(androidx.compose.ui.platform.LocalDensity.current) { 8.dp.toPx() }
 
-                fun finishChipDrag(folder: String) {
+                fun finishChipDrag(folder: String, allowMenu: Boolean) {
                     val moved = dragMoved
                     draggingFolder = null
                     dragOffsetX = 0f
@@ -517,7 +543,9 @@ fun MainWorkspaceScreen(
                         // keep hidden folders' relative order too, then persist
                         val keep = (folderOrder + customFolders).distinct().filter { it !in chipOrder }
                         preferences.setFolderOrder(chipOrder + keep)
-                    } else {
+                    } else if (allowMenu && !chipListState.isScrollInProgress) {
+                        // only a real, stationary long-press opens the menu — never a cancelled
+                        // gesture or a swipe/scroll over the chips
                         longPressedFolder = folder
                     }
                 }
@@ -625,8 +653,8 @@ fun MainWorkspaceScreen(
                                                 }
                                             }
                                         },
-                                        onDragEnd = { finishChipDrag(folder) },
-                                        onDragCancel = { finishChipDrag(folder) }
+                                        onDragEnd = { finishChipDrag(folder, allowMenu = true) },
+                                        onDragCancel = { finishChipDrag(folder, allowMenu = false) }
                                     )
                                 }
                                 .clickable(
@@ -765,11 +793,14 @@ fun MainWorkspaceScreen(
                                 hazeState = hazeState,
                                 isDarkMode = isDarkMode,
                                 blurApis = blurApis,
-                                selectionMode = pickForHide,
-                                selected = note.id in pickedIds,
+                                selectionMode = pickForHide || bulkMode,
+                                selected = note.id in pickedIds || note.id in bulkIds,
                                 onOpen = {
                                     if (pickForHide) {
                                         pickedIds = if (note.id in pickedIds) pickedIds - note.id else pickedIds + note.id
+                                    } else if (bulkMode) {
+                                        bulkIds = if (note.id in bulkIds) bulkIds - note.id else bulkIds + note.id
+                                        if (bulkIds.isEmpty()) bulkMode = false
                                     } else if (note.isLocked) {
                                         pendingLockedNote = note
                                     } else {
@@ -779,7 +810,13 @@ fun MainWorkspaceScreen(
                                 onLongPress = {
                                     if (pickForHide) {
                                         pickedIds = pickedIds + note.id
-                                    } else longPressedNote = note
+                                    } else if (bulkMode) {
+                                        bulkIds = if (note.id in bulkIds) bulkIds - note.id else bulkIds + note.id
+                                        if (bulkIds.isEmpty()) bulkMode = false
+                                    } else {
+                                        bulkMode = true
+                                        bulkIds = setOf(note.id)
+                                    }
                                 },
                                 onCopy = {}
                             )
@@ -790,7 +827,7 @@ fun MainWorkspaceScreen(
             }
 
             // Floating Buttons Row: Floating AU Bot + Create Note FAB
-            if (!pickForHide) Box(
+            if (!pickForHide && !bulkMode) Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(20.dp)
@@ -1143,6 +1180,74 @@ fun MainWorkspaceScreen(
         )
     }
 
+    // Bulk export: choose the extension, all selected notes go into one zip
+    if (showBulkExport) {
+        val chosen = allNotes.filter { it.id in bulkIds }
+        val exts = listOf(".pdf", ".docx", ".html", ".txt", ".json", ".xml", ".py")
+        val hasMedia = chosen.any { com.example.ui.util.RichTextFormatter.deserializeAttachments(it.attachmentsJson).isNotEmpty() }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { if (!bulkWorking) showBulkExport = false },
+            title = { Text("Export ${chosen.size} note(s)") },
+            text = {
+                Column {
+                    Text("Choose the file type — everything is saved inside one .zip", fontSize = 12.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        exts.forEach { e ->
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (bulkExt == e) CrimsonPrimary else Color.Gray.copy(alpha = 0.2f))
+                                    .clickable { bulkExt = e }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                            ) { Text(e, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (bulkExt == e) Color.White else (if (isDarkMode) Color.White else Color.Black)) }
+                        }
+                    }
+                    if (hasMedia && bulkExt !in com.example.ui.util.NoteExporter.FORMATS_WITH_MEDIA_SUPPORT) {
+                        Spacer(Modifier.height(10.dp))
+                        Text("This type can't hold images — notes with images will only keep the image file names.", fontSize = 11.sp, color = Color(0xFFFFA000))
+                    }
+                    if (chosen.any { it.isLocked }) {
+                        Spacer(Modifier.height(6.dp))
+                        Text("Locked notes are skipped.", fontSize = 11.sp, color = Color.Gray)
+                    }
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    enabled = !bulkWorking,
+                    onClick = {
+                        val toExport = chosen.filter { !it.isLocked }
+                        if (toExport.isEmpty()) {
+                            Toast.makeText(context, "Nothing to export", Toast.LENGTH_SHORT).show()
+                            return@TextButton
+                        }
+                        bulkWorking = true
+                        coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            val zipName = "AU_Notes_${toExport.size}_notes${bulkExt.replace(".", "_")}.zip"
+                            val saved = try {
+                                val zip = com.example.ui.util.NoteExporter.buildZip(context, toExport, bulkExt, zipName)
+                                com.example.ui.util.NoteExporter.saveToDevice(context, zip, zipName, "application/zip")
+                            } catch (e: Exception) { null }
+                            launch(kotlinx.coroutines.Dispatchers.Main) {
+                                bulkWorking = false
+                                if (saved != null) {
+                                    Toast.makeText(context, "Exported ${toExport.size} notes to ${saved.displayPath}", Toast.LENGTH_LONG).show()
+                                    showBulkExport = false
+                                    bulkMode = false
+                                    bulkIds = emptySet()
+                                } else {
+                                    Toast.makeText(context, "Export failed: could not write to device storage", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    }
+                ) { Text(if (bulkWorking) "Exporting..." else "Export .zip", color = CrimsonPrimary, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { androidx.compose.material3.TextButton(enabled = !bulkWorking, onClick = { showBulkExport = false }) { Text("Cancel") } }
+        )
+    }
+
     // PIN dialog for unlocking note
     pendingLockedNote?.let { note ->
         PinLockDialog(
@@ -1419,6 +1524,8 @@ private fun FolderReorderSheet(
     var order by remember(initialOrder) { mutableStateOf(initialOrder.distinct()) }
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
     var dragOffset by remember { mutableStateOf(0f) }
+    // drag maths must be in px, rows are a fixed 56dp tall (was mixing dp and px -> jumpy reorder)
+    val rowPx = with(androidx.compose.ui.platform.LocalDensity.current) { 56.dp.toPx() }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1434,6 +1541,7 @@ private fun FolderReorderSheet(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .height(56.dp)
                             .graphicsLayer { translationY = if (isDragging) dragOffset else 0f; alpha = if (isDragging) 0.86f else 1f }
                             .clip(RoundedCornerShape(12.dp))
                             .background(if (isDragging) CrimsonPrimary.copy(.12f) else Color.Transparent)
@@ -1447,7 +1555,7 @@ private fun FolderReorderSheet(
                                         val current = draggingIndex
                                         if (current != null) {
                                             dragOffset += amount.y
-                                            val target = ((current * 56f + dragOffset + 28f) / 56f).toInt().coerceIn(0, order.lastIndex)
+                                            val target = ((current * rowPx + dragOffset + rowPx / 2f) / rowPx).toInt().coerceIn(0, order.lastIndex)
                                             if (target != current) {
                                                 val mutable = order.toMutableList()
                                                 val moved = mutable.removeAt(current)
