@@ -868,11 +868,17 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
                 settings.domStorageEnabled = true
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
+                settings.setSupportZoom(true)
                 settings.builtInZoomControls = true
-                settings.displayZoomControls = false
+                settings.displayZoomControls = true
                 settings.useWideViewPort = true
                 settings.loadWithOverviewMode = true
+                // Naya code: WebGL aur Internet CDN ke liye zaroori settings
+                settings.mediaPlaybackRequiresUserGesture = false
+                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
                 webViewClient = WebViewClient()
+                webChromeClient = android.webkit.WebChromeClient()
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
             }
         },
