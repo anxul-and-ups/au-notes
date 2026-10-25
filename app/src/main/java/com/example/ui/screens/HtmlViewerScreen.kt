@@ -916,7 +916,7 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
         }
         return
     }
-    val doc = remember(html, dark) { if (dark) injectDarkScheme(html) else html }
+    val doc = remember(html, dark) { html } // BYPASSED INJECTDARKSCHEME FOR TESTING
     val webRef = remember { arrayOfNulls<WebView>(1) }
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
