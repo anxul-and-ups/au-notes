@@ -42,6 +42,7 @@ import com.example.ui.screens.ApiRoomScreen
 import com.example.ui.screens.CommandModeScreen
 import com.example.ui.screens.HtmlViewerScreen
 import com.example.ui.screens.MainWorkspaceScreen
+import com.example.ui.screens.AgentSettingsScreen
 import com.example.ui.screens.NameGeneratorScreen
 import com.example.ui.screens.NoteEditorScreen
 import com.example.ui.screens.PdfViewerScreen
