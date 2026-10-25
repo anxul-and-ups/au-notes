@@ -54,7 +54,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -83,7 +82,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.example.data.model.NoteEntity
 import com.example.ui.components.GlassBackground
 import com.example.ui.components.NeuIconButton
 import com.example.ui.theme.CrimsonPrimary
@@ -466,9 +464,8 @@ fun HtmlViewerScreen(
     var collapsed by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var confirmClear by remember { mutableStateOf(false) }
     var showNotePicker by remember { mutableStateOf(false) }
-    val allNotes by (repository?.allActiveNotes
-        ?: kotlinx.coroutines.flow.flowOf(emptyList<NoteEntity>()))
-        .collectAsState(initial = emptyList<NoteEntity>())
+    val dbNotes by (repository?.allActiveNotes ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+        .collectAsState(initial = emptyList())
 
     val colors = remember(viewerDark) { HtmlColors(viewerDark) }
     val appText = if (isDarkMode) Color.White else Color(0xFF1A1A1A)
@@ -645,8 +642,8 @@ fun HtmlViewerScreen(
     }
 
     if (showNotePicker) {
-        val htmlNotes = remember(allNotes) {
-            allNotes.filter { n ->
+        val htmlNotes = remember(dbNotes) {
+            dbNotes.filter { n ->
                 !n.isTrash && !n.isLocked && !n.isHidden && n.content.let { c ->
                     c.contains("<html", true) || c.contains("<!doctype", true) || c.contains("<body", true) ||
                         c.contains("<div", true) || c.contains("<script", true)
@@ -907,6 +904,46 @@ private inline fun AnnotatedString.Builder.withStyleMuted(color: Color, block: (
 // Preview
 // ---------------------------------------------------------------------------------------------
 
+/** Adds a small diagnostic layer without changing the user's original HTML/CSS layout. */
+private fun addPreviewDiagnostics(source: String): String {
+    val diagnosticScript = """
+<script>
+(function(){
+  function showPreviewError(message) {
+    try {
+      var box = document.getElementById('au-notes-preview-diagnostic');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'au-notes-preview-diagnostic';
+        box.style.cssText = 'display:none;position:fixed;z-index:2147483647;left:8px;right:8px;top:8px;max-height:35vh;overflow:auto;padding:10px 12px;border-radius:10px;background:rgba(80,20,20,.94);color:#fff;font:12px/1.45 sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:0 3px 16px #0005';
+        document.documentElement.appendChild(box);
+      }
+      box.style.display = 'block';
+      box.textContent = 'AU Notes preview error\n' + message;
+    } catch (_) {}
+  }
+  window.addEventListener('error', function(e){
+    var msg = e && e.message ? e.message : 'A script or resource failed to load';
+    if (e && e.filename) msg += '\n' + e.filename + (e.lineno ? ':' + e.lineno : '');
+    showPreviewError(msg);
+  }, true);
+  window.addEventListener('unhandledrejection', function(e){
+    showPreviewError('Unhandled promise rejection: ' + String(e.reason || 'unknown error'));
+  });
+})();
+</script>
+""".trimIndent()
+    val headMatch = Regex("<head[^>]*>", RegexOption.IGNORE_CASE).find(source)
+    if (headMatch != null) {
+        return source.substring(0, headMatch.range.last + 1) + diagnosticScript + source.substring(headMatch.range.last + 1)
+    }
+    val htmlMatch = Regex("<html[^>]*>", RegexOption.IGNORE_CASE).find(source)
+    if (htmlMatch != null) {
+        return source.substring(0, htmlMatch.range.last + 1) + "<head>$diagnosticScript</head>" + source.substring(htmlMatch.range.last + 1)
+    }
+    return "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">$diagnosticScript</head><body>$source</body></html>"
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
@@ -916,7 +953,11 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
         }
         return
     }
-    val doc = remember(html, dark) { html } // BYPASSED INJECTDARKSCHEME FOR TESTING
+    val doc = remember(html, dark) {
+        val themed = if (dark) injectDarkScheme(html) else html
+        addPreviewDiagnostics(themed)
+    }
+    var previewError by remember(html) { mutableStateOf<String?>(null) }
     val webRef = remember { arrayOfNulls<WebView>(1) }
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
@@ -927,18 +968,49 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
                     setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
+                    settings.databaseEnabled = true
+                    settings.javaScriptCanOpenWindowsAutomatically = true
                     settings.allowFileAccess = false
                     settings.allowContentAccess = false
                     settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-                    settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                    settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                     settings.mediaPlaybackRequiresUserGesture = false
                     settings.setSupportZoom(true)
                     settings.builtInZoomControls = true
                     settings.displayZoomControls = false
                     settings.useWideViewPort = true
                     settings.loadWithOverviewMode = true
-                    webChromeClient = android.webkit.WebChromeClient()
-                    webViewClient = WebViewClient()
+                    webChromeClient = object : android.webkit.WebChromeClient() {
+                        override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
+                            if (message.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) {
+                                previewError = "JavaScript error: ${message.message()} (line ${message.lineNumber()})"
+                            }
+                            return true
+                        }
+                    }
+                    webViewClient = object : WebViewClient() {
+                        override fun onReceivedError(
+                            view: WebView,
+                            request: android.webkit.WebResourceRequest,
+                            error: android.webkit.WebResourceError
+                        ) {
+                            super.onReceivedError(view, request, error)
+                            if (request.isForMainFrame) {
+                                previewError = "Page load failed: ${error.description}"
+                            }
+                        }
+
+                        override fun onReceivedHttpError(
+                            view: WebView,
+                            request: android.webkit.WebResourceRequest,
+                            errorResponse: android.webkit.WebResourceResponse
+                        ) {
+                            super.onReceivedHttpError(view, request, errorResponse)
+                            if (errorResponse.statusCode >= 400) {
+                                previewError = "Resource failed (${errorResponse.statusCode}): ${request.url.host ?: request.url}"
+                            }
+                        }
+                    }
                     setBackgroundColor(android.graphics.Color.TRANSPARENT)
                     webRef[0] = this
                 }
@@ -946,6 +1018,7 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
             update = { wv ->
                 webRef[0] = wv
                 if (wv.tag != doc) {
+                    previewError = null
                     wv.tag = doc
                     wv.loadDataWithBaseURL("https://localhost/", doc, "text/html", "UTF-8", null)
                 }
@@ -956,6 +1029,19 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
                 webRef[0] = null
             }
         )
+        previewError?.let { message ->
+            Column(
+                modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(10.dp)
+                    .background(colors.bg, RoundedCornerShape(12.dp)).padding(12.dp)
+            ) {
+                Text("Preview diagnostic", color = colors.text, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(message, color = colors.muted, fontSize = 12.sp)
+                Text(
+                    "If this page uses a CDN library (for example Three.js), check the internet connection. Some pages also require browser features or a server.",
+                    color = colors.muted, fontSize = 11.sp
+                )
+            }
+        }
         // zoom buttons (pinch-to-zoom works too)
         Column(
             modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
