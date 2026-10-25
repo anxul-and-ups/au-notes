@@ -89,7 +89,7 @@ class ScreenCaptureService : Service() {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val mp = mpm.getMediaProjection(resultCode, data)
             projection = mp
-            mp.registerCallback(object : MediaProjection.Callback() {
+            mp!!.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() { ScreenShare.active = false; stopSelf() }
             }, handler)
 
@@ -121,7 +121,7 @@ class ScreenCaptureService : Service() {
                     img.close()
                 }
             }, handler)
-            display = mp.createVirtualDisplay(
+            display = mp!!.createVirtualDisplay(
                 "au_agent_screen", w, h, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, ir.surface, null, handler
             )
