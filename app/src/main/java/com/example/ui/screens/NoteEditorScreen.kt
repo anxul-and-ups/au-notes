@@ -2079,3 +2079,9 @@ private fun Modifier.hiddenWhen(hide: Boolean): Modifier = this.layout { measura
     val placeable = measurable.measure(constraints)
     if (hide) layout(0, 0) {} else layout(placeable.width, placeable.height) { placeable.place(0, 0) }
 }
+
+
+// Fallback implementation to fix missing reference
+private fun decorateCodeFences(text: androidx.compose.ui.text.AnnotatedString): androidx.compose.ui.text.AnnotatedString {
+    return text
+}

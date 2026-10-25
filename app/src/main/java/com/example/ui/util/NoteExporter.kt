@@ -2,9 +2,6 @@ package com.example.ui.util
 
 import android.content.ContentValues
 import android.content.Context
-import androidx.compose.ui.graphics.blue
-import androidx.compose.ui.graphics.green
-import androidx.compose.ui.graphics.red
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
