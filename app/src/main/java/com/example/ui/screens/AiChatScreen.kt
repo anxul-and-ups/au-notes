@@ -295,7 +295,7 @@ fun AiChatScreen(
     var screenShareOn by remember { mutableStateOf(com.example.data.ai.ScreenShare.active) }
     var voiceTextMode by remember { mutableStateOf(false) }
     var voiceTextInput by remember { mutableStateOf("") }
-    val userName by preferences.agentUserName.collectAsState()
+    val agentUserName by preferences.agentUserName.collectAsState()
     val namePrompted by preferences.agentNamePrompted.collectAsState()
     val disabledTools by preferences.agentDisabledTools.collectAsState()
     var showToolsSheet by remember { mutableStateOf(false) }
@@ -716,16 +716,6 @@ fun AiChatScreen(
         }
     }
 
-    val audioPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            beginVoice()
-        } else {
-            Toast.makeText(context, "Microphone permission is required for voice assistant", Toast.LENGTH_SHORT).show()
-        }
-    }
-
     // Voice Adjuster: speed / pitch / volume / chosen voice go straight to the real speech engine
     val vSpeed by preferences.voiceSpeed.collectAsState()
     val vPitch by preferences.voicePitch.collectAsState()
@@ -806,9 +796,9 @@ fun AiChatScreen(
                     val out = runTool(name, args)
                     // confirmations / note cards still appear in the chat while you talk
                     if (out.pending != null || out.noteResults != null) {
-                        messages.add(ChatMessage(sender = "bot", text = out.finalMessage ?: "", noteResults = out.noteResults, pendingAction = out.pending))
+                        messages.add(ChatMessage(sender = "bot", text = out.result, noteResults = out.noteResults, pendingAction = out.pending))
                     }
-                    out.finalMessage?.let { out.result + " (the user must confirm on screen)" } ?: out.result
+                    if (out.pending != null) out.result + " (the user must confirm on screen)" else out.result
                 },
                 onTurn = { u, a ->
                     if (u.isNotBlank()) messages.add(ChatMessage(sender = "user", text = u))
@@ -833,6 +823,16 @@ fun AiChatScreen(
             if (liveSession == null) startLive()
         } else if (!voiceManager.isVoiceModeActive) {
             voiceManager.startVoiceMode()
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            beginVoice()
+        } else {
+            Toast.makeText(context, "Microphone permission is required for voice assistant", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -922,7 +922,7 @@ fun AiChatScreen(
             val sessionText = sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" }
             val memoryFacts = if (preferences.memoryEnabled.value) preferences.agentMemory.value else emptyList()
             val system = AgentTools.buildSystemPrompt(
-                userName, enabled, openNoteContext, notesIndex, sessionText,
+                agentUserName, enabled, openNoteContext, notesIndex, sessionText,
                 memory = memoryFacts, phoneActionsEnabled = preferences.phoneActionsEnabled.value,
                 accessibilityEnabled = com.example.data.ai.AuAccessibilityService.instance != null
             )
