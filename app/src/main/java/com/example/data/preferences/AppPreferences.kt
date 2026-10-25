@@ -371,6 +371,73 @@ class AppPreferences(context: Context) {
         _activeProvider.value = provider
     }
 
+    // ---- Phone Control & AGENT settings (voice adjuster, orb style, phone actions, memory) ----
+    private fun floatFlow(key: String, def: Float) = MutableStateFlow(prefs.getFloat(key, def))
+    private fun stringFlow(key: String, def: String) = MutableStateFlow(prefs.getString(key, def) ?: def)
+    private fun boolFlow(key: String, def: Boolean) = MutableStateFlow(prefs.getBoolean(key, def))
+
+    private val _voiceSpeed = floatFlow("agent_voice_speed", 0.96f)
+    val voiceSpeed: StateFlow<Float> = _voiceSpeed.asStateFlow()
+    fun setVoiceSpeed(v: Float) { _voiceSpeed.value = v; prefs.edit().putFloat("agent_voice_speed", v).apply() }
+
+    private val _voicePitch = floatFlow("agent_voice_pitch", 1.02f)
+    val voicePitch: StateFlow<Float> = _voicePitch.asStateFlow()
+    fun setVoicePitch(v: Float) { _voicePitch.value = v; prefs.edit().putFloat("agent_voice_pitch", v).apply() }
+
+    private val _voiceVolume = floatFlow("agent_voice_volume", 1.0f)
+    val voiceVolume: StateFlow<Float> = _voiceVolume.asStateFlow()
+    fun setVoiceVolume(v: Float) { _voiceVolume.value = v; prefs.edit().putFloat("agent_voice_volume", v).apply() }
+
+    /** Name of the chosen TTS voice, empty = automatic (prefers a female voice). */
+    private val _voiceName = stringFlow("agent_voice_name", "")
+    val voiceName: StateFlow<String> = _voiceName.asStateFlow()
+    fun setVoiceName(v: String) { _voiceName.value = v; prefs.edit().putString("agent_voice_name", v).apply() }
+
+    private val _orbTheme = stringFlow("agent_orb_theme", "dark")
+    val orbTheme: StateFlow<String> = _orbTheme.asStateFlow()
+    fun setOrbTheme(v: String) { _orbTheme.value = v; prefs.edit().putString("agent_orb_theme", v).apply() }
+
+    /** Optional custom orb colour (hex), empty = use the theme palette. */
+    private val _orbColor = stringFlow("agent_orb_color", "")
+    val orbColor: StateFlow<String> = _orbColor.asStateFlow()
+    fun setOrbColor(v: String) { _orbColor.value = v; prefs.edit().putString("agent_orb_color", v).apply() }
+
+    private val _orbIntensity = floatFlow("agent_orb_intensity", 1.0f)
+    val orbIntensity: StateFlow<Float> = _orbIntensity.asStateFlow()
+    fun setOrbIntensity(v: Float) { _orbIntensity.value = v; prefs.edit().putFloat("agent_orb_intensity", v).apply() }
+
+    private val _orbEnabled = boolFlow("agent_orb_enabled", true)
+    val orbEnabled: StateFlow<Boolean> = _orbEnabled.asStateFlow()
+    fun setOrbEnabled(v: Boolean) { _orbEnabled.value = v; prefs.edit().putBoolean("agent_orb_enabled", v).apply() }
+
+    /** Master switch: may AU Agent open apps / links on the phone? Off until the user turns it on. */
+    private val _phoneActionsEnabled = boolFlow("agent_phone_actions", false)
+    val phoneActionsEnabled: StateFlow<Boolean> = _phoneActionsEnabled.asStateFlow()
+    fun setPhoneActionsEnabled(v: Boolean) { _phoneActionsEnabled.value = v; prefs.edit().putBoolean("agent_phone_actions", v).apply() }
+
+    // ---- AI memory (facts the user asked AU Agent to remember; separate from notes) ----
+    private val _memoryEnabled = boolFlow("agent_memory_enabled", true)
+    val memoryEnabled: StateFlow<Boolean> = _memoryEnabled.asStateFlow()
+    fun setMemoryEnabled(v: Boolean) { _memoryEnabled.value = v; prefs.edit().putBoolean("agent_memory_enabled", v).apply() }
+
+    private val _agentMemory = MutableStateFlow(
+        (prefs.getString("agent_memory_facts", "") ?: "").split("\u0001").filter { it.isNotBlank() }
+    )
+    val agentMemory: StateFlow<List<String>> = _agentMemory.asStateFlow()
+    private fun saveMemory(list: List<String>) {
+        _agentMemory.value = list
+        prefs.edit().putString("agent_memory_facts", list.joinToString("\u0001")).apply()
+    }
+    /** Returns false when the same fact is already stored. */
+    fun addAgentMemory(fact: String): Boolean {
+        val clean = fact.trim().replace("\u0001", " ").take(300)
+        if (clean.isBlank() || _agentMemory.value.any { it.equals(clean, ignoreCase = true) }) return false
+        saveMemory((_agentMemory.value + clean).takeLast(100))
+        return true
+    }
+    fun removeAgentMemory(fact: String) = saveMemory(_agentMemory.value.filterNot { it == fact })
+    fun clearAgentMemory() = saveMemory(emptyList())
+
     // ---- Writing timer: seconds a user actively spent typing in each note (shown in Read mode) ----
     private val _noteWriteSeconds = MutableStateFlow(
         (prefs.getString("note_write_seconds", "") ?: "").split(",").mapNotNull {

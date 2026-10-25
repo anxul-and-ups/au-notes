@@ -42,8 +42,43 @@ class VoiceAssistantManager(
     private val _micLevel = MutableStateFlow(0f)
     val micLevel: StateFlow<Float> = _micLevel.asStateFlow()
 
+    // Real speech activity while the assistant talks (word-by-word from the TTS engine) — drives the orb
+    private val _speakLevel = MutableStateFlow(0f)
+    val speakLevel: StateFlow<Float> = _speakLevel.asStateFlow()
+
+    private var userRate = 0.96f
+    private var userPitch = 1.02f
+    private var userVolume = 1.0f
+    private var userVoiceName = ""
+
     var isVoiceModeActive = false
         private set
+
+    /** Applies the Voice Adjuster settings (speed / pitch / volume / chosen voice) to the real engine. */
+    fun applyVoiceSettings(rate: Float, pitch: Float, volume: Float, voiceName: String) {
+        userRate = rate; userPitch = pitch; userVolume = volume; userVoiceName = voiceName
+        val engine = tts ?: return
+        if (!isTtsReady) return
+        try {
+            engine.setSpeechRate(rate)
+            engine.setPitch(pitch)
+            if (voiceName.isNotBlank()) engine.voices?.firstOrNull { it.name == voiceName }?.let { engine.voice = it }
+        } catch (_: Exception) {}
+    }
+
+    /** Voices installed on this phone: (name, readable label). Female-looking voices are marked. */
+    fun availableVoices(): List<Pair<String, String>> {
+        val engine = tts ?: return emptyList()
+        return try {
+            (engine.voices ?: emptySet()).filter { !it.isNetworkConnectionRequired || true }
+                .sortedWith(compareBy({ !(it.locale.language == "hi" || it.locale.language == "en") }, { it.locale.toString() }, { it.name }))
+                .map { v ->
+                    val female = v.name.contains("female", true) || v.features?.contains("gender=female") == true
+                    val label = "${v.locale.displayName}${if (female) " • female" else ""} (${v.name.take(18)})"
+                    v.name to label
+                }
+        } catch (_: Exception) { emptyList() }
+    }
 
     init {
         initTts()
@@ -54,12 +89,19 @@ class VoiceAssistantManager(
             if (status == TextToSpeech.SUCCESS) {
                 isTtsReady = true
                 configureFemaleVoice()
+                applyVoiceSettings(userRate, userPitch, userVolume, userVoiceName)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         _voiceState.value = VoiceState.SPEAKING
                     }
 
+                    override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                        // a real word is being spoken right now: longer words push the orb harder
+                        _speakLevel.value = (0.45f + (end - start) / 9f).coerceIn(0.45f, 1f)
+                    }
+
                     override fun onDone(utteranceId: String?) {
+                        _speakLevel.value = 0f
                         _voiceState.value = VoiceState.IDLE
                         if (isVoiceModeActive) {
                             // Automatically resume listening if in active voice conversation mode
@@ -155,6 +197,7 @@ class VoiceAssistantManager(
 
         val params = Bundle()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "au_agent_speech_${System.currentTimeMillis()}")
+        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, userVolume.coerceIn(0f, 1f))
         tts?.speak(cleanSpeech, TextToSpeech.QUEUE_FLUSH, params, "au_agent_speech")
     }
 

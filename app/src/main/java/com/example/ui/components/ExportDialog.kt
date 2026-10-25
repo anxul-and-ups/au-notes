@@ -62,6 +62,9 @@ import com.example.data.model.NoteEntity
 import com.example.ui.theme.CrimsonPrimary
 import com.example.ui.util.RichTextFormatter
 import java.io.File
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -86,27 +89,36 @@ fun ExportDialog(
         )
     }
 
-    val extensions = listOf(".txt", ".pdf", ".png", ".docx", ".html", ".py", ".xml", ".json")
+    val extensions = listOf(".txt", ".md", ".pdf", ".png", ".docx", ".html", ".py", ".xml", ".json")
 
     var savedPath by remember { mutableStateOf<String?>(null) }
     var isWorking by remember { mutableStateOf(false) }
 
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    // Building a PDF / DOCX can take a while, so it runs off the main thread (no more frozen screen)
+    // and "success" is only shown once the file really exists.
     fun doSave() {
+        if (isWorking) return
         val safeName = fileNameWithoutExt.trim().ifBlank { "AU_Note_${note.id}" }
         val fullFileName = "$safeName$selectedExtension"
         isWorking = true
-        try {
-            val built = NoteExporter.buildFile(context, note, fullFileName, selectedExtension)
-            val saved = NoteExporter.saveToDevice(context, built, fullFileName, NoteExporter.mimeFor(selectedExtension))
-            if (saved != null) {
-                savedPath = saved.displayPath
-            } else {
-                Toast.makeText(context, "Export failed: could not write to device storage", Toast.LENGTH_LONG).show()
+        scope.launch {
+            val outcome: Result<String?> = withContext(Dispatchers.IO) {
+                try {
+                    val built = NoteExporter.buildFile(context, note, fullFileName, selectedExtension)
+                    Result.success(NoteExporter.saveToDevice(context, built, fullFileName, NoteExporter.mimeFor(selectedExtension))?.displayPath)
+                } catch (e: Throwable) {
+                    Result.failure(e)
+                }
             }
-        } catch (e: Exception) {
-            Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+            isWorking = false
+            outcome.onSuccess { path ->
+                if (path != null) savedPath = path
+                else Toast.makeText(context, "Export failed: could not write to device storage", Toast.LENGTH_LONG).show()
+            }
+            outcome.onFailure { Toast.makeText(context, "Export failed: ${it.message}", Toast.LENGTH_LONG).show() }
         }
-        isWorking = false
     }
 
     // Android 9 and below still need the legacy WRITE_EXTERNAL_STORAGE grant.
@@ -116,7 +128,7 @@ fun ExportDialog(
 
     val showMediaWarning = NoteExporter.needsMediaWarning(selectedExtension, note)
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = { if (!isWorking) onDismiss() }) {
         GlassCard(
             modifier = Modifier
                 .fillMaxWidth()
@@ -185,6 +197,7 @@ fun ExportDialog(
                         val accent = when (ext) {
                             ".pdf" -> Color(0xFFE53935)
                             ".png" -> Color(0xFF26A69A)
+                            ".md" -> Color(0xFF607D8B)
                             ".docx" -> Color(0xFF1E88E5)
                             ".json" -> Color(0xFFFFB300)
                             ".xml" -> Color(0xFF8E24AA)
@@ -273,6 +286,20 @@ fun ExportDialog(
 
                 Spacer(modifier = Modifier.height(18.dp))
 
+                if (isWorking) {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)),
+                        color = CrimsonPrimary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Exporting your note… please wait",
+                        fontSize = 12.sp,
+                        color = if (isDarkMode) Color.White.copy(alpha = 0.8f) else Color.DarkGray
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+
                 // PART G: TWO EXPORT BUTTONS (1st Export to Storage, 2nd Share)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -301,11 +328,20 @@ fun ExportDialog(
 
                     // Option 2: Share via Android Share Sheet
                     Button(
+                        enabled = !isWorking,
                         onClick = {
                             val safeName = fileNameWithoutExt.trim().ifBlank { "AU_Note_${note.id}" }
                             val fullFileName = "$safeName$selectedExtension"
-                            shareExport(context, note, fullFileName, selectedExtension)
-                            onDismiss()
+                            isWorking = true
+                            scope.launch {
+                                val built: Result<File> = withContext(Dispatchers.IO) {
+                                    try { Result.success(NoteExporter.buildFile(context, note, fullFileName, selectedExtension)) }
+                                    catch (e: Throwable) { Result.failure(e) }
+                                }
+                                isWorking = false
+                                built.onSuccess { shareBuiltFile(context, it, selectedExtension); onDismiss() }
+                                built.onFailure { Toast.makeText(context, "Share error: ${it.message}", Toast.LENGTH_SHORT).show() }
+                            }
                         },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
@@ -324,7 +360,7 @@ fun ExportDialog(
     savedPath?.let { path ->
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { savedPath = null; onDismiss() },
-            title = { Text("Export successful", fontWeight = FontWeight.Bold) },
+            title = { Text("Note Exported Successfully", fontWeight = FontWeight.Bold) },
             text = {
                 Column {
                     Text("Your file was saved to:", fontSize = 13.sp)
@@ -335,7 +371,7 @@ fun ExportDialog(
                 }
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { savedPath = null; onDismiss() }) { Text("OK") }
+                androidx.compose.material3.TextButton(onClick = { savedPath = null; onDismiss() }) { Text("Done", color = CrimsonPrimary, fontWeight = FontWeight.Bold) }
             }
         )
     }
@@ -344,6 +380,23 @@ fun ExportDialog(
 private fun shareExport(context: Context, note: NoteEntity, fileName: String, extension: String) {
     try {
         val file = NoteExporter.buildFile(context, note, fileName, extension)
+        val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = NoteExporter.mimeFor(extension)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, file.name)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val chooser = Intent.createChooser(sendIntent, "Share ${file.name}")
+        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(chooser)
+    } catch (e: Exception) {
+        Toast.makeText(context, "Share error: ${e.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun shareBuiltFile(context: Context, file: File, extension: String) {
+    try {
         val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
         val sendIntent = Intent(Intent.ACTION_SEND).apply {
             type = NoteExporter.mimeFor(extension)

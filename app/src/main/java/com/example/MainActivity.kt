@@ -65,6 +65,7 @@ sealed class Screen {
     data object SecurityArea : Screen()
     data object SecuritySettings : Screen()
     data object ThemeSettings : Screen()
+    data object AgentSettings : Screen()
     data object ApiRoom : Screen()
     data object NameGenerator : Screen()
     data object HtmlViewer : Screen()
@@ -249,6 +250,7 @@ fun AuNotesApp(
                 }
             }
             screenNow is Screen.ThemeSettings -> currentScreen = Screen.Settings
+            screenNow is Screen.AgentSettings -> currentScreen = Screen.Settings
             screenNow is Screen.SecuritySettings -> currentScreen = Screen.SecurityArea
             screenNow is Screen.MainWorkspace && screenNow.pickForHide -> currentScreen = Screen.SecurityArea
             screenNow is Screen.SecurityArea -> leaveSecurityArea()
@@ -333,6 +335,7 @@ fun AuNotesApp(
             }
 
             is Screen.ReadNote -> {
+                com.example.ui.components.OpenAnimated {
                 ReadNoteScreen(
                     note = screen.note,
                     preferences = preferences,
@@ -358,9 +361,11 @@ fun AuNotesApp(
                         }
                     }
                 )
+                }
             }
 
             is Screen.EditNote -> {
+                com.example.ui.components.OpenAnimated {
                 NoteEditorScreen(
                     initialNote = screen.note,
                     isDarkMode = isDarkMode,
@@ -419,6 +424,7 @@ fun AuNotesApp(
                         }
                     }
                 )
+                }
             }
 
             is Screen.TableEditor -> {
@@ -446,6 +452,7 @@ fun AuNotesApp(
                     },
                     onOpenApiRoom = { currentScreen = Screen.ApiRoom },
                     onOpenThemeSettings = { currentScreen = Screen.ThemeSettings },
+                    onOpenAgentSettings = { currentScreen = Screen.AgentSettings },
                     onOpenRecycleBin = {
                         screenBeforeRecycleBin = Screen.Settings
                         currentScreen = Screen.RecycleBin
@@ -491,6 +498,14 @@ fun AuNotesApp(
                 )
             }
 
+            is Screen.AgentSettings -> {
+                AgentSettingsScreen(
+                    preferences = preferences,
+                    isDarkMode = isDarkMode,
+                    onBack = { currentScreen = Screen.Settings }
+                )
+            }
+
             is Screen.ThemeSettings -> {
                 ThemeSettingsScreen(
                     preferences = preferences,
@@ -502,7 +517,8 @@ fun AuNotesApp(
             is Screen.HtmlViewer -> {
                 HtmlViewerScreen(
                     isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.MainWorkspace() }
+                    onBack = { currentScreen = Screen.MainWorkspace() },
+                    repository = repository
                 )
             }
 

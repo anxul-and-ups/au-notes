@@ -56,7 +56,8 @@ fun CodeBoxCard(
     code: String,
     isDarkMode: Boolean,
     modifier: Modifier = Modifier,
-    fontSize: Int = 13
+    fontSize: Int = 13,
+    lang: String = ""
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -64,6 +65,15 @@ fun CodeBoxCard(
     val boxBg = if (isDarkMode) Color(0xFF1B1F27) else Color(0xFFF1F3F7)
     val headerBg = if (isDarkMode) Color(0xFF262B35) else Color(0xFFE2E6EE)
     val text = if (isDarkMode) Color(0xFFE6EAF2) else Color(0xFF1B1F27)
+
+    val coloredCode = remember(code, lang, isDarkMode) {
+        androidx.compose.ui.text.buildAnnotatedString {
+            append(code)
+            com.example.ui.util.SyntaxHighlighter.tokens(code, lang, isDarkMode).forEach {
+                addStyle(androidx.compose.ui.text.SpanStyle(color = it.color), it.start, it.end)
+            }
+        }
+    }
 
     fun copy() {
         clipboard.setText(AnnotatedString(code))
@@ -97,7 +107,7 @@ fun CodeBoxCard(
         }
         // the code scrolls sideways inside the box, the page behind keeps scrolling vertically
         Text(
-            text = code,
+            text = coloredCode,
             fontFamily = FontFamily.Monospace,
             fontSize = fontSize.sp,
             lineHeight = (fontSize + 6).sp,
@@ -135,7 +145,7 @@ fun CodeBoxCard(
                     }
                 }
                 Text(
-                    text = code,
+                    text = coloredCode,
                     fontFamily = FontFamily.Monospace,
                     fontSize = (fontSize + 1).sp,
                     lineHeight = (fontSize + 8).sp,
@@ -153,18 +163,31 @@ fun CodeBoxCard(
 }
 
 /** A fenced code block found inside note text. [start]/[end] cover the fences too. */
-data class CodeFence(val start: Int, val end: Int, val title: String, val code: String, val openLineEnd: Int)
+data class CodeFence(val start: Int, val end: Int, val title: String, val code: String, val openLineEnd: Int, val lang: String = "", val codeStart: Int = 0)
 
 object CodeFences {
     private val fenceRegex = Regex("(?m)^```([^\\n]*)\\n([\\s\\S]*?)\\n?^```[ \\t]*$")
 
-    fun find(text: String): List<CodeFence> =
+    @Volatile private var lastText: String? = null
+    @Volatile private var lastResult: List<CodeFence> = emptyList()
+
+    /** Cached on the last text (the editor asks several times per keystroke) with a no-fence fast path. */
+    fun find(text: String): List<CodeFence> {
+        if (!text.contains("```")) return emptyList()
+        if (text == lastText) return lastResult
+        val r = findUncached(text)
+        lastText = text
+        lastResult = r
+        return r
+    }
+
+    private fun findUncached(text: String): List<CodeFence> =
         fenceRegex.findAll(text).map { m ->
             val info = m.groupValues[1].trim()
             val parts = info.split(Regex("\\s+"), limit = 2)
             val lang = parts.getOrNull(0).orEmpty()
             val custom = parts.getOrNull(1).orEmpty()
             val title = custom.ifBlank { lang }
-            CodeFence(m.range.first, m.range.last + 1, title, m.groupValues[2], m.range.first + 3 + m.groupValues[1].length)
+            CodeFence(m.range.first, m.range.last + 1, title, m.groupValues[2], m.range.first + 3 + m.groupValues[1].length, lang, m.groups[2]?.range?.first ?: (m.range.first + 4 + m.groupValues[1].length))
         }.toList()
 }

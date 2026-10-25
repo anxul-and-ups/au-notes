@@ -61,6 +61,10 @@ import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.AlarmAdd
 import androidx.compose.material.icons.filled.Check
@@ -134,6 +138,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -290,6 +297,9 @@ fun NoteEditorScreen(
     var activeColorHex by remember { mutableStateOf<String?>(null) }
     var activeFontSize by remember { mutableStateOf<Int?>(null) }
     var activeHighlight by remember { mutableStateOf(false) }
+    var activeHighlightHex by remember { mutableStateOf("#FFEB3B") }
+    var activeHighlightPct by remember { mutableStateOf(45) }
+    fun highlightValue() = "$activeHighlightHex@$activeHighlightPct"
 
     fun applyOrSetColor(hex: String?) {
         val sel = contentValue.selection
@@ -341,6 +351,8 @@ fun NoteEditorScreen(
     // (Alarm dialog moved to ReadNoteScreen — Item 14)
     var showImageEditModal by remember { mutableStateOf<RichTextFormatter.AttachmentInfo?>(null) }
     var showPdfMode by remember { mutableStateOf(false) }
+    var titleBarHidden by remember { mutableStateOf(false) }
+    var toolsOpen by remember { mutableStateOf(false) }
     var showTableFullscreen by remember { mutableStateOf(false) }
 
 
@@ -470,10 +482,21 @@ fun NoteEditorScreen(
     fun applyOrToggleHighlight() {
         val sel = contentValue.selection
         if (!sel.collapsed) {
-            spans = RichTextFormatter.toggleBooleanProperty(spans, "highlight", sel.min, sel.max)
+            spans = if (RichTextFormatter.isPropertyActiveThroughout(spans, "highlight", sel.min, sel.max))
+                RichTextFormatter.clearType(spans, "highlight", sel.min, sel.max)
+            else RichTextFormatter.setValueProperty(spans, "highlight", sel.min, sel.max, highlightValue())
         } else {
             activeHighlight = !activeHighlight
         }
+    }
+
+    /** New highlight colour and/or opacity: updates what is typed next AND the current selection live. */
+    fun applyHighlightStyle(hex: String?, pct: Int?) {
+        if (hex != null) activeHighlightHex = hex
+        if (pct != null) activeHighlightPct = pct.coerceIn(10, 100)
+        val sel = contentValue.selection
+        if (!sel.collapsed) spans = RichTextFormatter.setValueProperty(spans, "highlight", sel.min, sel.max, highlightValue())
+        else activeHighlight = true
     }
 
     // ---------- Samsung-Notes-style line tools (checkbox / bullets / numbers / indent) ----------
@@ -547,6 +570,35 @@ fun NoteEditorScreen(
         }
         spans = RichTextFormatter.adjustSpansForEdit(spans, text, newText)
         contentValue = TextFieldValue(newText, selection = TextRange(caret))
+    }
+
+    // Two-finger image move: the picture follows the fingers, on release its line moves in the note.
+    var movingImageId by remember { mutableStateOf<String?>(null) }
+    var movingDy by remember { mutableStateOf(0f) }
+
+    fun moveImageLine(id: String, dropY: Float) {
+        val layout = textLayout ?: return
+        val text = contentValue.text
+        val marker = ImageMarkers.marker(id)
+        val mi = if (text.startsWith(marker)) 0 else text.indexOf("\n$marker").let { if (it >= 0) it + 1 else -1 }
+        if (mi < 0) return
+        val targetLine = layout.getLineForVerticalPosition(dropY.coerceAtLeast(0f))
+        val targetOffset = layout.getLineStart(targetLine)
+        val removeEnd = if (mi + marker.length < text.length) mi + marker.length + 1 else mi + marker.length
+        val removeStart = if (removeEnd >= text.length && mi > 0 && text[mi - 1] == '\n') mi - 1 else mi
+        val removed = removeEnd - removeStart
+        val without = text.removeRange(removeStart, removeEnd)
+        val t = when {
+            targetOffset <= removeStart -> targetOffset
+            targetOffset >= removeEnd -> targetOffset - removed
+            else -> removeStart
+        }.coerceIn(0, without.length)
+        if (t == mi && without == text) return
+        val newText = if (t >= without.length && without.isNotEmpty() && !without.endsWith("\n")) without + "\n" + marker
+        else without.substring(0, t) + marker + "\n" + without.substring(t)
+        pushUndo()
+        spans = RichTextFormatter.adjustSpansForEdit(RichTextFormatter.adjustSpansForEdit(spans, text, without), without, newText)
+        contentValue = TextFieldValue(newText, selection = TextRange(t.coerceAtMost(newText.length)))
     }
 
     /** Inserts an empty code box ("```" fences) at the caret, caret placed inside it. */
@@ -792,21 +844,28 @@ fun NoteEditorScreen(
         return TextFieldValue(result, selection = TextRange(cursor + insertion.length))
     }
 
-    // ---- Writing timer: starts on the first keystroke, keeps running until the editor is closed ----
+    // ---- Writing timer (saved per note, survives closing the note and app restarts) ----
+    // Only counts while the user is actually writing in THIS note: a second is added only if something
+    // was typed in the last 10 seconds, and the loop dies with the editor so other notes never add to it.
+    val savedWriteBase = remember { initialNote?.id?.let { preferences.noteWriteSeconds.value[it] } ?: 0L }
     val initialTitleForTimer = remember { initialNote?.title ?: "" }
     val initialTextForTimer = remember { initialNote?.content ?: "" }
     var writeStarted by remember { mutableStateOf(false) }
-    var writeSeconds by remember { mutableStateOf(0L) }
-    var writeSecondsSaved by remember { mutableStateOf(0L) }
+    var writeSeconds by remember { mutableStateOf(0L) }      // seconds counted in this editing session
+    var writeSecondsSaved by remember { mutableStateOf(0L) } // part of writeSeconds already stored
+    var lastInputAt by remember { mutableStateOf(0L) }
     LaunchedEffect(title, contentValue.text) {
-        if (!writeStarted && (title != initialTitleForTimer || contentValue.text != initialTextForTimer)) writeStarted = true
+        if (title != initialTitleForTimer || contentValue.text != initialTextForTimer) {
+            writeStarted = true
+            lastInputAt = System.currentTimeMillis()
+        }
     }
     LaunchedEffect(writeStarted) {
         if (writeStarted) {
             while (true) {
                 kotlinx.coroutines.delay(1000)
-                writeSeconds += 1
-                if (writeSeconds % 15L == 0L && currentNoteId > 0L) {
+                if (System.currentTimeMillis() - lastInputAt < 10_000L) writeSeconds += 1
+                if (writeSeconds > writeSecondsSaved && writeSeconds % 10L == 0L && currentNoteId > 0L) {
                     preferences.addNoteWriteSeconds(currentNoteId, writeSeconds - writeSecondsSaved)
                     writeSecondsSaved = writeSeconds
                 }
@@ -821,6 +880,7 @@ fun NoteEditorScreen(
             }
         }
     }
+    val shownWriteSeconds = savedWriteBase + writeSeconds
 
     val mainScrollState = rememberScrollState()
     // Keep the caret visible without fighting the parent scroll state.
@@ -857,13 +917,16 @@ fun NoteEditorScreen(
 
     // DAY MODE CONTRAST FIX: Default text color in Day mode is dark (Color(0xFF111111))
     val defaultTextColor = if (isDarkMode) Color.White else Color(0xFF111111)
-    val effectiveTextColor = if (!isDarkMode && (selectedColorHex.equals("#FFFFFF", ignoreCase = true) || selectedColorHex.equals("#FFF", ignoreCase = true))) {
-        Color(0xFF111111)
-    } else {
-        try {
-            Color(android.graphics.Color.parseColor(selectedColorHex))
-        } catch (e: Exception) {
-            defaultTextColor
+    // Base text colour: the note's saved colour, but never one that disappears into the background
+    // (a note saved in day mode with black text used to stay black in dark mode). Colours the user
+    // picked for a selection (spans) are untouched.
+    val effectiveTextColor = run {
+        val parsed = try { Color(android.graphics.Color.parseColor(selectedColorHex)) } catch (e: Exception) { null }
+        when {
+            parsed == null -> defaultTextColor
+            isDarkMode && parsed.luminance() < 0.12f -> defaultTextColor
+            !isDarkMode && parsed.luminance() > 0.88f -> defaultTextColor
+            else -> parsed
         }
     }
 
@@ -907,6 +970,17 @@ fun NoteEditorScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        // Hide / show the whole title bar (note content and saving are not affected)
+                        NeuIconButton(
+                            icon = if (titleBarHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = if (titleBarHidden) "Show title bar" else "Hide title bar",
+                            isDarkMode = isDarkMode,
+                            size = 36.dp,
+                            iconSize = 17.dp,
+                            tint = if (titleBarHidden) CrimsonPrimary else (if (isDarkMode) Color.White else Color.Black),
+                            onClick = { titleBarHidden = !titleBarHidden }
+                        )
+
                         // Undo
                         NeuIconButton(
                             icon = Icons.AutoMirrored.Filled.Undo,
@@ -974,7 +1048,7 @@ fun NoteEditorScreen(
                 val saveInOptions = systemSaveInFolders + customFoldersList.filter { it !in systemSaveInFolders && it !in hiddenFoldersSet }
                 val saveInLabel = saveInChoice ?: (initialNote?.folder?.takeIf { it != "Hidden" } ?: "All Notes")
                 GlassCard(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp).hiddenWhen(titleBarHidden),
                     shape = RoundedCornerShape(16.dp),
                     isDarkMode = isDarkMode,
                     elevation = 3.dp
@@ -984,15 +1058,16 @@ fun NoteEditorScreen(
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
                             Icon(
                                 Icons.Default.Alarm, contentDescription = "Writing timer",
-                                tint = if (writeStarted) CrimsonPrimary else Color.Gray, modifier = Modifier.size(13.dp)
+                                tint = if (writeStarted || savedWriteBase > 0) CrimsonPrimary else Color.Gray, modifier = Modifier.size(13.dp)
                             )
                             Spacer(Modifier.width(4.dp))
                             Text(
-                                text = String.format("%02d:%02d", writeSeconds / 60, writeSeconds % 60),
+                                text = if (shownWriteSeconds >= 3600) String.format("%d:%02d:%02d", shownWriteSeconds / 3600, (shownWriteSeconds % 3600) / 60, shownWriteSeconds % 60)
+                                else String.format("%02d:%02d", shownWriteSeconds / 60, shownWriteSeconds % 60),
                                 fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
-                                color = if (writeStarted) CrimsonPrimary else Color.Gray
+                                color = if (writeStarted || savedWriteBase > 0) CrimsonPrimary else Color.Gray
                             )
-                            if (!writeStarted) {
+                            if (!writeStarted && savedWriteBase == 0L) {
                                 Text("  starts when you type", fontSize = 10.sp, color = Color.Gray.copy(alpha = 0.7f))
                             }
                         }
@@ -1167,7 +1242,7 @@ fun NoteEditorScreen(
                                     activeFontSize?.let { sz ->
                                         spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "fontsize", sz.toString())
                                     }
-                                    if (activeHighlight) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "highlight")
+                                    if (activeHighlight) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "highlight", highlightValue())
                                 }
                             }
                             contentValue = newVal
@@ -1193,7 +1268,7 @@ fun NoteEditorScreen(
                                                 (AttachmentRenderer.frameHeightPx(att, fieldWidthPx * att.widthFraction) + 10.dp.toPx()).toSp()
                                             }
                                         }
-                                    )))
+                                    ), isDarkMode))
                                 },
                                 OffsetMapping.Identity
                             )
@@ -1224,6 +1299,25 @@ fun NoteEditorScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 260.dp)
+                            .drawBehind {
+                                // one full-width rounded box behind every code block
+                                val layout = textLayout ?: return@drawBehind
+                                val full = contentValue.text
+                                if (layout.layoutInput.text.length != full.length || !full.contains("```")) return@drawBehind
+                                val boxColor = if (isDarkMode) Color(0xFF1B1F27) else Color(0xFFE3E7EF)
+                                com.example.ui.components.CodeFences.find(full).forEach { f ->
+                                    val firstLine = layout.getLineForOffset(f.start)
+                                    val lastLine = layout.getLineForOffset((f.end - 1).coerceAtLeast(f.start))
+                                    val top = layout.getLineTop(firstLine)
+                                    val bottom = layout.getLineBottom(lastLine)
+                                    drawRoundRect(
+                                        color = boxColor,
+                                        topLeft = androidx.compose.ui.geometry.Offset(-8.dp.toPx(), top - 4.dp.toPx()),
+                                        size = androidx.compose.ui.geometry.Size(size.width + 16.dp.toPx(), bottom - top + 8.dp.toPx()),
+                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(12.dp.toPx())
+                                    )
+                                }
+                            }
                             .bringIntoViewRequester(contentBringIntoViewRequester)
                     )
 
@@ -1238,14 +1332,25 @@ fun NoteEditorScreen(
                                 AttachmentFrame(
                                     att = att,
                                     modifier = Modifier
-                                        .offset { IntOffset(0, top.roundToInt()) }
+                                        .offset { IntOffset(0, (top + if (movingImageId == att.id) movingDy else 0f).roundToInt()) }
                                         .width(with(density) { (fieldWidthPx * att.widthFraction).toDp() })
-                                        // two-finger pinch on the image resizes it right inside the note
-                                        .pinchToResize(att.id) { scale ->
-                                            attachments = attachments.map {
-                                                if (it.id == att.id && !it.locked) it.copy(widthFraction = (it.widthFraction * scale).coerceIn(0.2f, 1f)) else it
+                                        // two fingers: pinch resizes the image, dragging moves it to another line
+                                        .pinchAndMove(
+                                            key = att.id,
+                                            onScale = { scale ->
+                                                attachments = attachments.map {
+                                                    if (it.id == att.id && !it.locked) it.copy(widthFraction = (it.widthFraction * scale).coerceIn(0.2f, 1f)) else it
+                                                }
+                                            },
+                                            onMove = { dy -> movingImageId = att.id; movingDy += dy },
+                                            onEnd = {
+                                                val dropY = top + movingDy
+                                                val moved = movingImageId == att.id && kotlin.math.abs(movingDy) > 24f
+                                                movingImageId = null
+                                                movingDy = 0f
+                                                if (moved && !att.locked) moveImageLine(att.id, dropY)
                                             }
-                                        }
+                                        )
                                         .clickable { showImageEditModal = att }
                                 )
                                 // visible controls on the image: edit / smaller / bigger
@@ -1415,6 +1520,7 @@ fun NoteEditorScreen(
                                 }
                             }
                             ToolDivider(isDarkMode)
+                            QBtn(Icons.Default.FormatClear, "Clear formatting", false) { clearFormattingOnSelection() }
                             QBtn(Icons.Default.MoreHoriz, "More text styles", false) { showFormatSheet = true }
                         }
                     }
@@ -1424,10 +1530,23 @@ fun NoteEditorScreen(
                 val curLine = firstSelectedLine()
                 val curPrefix = linePrefixOf(curLine)
                 val idleTint = if (isDarkMode) Color.White else Color(0xFF222222)
+                // The tools stay hidden until this icon is tapped, then open right above the keyboard
+                if (!toolsOpen) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Box(
+                            Modifier.size(46.dp).clip(CircleShape).background(CrimsonPrimary).clickable { toolsOpen = true },
+                            contentAlignment = Alignment.Center
+                        ) { Icon(Icons.Default.Build, contentDescription = "Tools", tint = Color.White, modifier = Modifier.size(22.dp)) }
+                    }
+                }
                 GlassCard(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                        .hiddenWhen(!toolsOpen),
                     shape = RoundedCornerShape(20.dp),
                     isDarkMode = isDarkMode,
                     elevation = 6.dp
@@ -1440,6 +1559,9 @@ fun NoteEditorScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        // Collapse the tools again
+                        EditorTool(icon = Icons.Default.KeyboardArrowDown, label = "Hide tools", active = false, idleTint = idleTint) { toolsOpen = false }
+                        ToolDivider(isDarkMode)
                         // (Text styles now live in the quick format bar above the keyboard)
                         EditorTool(icon = Icons.Default.FormatListNumbered, label = "Paragraph style",
                             active = currentListKind != "none" && currentListKind != "check" || alignment != "left", idleTint = idleTint) { showParagraphStyleSheet = true }
@@ -1679,7 +1801,17 @@ fun NoteEditorScreen(
                             "#F2C244" to Color(0xFFF2C244),
                             "#59B25F" to Color(0xFF59B25F),
                             "#5AB4F5" to Color(0xFF5AB4F5),
-                            "#B9C0F0" to Color(0xFFB9C0F0)
+                            "#B9C0F0" to Color(0xFFB9C0F0),
+                            "#000000" to Color(0xFF000000),
+                            "#FFFFFF" to Color(0xFFFFFFFF),
+                            "#FF4081" to Color(0xFFFF4081),
+                            "#9C27B0" to Color(0xFF9C27B0),
+                            "#3F51B5" to Color(0xFF3F51B5),
+                            "#00BCD4" to Color(0xFF00BCD4),
+                            "#009688" to Color(0xFF009688),
+                            "#8BC34A" to Color(0xFF8BC34A),
+                            "#795548" to Color(0xFF795548),
+                            "#FFC107" to Color(0xFFFFC107)
                         )
                         swatches.forEach { (hex, color) ->
                             val on = shownColor.equals(hex, ignoreCase = true)
@@ -1696,16 +1828,76 @@ fun NoteEditorScreen(
                                         ) else Modifier.background(color)
                                     )
                                     .border(
-                                        if (on) 2.dp else 0.dp,
-                                        if (on) CrimsonPrimary else Color.Transparent,
+                                        if (on) 2.dp else 1.dp,
+                                        if (on) CrimsonPrimary else Color.Gray.copy(alpha = 0.35f),
                                         RoundedCornerShape(4.dp)
                                     )
                                     .clickable { applyOrSetColor(hex) },
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (on) Icon(Icons.Default.Check, null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                                if (on) Icon(Icons.Default.Check, null, tint = if (color.luminance() < 0.5f && hex != null) Color.White else Color.Black, modifier = Modifier.size(18.dp))
                             }
                         }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // Highlighter: colour + opacity (drag the bar like a video seek bar)
+                Column(
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(cardBg).padding(vertical = 12.dp)
+                ) {
+                    val hiPalette = listOf(
+                        "#FFEB3B", "#FFC107", "#FF9800", "#FF5252", "#F48FB1", "#CE93D8",
+                        "#90CAF9", "#80DEEA", "#A5D6A7", "#C5E1A5", "#BCAAA4", "#B0BEC5"
+                    )
+                    val selHi = if (sel.collapsed) null
+                    else spans.lastOrNull { it.type == "highlight" && it.start <= sel.min && it.end >= sel.max }?.value
+                    val shownHiHex = selHi?.substringBefore('@') ?: activeHighlightHex
+                    val shownHiPct = selHi?.substringAfter('@', "45")?.toIntOrNull() ?: activeHighlightPct
+                    Text("Highlighter color", fontSize = 13.sp, color = labelColor, modifier = Modifier.padding(start = 14.dp, bottom = 10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        hiPalette.forEach { hex ->
+                            val on = shownHiHex.equals(hex, ignoreCase = true)
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(android.graphics.Color.parseColor(hex)))
+                                    .border(if (on) 3.dp else 1.dp, if (on) CrimsonPrimary else Color.Gray.copy(alpha = 0.35f), CircleShape)
+                                    .clickable { applyHighlightStyle(hex, null) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (on) Icon(Icons.Default.Check, null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Opacity", fontSize = 13.sp, color = labelColor)
+                        Spacer(Modifier.weight(1f))
+                        Text("$shownHiPct%", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = iconColor)
+                    }
+                    androidx.compose.material3.Slider(
+                        value = shownHiPct.toFloat(),
+                        onValueChange = { applyHighlightStyle(null, it.toInt()) },
+                        valueRange = 10f..100f,
+                        modifier = Modifier.padding(horizontal = 10.dp),
+                        colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = CrimsonPrimary, activeTrackColor = CrimsonPrimary)
+                    )
+                    // live preview
+                    Box(
+                        Modifier.padding(horizontal = 14.dp).fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(cardBg.copy(alpha = 1f)).padding(10.dp)
+                    ) {
+                        Text(
+                            "Sample highlighted text",
+                            color = iconColor,
+                            fontSize = 16.sp,
+                            modifier = Modifier.background(Color(android.graphics.Color.parseColor(shownHiHex)).copy(alpha = shownHiPct / 100f))
+                        )
                     }
                 }
             }
@@ -1844,38 +2036,46 @@ private fun ToolDivider(isDarkMode: Boolean) {
     )
 }
 
-/** Two-finger pinch only (one finger keeps scrolling / tapping): reports the scale change between moves. */
-private fun Modifier.pinchToResize(key: Any?, onScale: (Float) -> Unit): Modifier = this.pointerInput(key) {
+/**
+ * Two-finger gesture only (one finger keeps scrolling / tapping): pinch = resize, two-finger drag = move.
+ * Events are consumed in the Initial pass so no accidental text selection happens while moving an image.
+ */
+private fun Modifier.pinchAndMove(
+    key: Any?,
+    onScale: (Float) -> Unit,
+    onMove: (Float) -> Unit,
+    onEnd: () -> Unit
+): Modifier = this.pointerInput(key) {
     awaitEachGesture {
         awaitFirstDown(requireUnconsumed = false)
         var prevDist = 0f
+        var prevCentroidY = 0f
+        var multiTouched = false
         do {
             val event = awaitPointerEvent(PointerEventPass.Initial)
             val down = event.changes.filter { it.pressed }
             if (down.size >= 2) {
+                multiTouched = true
                 val d = (down[0].position - down[1].position).getDistance()
+                val cy = (down[0].position.y + down[1].position.y) / 2f
                 if (prevDist > 0f && d > 0f) {
-                    onScale(d / prevDist)
-                    event.changes.forEach { it.consume() }
+                    val scale = d / prevDist
+                    if (kotlin.math.abs(scale - 1f) > 0.004f) onScale(scale)
+                    onMove(cy - prevCentroidY)
                 }
                 prevDist = d
+                prevCentroidY = cy
+                event.changes.forEach { it.consume() }
             } else {
                 prevDist = 0f
             }
         } while (event.changes.any { it.pressed })
+        if (multiTouched) onEnd()
     }
 }
 
-/** Code boxes in the editor: monospace + soft background (same length, so offsets never change). */
-private fun decorateCodeFences(base: AnnotatedString): AnnotatedString {
-    val fences = com.example.ui.components.CodeFences.find(base.text)
-    if (fences.isEmpty()) return base
-    return androidx.compose.ui.text.buildAnnotatedString {
-        append(base)
-        fences.forEach { f ->
-            addStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0x2A8A94A6)), f.start, f.end.coerceAtMost(base.length))
-            // the ``` lines themselves are faint
-            addStyle(SpanStyle(color = Color(0x778A94A6)), f.start, f.openLineEnd.coerceAtMost(base.length))
-        }
-    }
+/** Keeps the composable alive but takes no space and draws nothing while [hide] is true. */
+private fun Modifier.hiddenWhen(hide: Boolean): Modifier = this.layout { measurable, constraints ->
+    val placeable = measurable.measure(constraints)
+    if (hide) layout(0, 0) {} else layout(placeable.width, placeable.height) { placeable.place(0, 0) }
 }

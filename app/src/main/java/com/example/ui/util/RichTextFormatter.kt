@@ -248,8 +248,13 @@ object RichTextFormatter {
                             e
                         )
                         "highlight" -> {
-                            val bg = span.value?.let { hex ->
-                                try { Color(android.graphics.Color.parseColor(hex)).copy(alpha = 0.45f) } catch (ex: Exception) { null }
+                            // value = "#RRGGBB" or "#RRGGBB@opacityPercent"
+                            val bg = span.value?.let { v ->
+                                try {
+                                    val hex = v.substringBefore('@')
+                                    val pct = v.substringAfter('@', "45").toIntOrNull()?.coerceIn(5, 100) ?: 45
+                                    Color(android.graphics.Color.parseColor(hex)).copy(alpha = pct / 100f)
+                                } catch (ex: Exception) { null }
                             } ?: Color(0x73FFEB3B)
                             addStyle(SpanStyle(background = bg), s, e)
                         }

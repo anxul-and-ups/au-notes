@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -451,7 +452,8 @@ private fun injectDarkScheme(html: String): String {
 @Composable
 fun HtmlViewerScreen(
     isDarkMode: Boolean,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    repository: com.example.data.repository.NoteRepository? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -461,6 +463,9 @@ fun HtmlViewerScreen(
     var viewerDark by remember { mutableStateOf(isDarkMode) }
     var collapsed by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var confirmClear by remember { mutableStateOf(false) }
+    var showNotePicker by remember { mutableStateOf(false) }
+    val dbNotes by (repository?.allActiveNotes ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+        .collectAsState(initial = emptyList())
 
     val colors = remember(viewerDark) { HtmlColors(viewerDark) }
     val appText = if (isDarkMode) Color.White else Color(0xFF1A1A1A)
@@ -577,6 +582,9 @@ fun HtmlViewerScreen(
                 ToolButton(Icons.Default.Delete, "Clear", false, isDarkMode) {
                     if (text.isNotEmpty()) confirmClear = true
                 }
+                ToolButton(Icons.Default.Description, "Import from Notes", false, isDarkMode) {
+                    showNotePicker = true
+                }
                 ToolButton(Icons.Default.FileUpload, "Import from file", false, isDarkMode) {
                     importLauncher.launch(arrayOf("text/html", "text/plain", "text/*", "application/xhtml+xml", "*/*"))
                 }
@@ -631,6 +639,52 @@ fun HtmlViewerScreen(
                 }
             }
         }
+    }
+
+    if (showNotePicker) {
+        val htmlNotes = remember(dbNotes) {
+            dbNotes.filter { n ->
+                !n.isTrash && !n.isLocked && !n.isHidden && n.content.let { c ->
+                    c.contains("<html", true) || c.contains("<!doctype", true) || c.contains("<body", true) ||
+                        c.contains("<div", true) || c.contains("<script", true)
+                }
+            }.sortedByDescending { it.updatedAt }
+        }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showNotePicker = false },
+            title = { Text("Import from Notes", fontWeight = FontWeight.Bold) },
+            text = {
+                if (htmlNotes.isEmpty()) {
+                    Text("No HTML notes found. Save a note that contains HTML code first.", fontSize = 13.sp)
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 380.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(htmlNotes.size) { i ->
+                            val n = htmlNotes[i]
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color.Gray.copy(alpha = 0.12f))
+                                    .clickable {
+                                        setText(n.content)
+                                        collapsed = emptySet()
+                                        mode = 1
+                                        showNotePicker = false
+                                        Toast.makeText(context, "Loaded \"${n.title}\"", Toast.LENGTH_SHORT).show()
+                                    }
+                                    .padding(10.dp)
+                            ) {
+                                Text(n.title.ifBlank { "Untitled" }, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1)
+                                Text(n.content.replace("\n", " ").take(70), fontSize = 11.sp, color = Color.Gray, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { showNotePicker = false }) { Text("Close") }
+            }
+        )
     }
 
     if (confirmClear) {
@@ -860,37 +914,64 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
         return
     }
     val doc = remember(html, dark) { if (dark) injectDarkScheme(html) else html }
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            WebView(ctx).apply {
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.allowFileAccess = false
-                settings.allowContentAccess = false
-                settings.setSupportZoom(true)
-                settings.builtInZoomControls = true
-                settings.displayZoomControls = true
-                settings.useWideViewPort = true
-                settings.loadWithOverviewMode = true
-                // Naya code: WebGL aur Internet CDN ke liye zaroori settings
-                settings.mediaPlaybackRequiresUserGesture = false
-                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-                webViewClient = WebViewClient()
-                webChromeClient = android.webkit.WebChromeClient()
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+    val webRef = remember { arrayOfNulls<WebView>(1) }
+    Box(modifier = Modifier.fillMaxSize()) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    // WebGL (three.js orbs etc.) needs JS + a hardware layer
+                    setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+                    settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                    settings.mediaPlaybackRequiresUserGesture = false
+                    settings.setSupportZoom(true)
+                    settings.builtInZoomControls = true
+                    settings.displayZoomControls = false
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
+                    webChromeClient = android.webkit.WebChromeClient()
+                    webViewClient = WebViewClient()
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    webRef[0] = this
+                }
+            },
+            update = { wv ->
+                webRef[0] = wv
+                if (wv.tag != doc) {
+                    wv.tag = doc
+                    wv.loadDataWithBaseURL("https://localhost/", doc, "text/html", "UTF-8", null)
+                }
+            },
+            onRelease = { wv ->
+                wv.stopLoading()
+                wv.destroy()
+                webRef[0] = null
             }
-        },
-        update = { wv ->
-            if (wv.tag != doc) {
-                wv.tag = doc
-                wv.loadDataWithBaseURL("https://localhost/", doc, "text/html", "UTF-8", null)
+        )
+        // zoom buttons (pinch-to-zoom works too)
+        Column(
+            modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            @Composable
+            fun ZoomBtn(label: String, onClick: () -> Unit) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xCC000000))
+                        .clickable(onClick = onClick),
+                    contentAlignment = Alignment.Center
+                ) { Text(label, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
             }
-        },
-        onRelease = { wv ->
-            wv.stopLoading()
-            wv.destroy()
+            ZoomBtn("+") { webRef[0]?.zoomIn() }
+            ZoomBtn("−") { webRef[0]?.zoomOut() }
+            ZoomBtn("1×") { webRef[0]?.let { it.tag = null; it.loadDataWithBaseURL("https://localhost/", doc, "text/html", "UTF-8", null); it.tag = doc } }
         }
-    )
+    }
 }

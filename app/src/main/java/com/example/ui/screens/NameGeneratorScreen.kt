@@ -244,27 +244,23 @@ fun NameGeneratorScreen(
 
         coroutineScope.launch(Dispatchers.IO) {
             try {
+                // Every copied name becomes its OWN note inside the reusable "Stylish Name" folder
+                val folderName = "Stylish Name"
+                if (preferences.customFolders.value.none { it.equals(folderName, ignoreCase = true) }) {
+                    preferences.addCustomFolder(folderName)
+                }
                 val allNotes = repository.allActiveNotes.firstOrNull() ?: emptyList()
-                val existingNote = allNotes.find { it.title == "Nickfinder Nicknames" && !it.isTrash }
-
-                if (existingNote != null) {
-                    val currentContent = existingNote.content
-                    if (!currentContent.contains(clean)) {
-                        val updatedContent = if (currentContent.isBlank()) "• $clean" else "$currentContent\n• $clean"
-                        repository.saveNote(
-                            existingNote.copy(
-                                content = updatedContent,
-                                updatedAt = System.currentTimeMillis()
-                            )
-                        )
-                    }
-                } else {
-                    repository.saveNote(
+                val duplicate = allNotes.any { it.folder == folderName && it.title == clean && !it.isTrash }
+                if (!duplicate) {
+                    val newId = repository.saveNote(
                         id = 0L,
-                        title = "Nickfinder Nicknames",
-                        content = "• $clean",
+                        title = clean,
+                        content = clean,
                         manualCategory = "Personal"
                     )
+                    repository.getNoteByIdOnce(newId)?.let { saved ->
+                        repository.saveNote(saved.copy(folder = folderName, updatedAt = System.currentTimeMillis()))
+                    }
                 }
 
                 withContext(Dispatchers.Main) {

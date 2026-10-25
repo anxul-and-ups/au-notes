@@ -602,6 +602,58 @@ fun AiChatScreen(
                 if (note == null || note.isTrash) ToolOutcome("Note not found.")
                 else { trackNote(note); openNoteRespectingLock(note); ToolOutcome("Opening \"${note.title}\" for the user.") }
             }
+            "open_app" -> {
+                val wanted = args.optString("app_name", "").trim()
+                when {
+                    !preferences.phoneActionsEnabled.value -> ToolOutcome(
+                        "NOT DONE: the user has not enabled 'Open apps & links for me'. Tell them to open Settings → Phone Control and AGENT Settings and turn it on."
+                    )
+                    wanted.isBlank() -> ToolOutcome("NOT DONE: no app name was given. Ask which app to open.")
+                    else -> {
+                        val pm = context.packageManager
+                        val launchers = pm.queryIntentActivities(
+                            android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER), 0
+                        )
+                        val match = launchers.filter { it.loadLabel(pm).toString().contains(wanted, ignoreCase = true) }
+                            .minByOrNull { it.loadLabel(pm).toString().length }
+                        val launch = match?.activityInfo?.packageName?.let { pm.getLaunchIntentForPackage(it) }
+                        if (launch == null) ToolOutcome(
+                            "NOT DONE: no installed app matching \"$wanted\" was found (or Android hides it from AU Notes). Say that honestly."
+                        ) else try {
+                            launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(launch)
+                            ToolOutcome("DONE: asked Android to open ${match.loadLabel(pm)}.")
+                        } catch (e: Exception) {
+                            ToolOutcome("FAILED to open it: ${e.message ?: "Android blocked it"}. Say that honestly.")
+                        }
+                    }
+                }
+            }
+            "open_url" -> {
+                val raw = args.optString("url", "").trim()
+                if (!preferences.phoneActionsEnabled.value) ToolOutcome(
+                    "NOT DONE: the user has not enabled 'Open apps & links for me'. Tell them to open Settings → Phone Control and AGENT Settings and turn it on."
+                ) else if (raw.isBlank()) ToolOutcome("NOT DONE: no link was given.")
+                else {
+                    com.example.ui.util.LinkText.open(context, if (raw.startsWith("http", true)) raw else "https://$raw")
+                    ToolOutcome("DONE: asked Android to open $raw in the browser.")
+                }
+            }
+            "remember_fact" -> {
+                val fact = args.optString("fact", "").trim()
+                when {
+                    !preferences.memoryEnabled.value -> ToolOutcome("NOT DONE: AI memory is switched off in Settings → Phone Control and AGENT Settings.")
+                    fact.isBlank() -> ToolOutcome("NOT DONE: nothing to remember was given.")
+                    preferences.addAgentMemory(fact) -> ToolOutcome("DONE: remembered \"$fact\".")
+                    else -> ToolOutcome("That is already remembered.")
+                }
+            }
+            "forget_fact" -> {
+                val key = args.optString("fact", "").trim()
+                val hit = preferences.agentMemory.value.firstOrNull { it.contains(key, ignoreCase = true) }
+                if (key.isBlank() || hit == null) ToolOutcome("NOT DONE: no remembered fact matches \"$key\".")
+                else { preferences.removeAgentMemory(hit); ToolOutcome("DONE: forgot \"$hit\".") }
+            }
             "copy_to_clipboard" -> {
                 val custom = args.optString("text", "")
                 val text = if (custom.isNotBlank()) custom else currentNoteContent.orEmpty()
@@ -639,6 +691,15 @@ fun AiChatScreen(
         } else {
             Toast.makeText(context, "Microphone permission is required for voice assistant", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    // Voice Adjuster: speed / pitch / volume / chosen voice go straight to the real speech engine
+    val vSpeed by preferences.voiceSpeed.collectAsState()
+    val vPitch by preferences.voicePitch.collectAsState()
+    val vVolume by preferences.voiceVolume.collectAsState()
+    val vName by preferences.voiceName.collectAsState()
+    LaunchedEffect(vSpeed, vPitch, vVolume, vName) {
+        voiceManager.applyVoiceSettings(vSpeed, vPitch, vVolume, vName)
     }
 
     val screenShareLauncher = rememberLauncherForActivityResult(
@@ -752,7 +813,11 @@ fun AiChatScreen(
                     .joinToString("\n") { "${it.id} | ${it.title} | ${it.folder}" }
             } catch (e: Exception) { "" }
             val sessionText = sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" }
-            val system = AgentTools.buildSystemPrompt(userName, enabled, openNoteContext, notesIndex, sessionText)
+            val memoryFacts = if (preferences.memoryEnabled.value) preferences.agentMemory.value else emptyList()
+            val system = AgentTools.buildSystemPrompt(
+                userName, enabled, openNoteContext, notesIndex, sessionText,
+                memory = memoryFacts, phoneActionsEnabled = preferences.phoneActionsEnabled.value
+            )
 
             var prompt = buildString {
                 if (!docText.isNullOrBlank()) {
@@ -1885,6 +1950,33 @@ fun AiChatScreen(
 
                     Spacer(Modifier.weight(1f))
 
+                    val orbOn by preferences.orbEnabled.collectAsState()
+                    val orbTheme by preferences.orbTheme.collectAsState()
+                    val orbColor by preferences.orbColor.collectAsState()
+                    val orbIntensity by preferences.orbIntensity.collectAsState()
+                    val speakLvl by voiceManager.speakLevel.collectAsState()
+                    if (orbOn) {
+                        // The JARVIS orb: moves with the REAL microphone level / spoken words
+                        com.example.ui.components.OrbView(
+                            state = when (voiceState) {
+                                VoiceState.LISTENING -> "listening"
+                                VoiceState.THINKING -> "thinking"
+                                VoiceState.SPEAKING -> "speaking"
+                                else -> "idle"
+                            },
+                            level = {
+                                when (voiceState) {
+                                    VoiceState.LISTENING -> voiceManager.micLevel.value
+                                    VoiceState.SPEAKING -> voiceManager.speakLevel.value
+                                    else -> 0f
+                                }
+                            },
+                            theme = orbTheme,
+                            customColor = orbColor,
+                            intensity = orbIntensity,
+                            modifier = Modifier.fillMaxWidth().height(300.dp)
+                        )
+                    } else {
                     // Sound-wave bars that move with the state / microphone level
                     val amp = when (voiceState) {
                         VoiceState.LISTENING -> (0.25f + micLevel / 10f).coerceIn(0.25f, 1f)
@@ -1908,6 +2000,8 @@ fun AiChatScreen(
                                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(barW / 2f)
                             )
                         }
+                    }
+
                     }
 
                     Spacer(Modifier.height(14.dp))

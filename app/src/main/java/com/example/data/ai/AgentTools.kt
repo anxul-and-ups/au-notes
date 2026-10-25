@@ -52,6 +52,14 @@ object AgentTools {
             "Copy text to the clipboard. Empty text copies the open note.", "text (optional)"),
         AgentToolDef("read_screen", "Clipboard & screen", "Read open note",
             "Return the title and text of the note currently open on screen.", "(none)"),
+        AgentToolDef("open_app", "Phone control", "Open an app",
+            "Open an installed app on the phone by its name (e.g. WhatsApp, YouTube, Chrome). Only works when the user enabled 'Open apps & links' in Settings → Phone Control and AGENT Settings.", "app_name"),
+        AgentToolDef("open_url", "Phone control", "Open a link",
+            "Open a web link in the browser. Same permission switch as open_app.", "url"),
+        AgentToolDef("remember_fact", "Memory", "Remember something",
+            "Save a short fact about the user so you can use it in later chats (only when the user asks you to remember it, or states a lasting preference).", "fact"),
+        AgentToolDef("forget_fact", "Memory", "Forget something",
+            "Delete a remembered fact (match by a few words of it).", "fact"),
         AgentToolDef("read_temp_mail", "Mail", "Read temp mail inbox",
             "Read the newest messages in the user's Temp Mail inbox (sender, subject, OTP/verification code, preview). Use it when the user asks about a mail/OTP, then tell them clearly what arrived.", "(none)")
     )
@@ -63,7 +71,9 @@ object AgentTools {
         enabled: List<AgentToolDef>,
         openNote: String?,
         notesIndex: String,
-        sessionNotes: String
+        sessionNotes: String,
+        memory: List<String> = emptyList(),
+        phoneActionsEnabled: Boolean = false
     ): String = buildString {
         val who = userName.ifBlank { "the user" }
         append("You are AU Agent, the built-in assistant of the AU Notes app (made by student developer Anshul). ")
@@ -92,6 +102,21 @@ object AgentTools {
             append("Available tools (name: what it does — args):\n")
             enabled.forEach { append("- ").append(it.id).append(": ").append(it.description).append(" — ").append(it.params).append("\n") }
             append("Tools NOT listed are switched off; do not call them.\n")
+        }
+
+        append("\n## You are BOTH a notes assistant and a phone assistant\n")
+        append("AU Notes is first of all a complete notes app: you can create, read, search, edit, format, move and delete notes (and folders), and you can also act on the phone (open apps/links) when allowed. ")
+        append("Never drop one skill for the other: a question about notes is answered with the note tools, a phone request with the phone tools.\n")
+        append("- Phone actions are ").append(if (phoneActionsEnabled) "ENABLED" else "DISABLED").append(" right now.\n")
+        append("- If a phone action is requested and its tool says a permission/switch is missing, tell the user in your own words: you cannot do it yet because the permission is missing, and where to enable it: Settings → Phone Control and AGENT Settings. ")
+        append("NEVER say an action worked unless the TOOL RESULT confirms it. If a tool failed, say it failed and why.\n")
+        append("- You cannot control other apps' screens (tapping, typing inside them), send messages or make calls by yourself — say so honestly if asked.\n")
+        if (memory.isNotEmpty()) {
+            append("\n## What you remember about the user (stored only on this phone)\n")
+            memory.forEach { append("- ").append(it).append("\n") }
+            append("Use these facts naturally when relevant; do not recite them unprompted.\n")
+        } else {
+            append("\nYou have a private memory: when the user says 'remember ...' (or states a lasting preference), call remember_fact. Memory is separate from their notes.\n")
         }
 
         append("\n## Writing notes\n")

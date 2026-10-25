@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Key
@@ -85,6 +86,7 @@ fun SettingsScreen(
     onOpenSecurityArea: () -> Unit = {},
     onOpenApiRoom: () -> Unit = {},
     onOpenThemeSettings: () -> Unit = {},
+    onOpenAgentSettings: () -> Unit = {},
     onOpenRecycleBin: () -> Unit
 ) {
     val context = LocalContext.current
@@ -256,6 +258,38 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(10.dp))
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Phone Control and AGENT Settings (permissions, voice adjuster, orb style, AI memory)
+            GlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                isDarkMode = isDarkMode,
+                elevation = 3.dp,
+                onClick = { onOpenAgentSettings() }
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(CrimsonPrimary.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Settings, null, tint = CrimsonPrimary, modifier = Modifier.size(22.dp))
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text("Phone Control and AGENT Settings", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                            Text("Permissions • Voice • Orb • AI memory", fontSize = 11.sp, color = CrimsonPrimary)
+                        }
+                    }
+                    Icon(Icons.Default.ChevronRight, null, tint = CrimsonPrimary, modifier = Modifier.size(20.dp))
+                }
+            }
 
             Spacer(modifier = Modifier.height(10.dp))
 

@@ -1183,7 +1183,7 @@ fun MainWorkspaceScreen(
     // Bulk export: choose the extension, all selected notes go into one zip
     if (showBulkExport) {
         val chosen = allNotes.filter { it.id in bulkIds }
-        val exts = listOf(".pdf", ".docx", ".html", ".txt", ".json", ".xml", ".py")
+        val exts = listOf(".pdf", ".md", ".docx", ".html", ".txt", ".json", ".xml", ".py")
         val hasMedia = chosen.any { com.example.ui.util.RichTextFormatter.deserializeAttachments(it.attachmentsJson).isNotEmpty() }
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { if (!bulkWorking) showBulkExport = false },

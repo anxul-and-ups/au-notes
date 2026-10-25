@@ -2,6 +2,9 @@ package com.example.ui.util
 
 import android.content.ContentValues
 import android.content.Context
+import androidx.compose.ui.graphics.blue
+import androidx.compose.ui.graphics.green
+import androidx.compose.ui.graphics.red
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -56,6 +59,7 @@ object NoteExporter {
         ".png" -> "image/png"
         ".docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ".html" -> "text/html"
+        ".md" -> "text/markdown"
         ".xml" -> "application/xml"
         ".json" -> "application/json"
         ".py" -> "text/x-python"
@@ -71,6 +75,7 @@ object NoteExporter {
             ".png" -> return buildPageImage(context, note, fileName)
             ".docx" -> writeDocx(note, target)
             ".html" -> target.writeText(buildHtml(note), Charsets.UTF_8)
+            ".md" -> target.writeText(buildMarkdown(note), Charsets.UTF_8)
             ".json" -> target.writeText(buildJson(note), Charsets.UTF_8)
             ".xml" -> target.writeText(buildXml(note), Charsets.UTF_8)
             else -> target.writeText(buildPlainText(note), Charsets.UTF_8)
@@ -304,6 +309,53 @@ object NoteExporter {
         }
     }
 
+    /** Markdown: # title, **bold**, *italic*, ~~strike~~, ==highlight==, `code`, code fences, tables, image names. */
+    private fun buildMarkdown(note: NoteEntity): String {
+        val text = ImageMarkers.blank(note.content)
+        val fences = com.example.ui.components.CodeFences.find(note.content)
+        fun inFence(s: Int, e: Int) = fences.any { s >= it.start && e <= it.end }
+        val marks = ArrayList<Triple<Int, Int, String>>() // position, order, marker (applied back to front)
+        RichTextFormatter.deserializeSpans(note.styleSpansJson).forEach { sp ->
+            val s = sp.start.coerceIn(0, text.length)
+            val e = sp.end.coerceIn(0, text.length)
+            if (s >= e || inFence(s, e)) return@forEach
+            val m = when (sp.type) {
+                "bold" -> "**"
+                "italic" -> "*"
+                "strikethrough" -> "~~"
+                "highlight" -> "=="
+                "code" -> "`"
+                "underline" -> null
+                else -> null
+            }
+            if (m != null) { marks.add(Triple(s, 1, m)); marks.add(Triple(e, 0, m)) }
+        }
+        val sb = StringBuilder(text)
+        // closing markers sort before opening markers at the same position, back to front
+        marks.sortedWith(compareByDescending<Triple<Int, Int, String>> { it.first }.thenBy { it.second }).forEach { (pos, _, m) ->
+            sb.insert(pos.coerceIn(0, sb.length), m)
+        }
+        val out = StringBuilder()
+        out.append("# ").append(note.title.ifBlank { "Untitled Note" }).append("\n\n")
+        out.append(sb.toString().trimEnd())
+        out.append("\n")
+        val rows = tableRows(note)
+        if (rows.isNotEmpty()) {
+            val cols = rows.maxOf { it.size }.coerceAtLeast(1)
+            out.append("\n")
+            rows.forEachIndexed { ri, r ->
+                out.append("| ").append((0 until cols).joinToString(" | ") { r.getOrElse(it) { "" }.replace("|", "\\|").replace("\n", " ") }).append(" |\n")
+                if (ri == 0) out.append("|").append(" --- |".repeat(cols)).append("\n")
+            }
+        }
+        val atts = RichTextFormatter.deserializeAttachments(note.attachmentsJson)
+        if (atts.isNotEmpty()) {
+            out.append("\n---\nAttachments:\n")
+            atts.forEach { out.append("- ").append(it.fileName).append("\n") }
+        }
+        return out.toString()
+    }
+
     private fun buildSpannable(note: NoteEntity): SpannableStringBuilder {
         val text = ImageMarkers.blank(note.content)
         val sp = SpannableStringBuilder(text)
@@ -324,9 +376,41 @@ object NoteExporter {
                 "color" -> span.value?.let { hex ->
                     try { sp.setSpan(ForegroundColorSpan(AColor.parseColor(hex)), s, e, flag) } catch (_: Exception) {}
                 }
-                "highlight" -> sp.setSpan(BackgroundColorSpan(AColor.argb(150, 255, 235, 59)), s, e, flag)
+                "highlight" -> {
+                    val v = span.value
+                    val base = try { AColor.parseColor((v ?: "#FFEB3B").substringBefore('@')) } catch (_: Exception) { AColor.parseColor("#FFEB3B") }
+                    val pct = v?.substringAfter('@', "45")?.toIntOrNull()?.coerceIn(5, 100) ?: 45
+                    sp.setSpan(BackgroundColorSpan((base and 0x00FFFFFF) or ((pct * 255 / 100) shl 24)), s, e, flag)
+                }
                 "fontsize" -> span.value?.toFloatOrNull()?.let { sz ->
                     sp.setSpan(AbsoluteSizeSpan((sz * 0.8f).toInt().coerceIn(7, 40), false), s, e, flag)
+                }
+            }
+        }
+        // Code boxes: static monospace block (no interactive widgets, so export can never hang on them)
+        val fencedText = note.content
+        if (fencedText.contains("```")) {
+            com.example.ui.components.CodeFences.find(fencedText).forEach { f ->
+                val fs = f.start.coerceIn(0, sp.length)
+                val fe = f.end.coerceIn(0, sp.length)
+                if (fs >= fe) return@forEach
+                sp.setSpan(TypefaceSpan("monospace"), fs, fe, flag)
+                sp.setSpan(android.text.style.BackgroundColorSpan(AColor.rgb(238, 241, 246)), fs, fe, flag)
+                // hide the ``` marker lines (tiny + same colour as the box)
+                val openEnd = (f.openLineEnd).coerceIn(fs, fe)
+                sp.setSpan(ForegroundColorSpan(AColor.rgb(238, 241, 246)), fs, openEnd, flag)
+                sp.setSpan(AbsoluteSizeSpan(2, false), fs, openEnd, flag)
+                val closeStart = fencedText.lastIndexOf("```", fe - 1)
+                if (closeStart in (openEnd + 1) until fe) {
+                    sp.setSpan(ForegroundColorSpan(AColor.rgb(238, 241, 246)), closeStart, fe, flag)
+                    sp.setSpan(AbsoluteSizeSpan(2, false), closeStart, fe, flag)
+                }
+                com.example.ui.util.SyntaxHighlighter.tokens(f.code, f.lang, false).take(4000).forEach { t ->
+                    val ts = f.codeStart + t.start
+                    val te = (f.codeStart + t.end).coerceAtMost(fe)
+                    if (ts in 0 until te && te <= sp.length) {
+                        sp.setSpan(ForegroundColorSpan(AColor.argb(255, (t.color.red * 255).toInt(), (t.color.green * 255).toInt(), (t.color.blue * 255).toInt())), ts, te, flag)
+                    }
                 }
             }
         }
@@ -562,14 +646,30 @@ object NoteExporter {
         // Body: one run per span-boundary segment, paragraphs split on newlines.
         val cuts = (spans.flatMap { listOf(it.start, it.end) } + listOf(0, text.length) + text.indices.filter { text[it] == '\n' }.flatMap { listOf(it, it + 1) })
             .map { it.coerceIn(0, text.length) }.distinct().sorted()
+        val fenceList = if (note.content.contains("```")) com.example.ui.components.CodeFences.find(note.content) else emptyList()
+        val hiddenRanges = ArrayList<IntRange>()
+        val codeRanges = ArrayList<IntRange>()
+        fenceList.forEach { f ->
+            val closeStart = note.content.lastIndexOf("```", f.end - 1).let { if (it > f.openLineEnd) it else f.end }
+            hiddenRanges.add(f.start until f.openLineEnd.coerceAtMost(text.length))
+            hiddenRanges.add(closeStart until f.end.coerceAtMost(text.length))
+            codeRanges.add(f.start until f.end.coerceAtMost(text.length))
+        }
+        val cuts2 = (cuts + fenceList.flatMap { f ->
+            listOf(f.start, f.openLineEnd, f.end, note.content.lastIndexOf("```", f.end - 1))
+        }.map { it.coerceIn(0, text.length) }).distinct().sorted()
         body.append("<w:p>")
-        for (i in 0 until cuts.size - 1) {
-            val s = cuts[i]; val e = cuts[i + 1]
+        for (i in 0 until cuts2.size - 1) {
+            val s = cuts2[i]; val e = cuts2[i + 1]
             if (s >= e) continue
             val seg = text.substring(s, e)
             if (seg == "\n") { body.append("</w:p><w:p>"); continue }
             val active = spans.filter { it.start <= s && it.end >= e }
             val rpr = StringBuilder()
+            if (hiddenRanges.any { s >= it.first && e - 1 <= it.last }) rpr.append("<w:vanish/>")
+            else if (codeRanges.any { s >= it.first && e - 1 <= it.last }) {
+                rpr.append("<w:rFonts w:ascii=\"Courier New\" w:hAnsi=\"Courier New\"/><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"EEF1F6\"/>")
+            }
             active.forEach {
                 when (it.type) {
                     "bold" -> rpr.append("<w:b/>")

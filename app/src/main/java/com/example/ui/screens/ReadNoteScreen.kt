@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -33,6 +34,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Alarm
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -61,6 +63,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -71,6 +74,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -120,6 +124,7 @@ fun ReadNoteScreen(
     var revealApi by remember { mutableStateOf(false) }
     var pdfAttachmentToView by remember { mutableStateOf<Uri?>(null) }
     var showAlarmDialog by remember { mutableStateOf(false) }
+    var showInfoDialog by remember { mutableStateOf(false) }
     val noteAlarms by preferences.noteAlarms.collectAsState()
     val activeAlarm = noteAlarms[note.id]
 
@@ -191,6 +196,7 @@ fun ReadNoteScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                .navigationBarsPadding()
         ) {
             Column(
                 modifier = Modifier
@@ -236,6 +242,19 @@ fun ReadNoteScreen(
                             )
                         }
                     }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // Info (i): writing time, lines, words, letters
+                    NeuIconButton(
+                        icon = Icons.Default.Info,
+                        contentDescription = "Note info",
+                        isDarkMode = isDarkMode,
+                        size = 38.dp,
+                        iconSize = 18.dp,
+                        tint = if (isDarkMode) Color.White else Color.Black,
+                        onClick = { showInfoDialog = true }
+                    )
 
                     Spacer(modifier = Modifier.width(8.dp))
 
@@ -290,29 +309,6 @@ fun ReadNoteScreen(
                 ) {
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Words / reading time / time spent writing
-                    run {
-                        val plain = com.example.ui.util.ImageMarkers.strip(note.content)
-                        val words = plain.split(Regex("\\s+")).count { it.isNotBlank() }
-                        val readMin = kotlin.math.max(1, kotlin.math.ceil(words / 200.0).toInt())
-                        val writeSecs = preferences.noteWriteSeconds.collectAsState().value[note.id] ?: 0L
-                        val writeText = when {
-                            writeSecs <= 0L -> null
-                            writeSecs < 60 -> "${writeSecs}s"
-                            writeSecs < 3600 -> "${writeSecs / 60}m ${writeSecs % 60}s"
-                            else -> "${writeSecs / 3600}h ${(writeSecs % 3600) / 60}m"
-                        }
-                        Text(
-                            text = buildString {
-                                append("$words words  •  ~$readMin min read")
-                                if (writeText != null) append("  •  written in $writeText")
-                            },
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (isDarkMode) Color.White.copy(0.65f) else Color(0xFF555555),
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                        )
-                    }
 
                 // Active Alarm Details — Item 17: note name, time, countdown,
                 // ringtone, status, and an edit (pencil) icon to reopen the dialog.
@@ -602,13 +598,14 @@ fun ReadNoteScreen(
                         }
 
                         // Day mode contrast fix: Ensure text is dark and readable
-                        val currentFontColor = if (!isDarkMode && (note.fontColorHex.equals("#FFFFFF", ignoreCase = true) || note.fontColorHex.equals("#FFF", ignoreCase = true))) {
-                            Color(0xFF111111)
-                        } else {
-                            try {
-                                Color(android.graphics.Color.parseColor(note.fontColorHex))
-                            } catch (e: Exception) {
-                                if (isDarkMode) Color.White.copy(0.92f) else Color(0xFF111111)
+                        val baseDefaultColor = if (isDarkMode) Color.White.copy(0.92f) else Color(0xFF111111)
+                        val currentFontColor = run {
+                            val parsed = try { Color(android.graphics.Color.parseColor(note.fontColorHex)) } catch (e: Exception) { null }
+                            when {
+                                parsed == null -> baseDefaultColor
+                                isDarkMode && parsed.luminance() < 0.12f -> baseDefaultColor
+                                !isDarkMode && parsed.luminance() > 0.88f -> baseDefaultColor
+                                else -> parsed
                             }
                         }
 
@@ -636,18 +633,25 @@ fun ReadNoteScreen(
                                 )
                             }
                         } else {
-                            val styledText = remember(displayContent, spans, currentFontColor, note.fontSize) {
-                                if (spans.isNotEmpty()) {
-                                    RichTextFormatter.buildStyledText(
-                                        text = displayContent,
-                                        spans = spans,
-                                        defaultColor = currentFontColor,
-                                        fontSize = note.fontSize.toFloat()
-                                    )
-                                } else {
-                                    AnnotatedString(displayContent)
+                            // Heavy styling of big notes runs on a background thread; the plain text shows instantly
+                            // and the styled version swaps in as soon as it is ready (no frozen open).
+                            val styledState = produceState<AnnotatedString?>(
+                                initialValue = null, displayContent, spans, currentFontColor, note.fontSize
+                            ) {
+                                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                    if (spans.isNotEmpty()) {
+                                        RichTextFormatter.buildStyledText(
+                                            text = displayContent,
+                                            spans = spans,
+                                            defaultColor = currentFontColor,
+                                            fontSize = note.fontSize.toFloat()
+                                        )
+                                    } else {
+                                        AnnotatedString(displayContent)
+                                    }
                                 }
                             }
+                            val styledText = styledState.value ?: remember(displayContent) { AnnotatedString(displayContent) }
 
                             val linkedText = remember(styledText) { com.example.ui.util.LinkText.linkify(styledText, context) }
 
@@ -720,6 +724,44 @@ fun ReadNoteScreen(
     // Alarm / Reminder dialog — Item 14 (moved here from Write Mode), with
     // Item 14's native time picker and Item 15's real ringtone/device-file
     // selection lists (instead of always defaulting to the first item).
+    if (showInfoDialog) {
+        val plain = remember(note.content) { com.example.ui.util.ImageMarkers.strip(note.content) }
+        val lines = remember(plain) { if (plain.isEmpty()) 0 else plain.split("\n").size }
+        val words = remember(plain) { plain.split(Regex("\\s+")).count { it.isNotBlank() } }
+        val letters = remember(plain) { plain.count { it.isLetter() } }
+        val writeSecs = preferences.noteWriteSeconds.collectAsState().value[note.id] ?: 0L
+        val writeText = when {
+            writeSecs <= 0L -> "Not tracked yet"
+            writeSecs < 60 -> "${writeSecs}s"
+            writeSecs < 3600 -> "${writeSecs / 60}m ${writeSecs % 60}s"
+            else -> "${writeSecs / 3600}h ${(writeSecs % 3600) / 60}m ${writeSecs % 60}s"
+        }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showInfoDialog = false },
+            title = { Text("Note info", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    listOf(
+                        "Total writing time" to writeText,
+                        "Total lines" to "$lines",
+                        "Total words" to "$words",
+                        "Total letters" to "$letters"
+                    ).forEach { (k, v) ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(k, fontSize = 14.sp, color = Color.Gray)
+                            Text(v, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { showInfoDialog = false }) {
+                    Text("Close", color = CrimsonPrimary, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
     if (showAlarmDialog) {
         var alarmTitleInput by remember {
             mutableStateOf(activeAlarm?.title ?: if (note.title.isNotBlank()) "Reminder: ${note.title}" else "Note Reminder")
@@ -1081,6 +1123,7 @@ private fun ReadRichBody(
                     com.example.ui.components.CodeBoxCard(
                         title = fence.title,
                         code = fence.code,
+                        lang = fence.lang,
                         isDarkMode = isDarkMode,
                         modifier = Modifier.fillMaxWidth(),
                         fontSize = (fontSize - 3).coerceAtLeast(11)
