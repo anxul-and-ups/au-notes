@@ -120,11 +120,17 @@ fun AgentSettingsScreen(
         else PermState.ATTENTION
     }
 
+    val accessibilityState = remember(refresh) {
+        if (com.example.data.ai.AuAccessibilityService.isEnabled(context)) PermState.ENABLED else PermState.DISABLED
+    }
     val phoneActions by preferences.phoneActionsEnabled.collectAsState()
     val voiceSpeed by preferences.voiceSpeed.collectAsState()
     val voicePitch by preferences.voicePitch.collectAsState()
     val voiceVolume by preferences.voiceVolume.collectAsState()
     val voiceName by preferences.voiceName.collectAsState()
+    val liveEnabled by preferences.liveVoiceEnabled.collectAsState()
+    val liveVoice by preferences.liveVoiceName.collectAsState()
+    val liveModel by preferences.liveModel.collectAsState()
     val orbEnabled by preferences.orbEnabled.collectAsState()
     val orbTheme by preferences.orbTheme.collectAsState()
     val orbColor by preferences.orbColor.collectAsState()
@@ -237,11 +243,16 @@ fun AgentSettingsScreen(
                         context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     }
                 }
+                PermissionRow(
+                    "Accessibility control",
+                    "Lets AU Agent read the screen of other apps and tap, type, scroll or press Back/Home for you (\"open WhatsApp and search for Rahul\"). Android asks you to turn on \"AU Agent phone control\" in its Accessibility list; you can switch it off there at any time.",
+                    accessibilityState, "Open Accessibility settings"
+                ) { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                 GlassCard(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
                     Column(Modifier.padding(14.dp)) {
                         SwitchRow(
                             "Open apps & links for me",
-                            "Lets AU Agent open installed apps (e.g. WhatsApp) and web links when you ask. Off by default.",
+                            "Master switch for phone actions: opening apps and links, and (with Accessibility control) tapping and typing inside other apps. Off by default.",
                             phoneActions
                         ) { preferences.setPhoneActionsEnabled(it) }
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -260,7 +271,51 @@ fun AgentSettingsScreen(
                     fontSize = 11.sp, color = sub, modifier = Modifier.padding(top = 6.dp)
                 )
 
-                SectionTitle("VOICE ADJUSTER")
+                SectionTitle("REALISTIC LIVE VOICE (GEMINI)")
+                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
+                    Column(Modifier.padding(14.dp)) {
+                        SwitchRow(
+                            "Natural human-like voice",
+                            "Talks with Gemini Live (real-time speech, you can interrupt it, it can run note and phone tools). Needs a Gemini API key in API Room and internet. If it fails, the normal voice below is used.",
+                            liveEnabled
+                        ) { preferences.setLiveVoiceEnabled(it) }
+                        if (liveEnabled) {
+                            Text("Voice", fontSize = 13.sp, color = sub, modifier = Modifier.padding(top = 8.dp))
+                            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                com.example.data.live.GeminiLiveClient.VOICES.forEach { (id, label) ->
+                                    val on = liveVoice == id
+                                    Text(
+                                        label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                                        color = if (on) Color.White else fg,
+                                        modifier = Modifier.clip(RoundedCornerShape(10.dp))
+                                            .background(if (on) CrimsonPrimary else fg.copy(alpha = 0.08f))
+                                            .clickable { preferences.setLiveVoiceName(id) }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    )
+                                }
+                            }
+                            Text("Live model", fontSize = 13.sp, color = sub, modifier = Modifier.padding(top = 10.dp))
+                            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(
+                                    com.example.data.live.GeminiLiveClient.MODEL_FLASH_LIVE to "3.1 Flash Live",
+                                    com.example.data.live.GeminiLiveClient.MODEL_LIVE_38 to "3.8 Live"
+                                ).forEach { (id, label) ->
+                                    val on = liveModel == id
+                                    Text(
+                                        label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                                        color = if (on) Color.White else fg,
+                                        modifier = Modifier.clip(RoundedCornerShape(10.dp))
+                                            .background(if (on) CrimsonPrimary else fg.copy(alpha = 0.08f))
+                                            .clickable { preferences.setLiveModel(id) }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                SectionTitle("VOICE ADJUSTER (NORMAL VOICE)")
                 GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
                     Column(Modifier.padding(14.dp)) {
                         Row(

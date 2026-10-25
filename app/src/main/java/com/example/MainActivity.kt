@@ -37,7 +37,6 @@ import com.example.data.model.NoteEntity
 import com.example.data.preferences.AppPreferences
 import com.example.data.repository.NoteRepository
 import com.example.ui.components.GlassSidebar
-import com.example.ui.screens.AgentSettingsScreen
 import com.example.ui.screens.AiChatScreen
 import com.example.ui.screens.ApiRoomScreen
 import com.example.ui.screens.CommandModeScreen

@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -68,6 +69,26 @@
                 <action android:name="com.example.ACTION_STOP_ALARM_SOUND" />
             </intent-filter>
         </receiver>
+
+        <!-- Phone control: only active after the user enables it in Android Accessibility settings -->
+        <service
+            android:name="com.example.data.ai.AuAccessibilityService"
+            android:exported="true"
+            android:label="AU Agent phone control"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/au_accessibility_config" />
+        </service>
+
+        <!-- Keeps the microphone alive during live voice when you switch to another app -->
+        <service
+            android:name="com.example.data.ai.LiveVoiceService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <!-- Live screen sharing for the voice assistant -->
         <service

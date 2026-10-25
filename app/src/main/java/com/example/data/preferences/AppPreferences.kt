@@ -415,6 +415,19 @@ class AppPreferences(context: Context) {
     val phoneActionsEnabled: StateFlow<Boolean> = _phoneActionsEnabled.asStateFlow()
     fun setPhoneActionsEnabled(v: Boolean) { _phoneActionsEnabled.value = v; prefs.edit().putBoolean("agent_phone_actions", v).apply() }
 
+    // ---- Realistic live voice (Gemini Live): needs a Gemini key; falls back to the normal voice otherwise ----
+    private val _liveVoiceEnabled = boolFlow("agent_live_voice", true)
+    val liveVoiceEnabled: StateFlow<Boolean> = _liveVoiceEnabled.asStateFlow()
+    fun setLiveVoiceEnabled(v: Boolean) { _liveVoiceEnabled.value = v; prefs.edit().putBoolean("agent_live_voice", v).apply() }
+
+    private val _liveVoiceName = stringFlow("agent_live_voice_name", "Aoede")
+    val liveVoiceName: StateFlow<String> = _liveVoiceName.asStateFlow()
+    fun setLiveVoiceName(v: String) { _liveVoiceName.value = v; prefs.edit().putString("agent_live_voice_name", v).apply() }
+
+    private val _liveModel = stringFlow("agent_live_model", "models/gemini-3.1-flash-live-preview")
+    val liveModel: StateFlow<String> = _liveModel.asStateFlow()
+    fun setLiveModel(v: String) { _liveModel.value = v; prefs.edit().putString("agent_live_model", v).apply() }
+
     // ---- AI memory (facts the user asked AU Agent to remember; separate from notes) ----
     private val _memoryEnabled = boolFlow("agent_memory_enabled", true)
     val memoryEnabled: StateFlow<Boolean> = _memoryEnabled.asStateFlow()

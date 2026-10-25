@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">AU Notes</string>
+    <string name="au_accessibility_description">Lets AU Agent read the screen and tap, type, scroll or press Back/Home when you ask it to. It does nothing on its own, and you can turn it off here at any time.</string>
 </resources>

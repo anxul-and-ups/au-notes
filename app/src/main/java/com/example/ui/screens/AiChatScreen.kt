@@ -639,6 +639,40 @@ fun AiChatScreen(
                     ToolOutcome("DONE: asked Android to open $raw in the browser.")
                 }
             }
+            "phone_read_screen", "phone_tap", "phone_type", "phone_press", "phone_scroll" -> {
+                val svc = com.example.data.ai.AuAccessibilityService.instance
+                when {
+                    !preferences.phoneActionsEnabled.value -> ToolOutcome(
+                        "NOT DONE: phone control is off. Tell the user to turn on 'Open apps & links for me' in Settings → Phone Control and AGENT Settings."
+                    )
+                    svc == null -> ToolOutcome(
+                        "NOT DONE: the Accessibility control is not enabled. Tell the user to open Settings → Phone Control and AGENT Settings → Accessibility control and enable AU Agent phone control."
+                    )
+                    else -> when (name) {
+                        "phone_read_screen" -> ToolOutcome(svc.readScreen())
+                        "phone_tap" -> {
+                            val t = args.optString("text", "").trim()
+                            if (t.isBlank()) ToolOutcome("NOT DONE: no text to tap was given.")
+                            else if (svc.tapByText(t)) ToolOutcome("DONE: tapped \"$t\". Read the screen again to confirm what changed.")
+                            else ToolOutcome("FAILED: nothing tappable matching \"$t\" was found on screen. Read the screen and try the exact label.")
+                        }
+                        "phone_type" -> {
+                            val t = args.optString("text", "")
+                            if (svc.typeText(t)) ToolOutcome("DONE: typed the text into the field.")
+                            else ToolOutcome("FAILED: no text field was focused or found on screen. Tap the field first.")
+                        }
+                        "phone_press" -> {
+                            val b = args.optString("button", "").trim()
+                            if (svc.press(b)) ToolOutcome("DONE: pressed $b.") else ToolOutcome("FAILED: could not press \"$b\" (use back, home, recents or notifications).")
+                        }
+                        else -> {
+                            val down = !args.optString("direction", "down").equals("up", ignoreCase = true)
+                            if (svc.scroll(down)) ToolOutcome("DONE: scrolled ${if (down) "down" else "up"}.")
+                            else ToolOutcome("FAILED: nothing scrollable was found on screen.")
+                        }
+                    }
+                }
+            }
             "remember_fact" -> {
                 val fact = args.optString("fact", "").trim()
                 when {
@@ -686,8 +720,7 @@ fun AiChatScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            showVoiceOverlay = true
-            voiceManager.startVoiceMode()
+            beginVoice()
         } else {
             Toast.makeText(context, "Microphone permission is required for voice assistant", Toast.LENGTH_SHORT).show()
         }
@@ -725,12 +758,87 @@ fun AiChatScreen(
         }
     }
 
+    // ---------------- Realistic live voice (Gemini Live) ----------------
+    var liveSession by remember { mutableStateOf<com.example.data.live.LiveVoiceSession?>(null) }
+    var liveMuted by remember { mutableStateOf(false) }
+    val noLiveState = remember { kotlinx.coroutines.flow.MutableStateFlow("idle") }
+    val noLiveText = remember { kotlinx.coroutines.flow.MutableStateFlow("") }
+
+    fun stopLive() {
+        com.example.data.ai.LiveVoiceService.stop(context)
+        liveSession?.stop()
+        liveSession = null
+        liveMuted = false
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { liveSession?.stop(); com.example.data.ai.LiveVoiceService.stop(context) } }
+
+    fun startLive() {
+        com.example.data.ai.LiveVoiceService.start(context)
+        val key = preferences.getEffectiveApiKey()
+        coroutineScope.launch {
+            val enabledNow = AgentTools.ALL.filter {
+                it.id !in disabledTools &&
+                    (it.id != "edit_current_note" || onModifyCurrentNote != null || onApplyAgentNoteToEditor != null)
+            }
+            val index = try {
+                repository.allActiveNotes.first().filter { agentVisible(it) }.take(40)
+                    .joinToString("\n") { "${it.id} | ${it.title} | ${it.folder}" }
+            } catch (e: Exception) { "" }
+            val openCtx = buildString {
+                if (!currentNoteTitle.isNullOrBlank()) append("Title: \"$currentNoteTitle\"\n")
+                if (!currentNoteContent.isNullOrBlank()) append("Content:\n$currentNoteContent\n")
+            }.ifBlank { null }
+            val memFacts = if (preferences.memoryEnabled.value) preferences.agentMemory.value else emptyList()
+            val system = AgentTools.buildSystemPrompt(
+                agentUserName, enabledNow, openCtx, index,
+                sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" },
+                memory = memFacts, phoneActionsEnabled = preferences.phoneActionsEnabled.value,
+                accessibilityEnabled = com.example.data.ai.AuAccessibilityService.instance != null,
+                nativeTools = true, spoken = true
+            )
+            liveSession = com.example.data.live.LiveVoiceSession(
+                apiKey = key,
+                model = preferences.liveModel.value,
+                voiceName = preferences.liveVoiceName.value,
+                systemPrompt = system,
+                tools = if (enabledNow.isEmpty()) null else AgentTools.toDeclarations(enabledNow),
+                executeTool = { name, args ->
+                    val out = runTool(name, args)
+                    // confirmations / note cards still appear in the chat while you talk
+                    if (out.pending != null || out.noteResults != null) {
+                        messages.add(ChatMessage(sender = "bot", text = out.finalMessage ?: "", noteResults = out.noteResults, pendingAction = out.pending))
+                    }
+                    out.finalMessage?.let { out.result + " (the user must confirm on screen)" } ?: out.result
+                },
+                onTurn = { u, a ->
+                    if (u.isNotBlank()) messages.add(ChatMessage(sender = "user", text = u))
+                    if (a.isNotBlank()) messages.add(ChatMessage(sender = "bot", text = a))
+                    val firstUser = messages.firstOrNull { it.sender == "user" }?.text?.take(30) ?: "Voice chat"
+                    sessionManager.saveSession(ChatSession(currentSessionId, firstUser, System.currentTimeMillis(), messages.toList()))
+                },
+                onFatal = { msg ->
+                    Toast.makeText(context, msg + " Using the normal voice instead.", Toast.LENGTH_LONG).show()
+                    stopLive()
+                    if (!voiceManager.isVoiceModeActive) voiceManager.startVoiceMode()
+                }
+            ).also { it.start() }
+        }
+    }
+
+    /** Opens the voice overlay and starts either the realistic live voice (Gemini) or the classic voice. */
+    fun beginVoice() {
+        showVoiceOverlay = true
+        val canLive = preferences.liveVoiceEnabled.value && activeProvider == "Gemini" && preferences.getEffectiveApiKey().isNotBlank()
+        if (canLive) {
+            if (liveSession == null) startLive()
+        } else if (!voiceManager.isVoiceModeActive) {
+            voiceManager.startVoiceMode()
+        }
+    }
+
     fun startVoiceModeExplicitly() {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            showVoiceOverlay = true
-            if (!voiceManager.isVoiceModeActive) {
-                voiceManager.startVoiceMode()
-            }
+            beginVoice()
         } else {
             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
@@ -738,7 +846,7 @@ fun AiChatScreen(
 
     fun toggleVoiceMode() {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            if (voiceManager.isVoiceModeActive) {
+            if (voiceManager.isVoiceModeActive || liveSession != null) {
                 if (showVoiceOverlay) {
                     showVoiceOverlay = false
                     Toast.makeText(context, "Voice Assistant active in background", Toast.LENGTH_SHORT).show()
@@ -746,8 +854,7 @@ fun AiChatScreen(
                     showVoiceOverlay = true
                 }
             } else {
-                showVoiceOverlay = true
-                voiceManager.startVoiceMode()
+                beginVoice()
             }
         } else {
             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -816,7 +923,8 @@ fun AiChatScreen(
             val memoryFacts = if (preferences.memoryEnabled.value) preferences.agentMemory.value else emptyList()
             val system = AgentTools.buildSystemPrompt(
                 userName, enabled, openNoteContext, notesIndex, sessionText,
-                memory = memoryFacts, phoneActionsEnabled = preferences.phoneActionsEnabled.value
+                memory = memoryFacts, phoneActionsEnabled = preferences.phoneActionsEnabled.value,
+                accessibilityEnabled = com.example.data.ai.AuAccessibilityService.instance != null
             )
 
             var prompt = buildString {
@@ -1871,10 +1979,23 @@ fun AiChatScreen(
 
     // Voice Mode Overlay (Gemini Live Style)
     if (showVoiceOverlay) {
-        val voiceState by voiceManager.voiceState.collectAsState()
-        val userTranscript by voiceManager.userTranscript.collectAsState()
-        val lastSpoken by voiceManager.lastSpokenText.collectAsState()
+        val micVoiceState by voiceManager.voiceState.collectAsState()
+        val micUserTranscript by voiceManager.userTranscript.collectAsState()
+        val micLastSpoken by voiceManager.lastSpokenText.collectAsState()
         val micLevel by voiceManager.micLevel.collectAsState()
+        // when the realistic live voice is running, ITS state / transcripts / audio level drive this screen
+        val live = liveSession
+        val liveStateV by (live?.state ?: noLiveState).collectAsState()
+        val liveUserV by (live?.userText ?: noLiveText).collectAsState()
+        val liveBotV by (live?.assistantText ?: noLiveText).collectAsState()
+        val voiceState = if (live != null) when (liveStateV) {
+            "listening" -> VoiceState.LISTENING
+            "thinking", "connecting" -> VoiceState.THINKING
+            "speaking" -> VoiceState.SPEAKING
+            else -> VoiceState.IDLE
+        } else micVoiceState
+        val userTranscript = if (live != null) liveUserV else micUserTranscript
+        val lastSpoken = if (live != null) liveBotV else micLastSpoken
         val agentName by preferences.agentUserName.collectAsState()
         val who = agentName.ifBlank { "" }
 
@@ -1932,7 +2053,7 @@ fun AiChatScreen(
                         }) { Icon(Icons.Default.KeyboardArrowDown, "Minimize", tint = Color.White) }
                         IconButton(onClick = {
                             showVoiceOverlay = false
-                            voiceManager.stopVoiceMode()
+                            if (live != null) stopLive() else voiceManager.stopVoiceMode()
                         }) { Icon(Icons.Default.Close, "End voice", tint = Color.White) }
                     }
 
@@ -1965,7 +2086,8 @@ fun AiChatScreen(
                                 else -> "idle"
                             },
                             level = {
-                                when (voiceState) {
+                                if (live != null) live.level.value
+                                else when (voiceState) {
                                     VoiceState.LISTENING -> voiceManager.micLevel.value
                                     VoiceState.SPEAKING -> voiceManager.speakLevel.value
                                     else -> 0f
@@ -2052,8 +2174,13 @@ fun AiChatScreen(
                                     val t = voiceTextInput.trim()
                                     if (t.isNotBlank()) {
                                         voiceTextInput = ""
-                                        voiceManager.stopSpeaking()
-                                        coroutineScope.launch { handleSendAction?.invoke(t) }
+                                        if (live != null) {
+                                            live.sendText(t)
+                                            messages.add(ChatMessage(sender = "user", text = t))
+                                        } else {
+                                            voiceManager.stopSpeaking()
+                                            coroutineScope.launch { handleSendAction?.invoke(t) }
+                                        }
                                     }
                                 },
                                 modifier = Modifier.size(48.dp).clip(CircleShape).background(stateColor)
@@ -2077,10 +2204,12 @@ fun AiChatScreen(
                             ) { Icon(icon, desc, tint = Color.White, modifier = Modifier.size(26.dp)) }
                         }
                         RoundCtl(
-                            if (voiceState == VoiceState.SPEAKING) Icons.Default.MicOff else Icons.Default.Mic,
-                            "Mic", voiceState == VoiceState.LISTENING
+                            if (live != null) (if (liveMuted) Icons.Default.MicOff else Icons.Default.Mic)
+                            else if (voiceState == VoiceState.SPEAKING) Icons.Default.MicOff else Icons.Default.Mic,
+                            "Mic", if (live != null) !liveMuted else voiceState == VoiceState.LISTENING
                         ) {
-                            if (voiceState == VoiceState.SPEAKING) voiceManager.stopSpeaking() else voiceManager.startListening()
+                            if (live != null) { liveMuted = !liveMuted; live.setMuted(liveMuted) }
+                            else if (voiceState == VoiceState.SPEAKING) voiceManager.stopSpeaking() else voiceManager.startListening()
                         }
                         RoundCtl(
                             if (screenShareOn) Icons.Default.StopScreenShare else Icons.Default.ScreenShare,
@@ -2089,7 +2218,7 @@ fun AiChatScreen(
                         RoundCtl(Icons.Default.Keyboard, "Type instead", voiceTextMode) { voiceTextMode = !voiceTextMode }
                         RoundCtl(Icons.Default.Close, "End", false, bg = Color(0xFFDC2626)) {
                             showVoiceOverlay = false
-                            voiceManager.stopVoiceMode()
+                            if (live != null) stopLive() else voiceManager.stopVoiceMode()
                         }
                     }
                 }

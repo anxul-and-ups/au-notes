@@ -56,6 +56,16 @@ object AgentTools {
             "Open an installed app on the phone by its name (e.g. WhatsApp, YouTube, Chrome). Only works when the user enabled 'Open apps & links' in Settings → Phone Control and AGENT Settings.", "app_name"),
         AgentToolDef("open_url", "Phone control", "Open a link",
             "Open a web link in the browser. Same permission switch as open_app.", "url"),
+        AgentToolDef("phone_read_screen", "Phone control", "Read the screen",
+            "Read the visible text of whatever app is on screen right now ('[tap]' marks tappable items). Needs the Accessibility control to be enabled.", "(none)"),
+        AgentToolDef("phone_tap", "Phone control", "Tap on screen",
+            "Tap the on-screen element whose text/label contains the given text. Read the screen first so the text is exact.", "text"),
+        AgentToolDef("phone_type", "Phone control", "Type text",
+            "Type text into the focused (or first) text field of the app on screen.", "text"),
+        AgentToolDef("phone_press", "Phone control", "Press a system button",
+            "Press a system button: back, home, recents or notifications.", "button"),
+        AgentToolDef("phone_scroll", "Phone control", "Scroll the screen",
+            "Scroll the app on screen: direction is down or up.", "direction"),
         AgentToolDef("remember_fact", "Memory", "Remember something",
             "Save a short fact about the user so you can use it in later chats (only when the user asks you to remember it, or states a lasting preference).", "fact"),
         AgentToolDef("forget_fact", "Memory", "Forget something",
@@ -73,11 +83,15 @@ object AgentTools {
         notesIndex: String,
         sessionNotes: String,
         memory: List<String> = emptyList(),
-        phoneActionsEnabled: Boolean = false
+        phoneActionsEnabled: Boolean = false,
+        accessibilityEnabled: Boolean = false,
+        nativeTools: Boolean = false,
+        spoken: Boolean = false
     ): String = buildString {
         val who = userName.ifBlank { "the user" }
         append("You are AU Agent, the built-in assistant of the AU Notes app (made by student developer Anshul). ")
         append("You talk like Claude / ChatGPT / Gemini: natural, warm, to the point, and you always understand the conversation as a whole.\n")
+        if (spoken) append("This is a LIVE VOICE conversation: speak naturally and briefly like a friendly person, no markdown, no lists, never spell out symbols.\n")
         append("The user's name is ").append(if (userName.isBlank()) "unknown (do not invent one)" else userName)
         append(". Address them by name only occasionally, never as 'sir'.\n")
         append("Reply in the same language/style as the user (English, Hindi, or Hinglish in Roman script). Keep replies short unless the user asks for depth.\n\n")
@@ -95,11 +109,16 @@ object AgentTools {
         if (enabled.isEmpty()) {
             append("All tools are switched off by the user, so you can only chat. If they ask for an app action, tell them to enable tools from the Tools button next to the message box.\n")
         } else {
-            append("To use a tool, reply with ONLY a block in exactly this form (one tool per reply, no other text):\n")
-            append("```tool\n{\"name\": \"search_notes\", \"args\": {\"query\": \"python\"}}\n```\n")
-            append("The app runs it and answers with a [TOOL RESULT]. Then continue: call another tool if needed, or give the final answer in plain text. ")
-            append("After actions finish, confirm in one short sentence what you did.\n")
-            append("Available tools (name: what it does — args):\n")
+            if (nativeTools) {
+                append("You can call the declared functions directly (native function calling). Call one only when needed, wait for its result, then answer in one or two short spoken sentences. Never read ids aloud.\n")
+                append("What each tool does (name: what it does — args):\n")
+            } else {
+                append("To use a tool, reply with ONLY a block in exactly this form (one tool per reply, no other text):\n")
+                append("```tool\n{\"name\": \"search_notes\", \"args\": {\"query\": \"python\"}}\n```\n")
+                append("The app runs it and answers with a [TOOL RESULT]. Then continue: call another tool if needed, or give the final answer in plain text. ")
+                append("After actions finish, confirm in one short sentence what you did.\n")
+                append("Available tools (name: what it does — args):\n")
+            }
             enabled.forEach { append("- ").append(it.id).append(": ").append(it.description).append(" — ").append(it.params).append("\n") }
             append("Tools NOT listed are switched off; do not call them.\n")
         }
@@ -110,7 +129,9 @@ object AgentTools {
         append("- Phone actions are ").append(if (phoneActionsEnabled) "ENABLED" else "DISABLED").append(" right now.\n")
         append("- If a phone action is requested and its tool says a permission/switch is missing, tell the user in your own words: you cannot do it yet because the permission is missing, and where to enable it: Settings → Phone Control and AGENT Settings. ")
         append("NEVER say an action worked unless the TOOL RESULT confirms it. If a tool failed, say it failed and why.\n")
-        append("- You cannot control other apps' screens (tapping, typing inside them), send messages or make calls by yourself — say so honestly if asked.\n")
+        append("- Accessibility control (reading/tapping/typing inside other apps) is ").append(if (accessibilityEnabled) "ENABLED" else "DISABLED").append(".\n")
+        append("- To work inside another app: open_app, then phone_read_screen to see it, then phone_tap / phone_type / phone_scroll / phone_press step by step, reading the screen again after each step to verify. If the Accessibility control is disabled, say it must be enabled in Settings → Phone Control and AGENT Settings → Accessibility control.\n")
+        append("- You cannot make calls or send SMS by yourself, and you never enter passwords, payment details or OTPs into other apps unless the user clearly dictates them. Sending a message or confirming a payment inside another app needs the user's explicit OK first.\n")
         if (memory.isNotEmpty()) {
             append("\n## What you remember about the user (stored only on this phone)\n")
             memory.forEach { append("- ").append(it).append("\n") }
@@ -137,6 +158,24 @@ object AgentTools {
         if (notesIndex.isNotBlank()) {
             append("\n## User's notes index (id | title | folder) — newest first\n").append(notesIndex).append("\n")
         }
+    }
+
+    /** Native function declarations (Gemini Live) built from the enabled tools. */
+    fun toDeclarations(enabled: List<AgentToolDef>): org.json.JSONArray {
+        val arr = org.json.JSONArray()
+        enabled.forEach { t ->
+            val names = t.params.split(",")
+                .map { it.replace(Regex("\\(.*?\\)"), "").trim() }
+                .filter { it.isNotBlank() && it != "none" }
+            val props = org.json.JSONObject()
+            names.forEach { n -> props.put(n, org.json.JSONObject().put("type", "STRING").put("description", n)) }
+            val decl = org.json.JSONObject().put("name", t.id).put("description", t.description)
+            if (names.isNotEmpty()) {
+                decl.put("parameters", org.json.JSONObject().put("type", "OBJECT").put("properties", props))
+            }
+            arr.put(decl)
+        }
+        return arr
     }
 
     private val fenced = Regex("```(?:tool|json)?\\s*(\\{[\\s\\S]*?\\})\\s*```")
