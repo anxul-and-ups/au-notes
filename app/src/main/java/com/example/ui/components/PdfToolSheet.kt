@@ -72,8 +72,11 @@ fun PdfToolSheet(
     var loading by remember { mutableStateOf(true) }
     var failed by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
+    val hasWatermark = remember { NoteExporter.hasWatermarkAsset(context) }
+    var watermarkOn by remember { mutableStateOf(NoteExporter.watermarkEnabled) }
 
-    LaunchedEffect(singlePage) {
+    LaunchedEffect(singlePage, watermarkOn) {
+        NoteExporter.watermarkEnabled = watermarkOn
         loading = true
         failed = false
         pages = withContext(Dispatchers.IO) {
@@ -160,6 +163,15 @@ fun PdfToolSheet(
                             .clickable { singlePage = single }
                             .padding(horizontal = 14.dp, vertical = 7.dp)
                     ) { Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (on) Color.White else barText) }
+                }
+            }
+            if (hasWatermark) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("AU NOTES watermark", fontSize = 12.sp, color = barText, modifier = Modifier.weight(1f))
+                    androidx.compose.material3.Switch(checked = watermarkOn, onCheckedChange = { watermarkOn = it })
                 }
             }
             Spacer(Modifier.height(8.dp))

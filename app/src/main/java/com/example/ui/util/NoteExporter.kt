@@ -68,6 +68,7 @@ object NoteExporter {
 
     /** Builds the export file in cache (used for both Share and Save). */
     fun buildFile(context: Context, note: NoteEntity, fileName: String, extension: String): File {
+        prepareWatermark(context)
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
         val target = File(dir, fileName)
         when (extension) {
@@ -279,6 +280,38 @@ object NoteExporter {
     private const val PAGE_H = 842
     private const val MARGIN = 40f
 
+    // ---------------------------------------------------------------- Watermark (optional assets/watermark.png)
+
+    /** Switch used by the PDF mode screen. The watermark only appears when assets/watermark.png exists. */
+    @Volatile var watermarkEnabled: Boolean = true
+    @Volatile private var watermark: Bitmap? = null
+
+    fun hasWatermarkAsset(context: Context): Boolean =
+        try { context.assets.open("watermark.png").close(); true } catch (e: Exception) { false }
+
+    private fun prepareWatermark(context: Context) {
+        if (!watermarkEnabled) { watermark = null; return }
+        if (watermark == null) {
+            watermark = try {
+                context.assets.open("watermark.png").use { BitmapFactory.decodeStream(it) }
+            } catch (e: Exception) { null }
+        }
+    }
+
+    /** Centered, faint (about 16% opacity) behind the text; on a one-long-page PDF it repeats every A4 height. */
+    private fun drawWatermark(c: Canvas, pageH: Int) {
+        val wm = watermark ?: return
+        val targetW = PAGE_W * 0.6f
+        val targetH = wm.height * (targetW / wm.width)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG).apply { alpha = 40 }
+        val slots = kotlin.math.ceil(pageH / PAGE_H.toFloat()).toInt().coerceAtLeast(1)
+        for (k in 0 until slots) {
+            val cy = if (slots == 1) pageH / 2f else (k + 0.5f) * PAGE_H
+            val dst = android.graphics.RectF((PAGE_W - targetW) / 2f, cy - targetH / 2f, (PAGE_W + targetW) / 2f, cy + targetH / 2f)
+            c.drawBitmap(wm, null, dst, paint)
+        }
+    }
+
     /** Tallest page we create when the whole note is exported as ONE continuous page. */
     private const val MAX_SINGLE_PAGE_H = 14000
 
@@ -297,6 +330,7 @@ object NoteExporter {
             page = doc.startPage(PdfDocument.PageInfo.Builder(PAGE_W, pageH, pageNo).create())
             canvas = page!!.canvas
             canvas!!.drawColor(AColor.WHITE)
+            drawWatermark(canvas!!, pageH)
             y = MARGIN
         }
 
@@ -558,12 +592,14 @@ object NoteExporter {
 
     /** PDF with exactly the options the user picked in the editor's PDF tool. */
     fun buildPdf(context: Context, note: NoteEntity, fileName: String, singlePage: Boolean): File {
+        prepareWatermark(context)
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
         return File(dir, fileName).also { writePdf(note, it, singlePage) }
     }
 
     /** One PNG picture of the whole note laid out as a single page. */
     fun buildPageImage(context: Context, note: NoteEntity, fileName: String): File {
+        prepareWatermark(context)
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
         val pdf = File(dir, "single_${System.nanoTime()}.pdf")
         writePdf(note, pdf, true)
