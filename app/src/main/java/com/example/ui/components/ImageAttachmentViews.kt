@@ -1,3 +1,4 @@
+import androidx.compose.foundation.clickable
 package com.example.ui.components
 
 import androidx.compose.foundation.Image

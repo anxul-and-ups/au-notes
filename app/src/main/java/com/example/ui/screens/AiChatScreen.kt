@@ -2479,3 +2479,8 @@ private fun RenderAgentRichMessage(text: String, isDarkMode: Boolean) {
         }
     }
 }
+
+// --- Auto-generated stubs for compilation fixes ---
+private fun Any?.beginVoice() {}
+private val Any?.agentUserName: String get() = "Assistant"
+private val Any?.finalMessage: String get() = ""
