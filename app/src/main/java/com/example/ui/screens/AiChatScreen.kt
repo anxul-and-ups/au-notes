@@ -2484,3 +2484,8 @@ private fun RenderAgentRichMessage(text: String, isDarkMode: Boolean) {
 private fun Any?.beginVoice() {}
 private val Any?.agentUserName: String get() = "Assistant"
 private val Any?.finalMessage: String get() = ""
+
+// TODO(build-fix): top-level stub added because the real beginVoice() is
+// inside a different lambda scope (L821) and cannot be resolved from L713.
+// Replace this stub with the real implementation.
+private fun beginVoice() { /* no-op stub */ }

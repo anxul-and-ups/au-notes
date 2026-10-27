@@ -1,5 +1,5 @@
-import androidx.compose.runtime.collectAsState
 package com.example.ui.screens
+import androidx.compose.runtime.collectAsState
 
 import android.annotation.SuppressLint
 import android.webkit.WebView
