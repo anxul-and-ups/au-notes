@@ -5,9 +5,7 @@ import androidx.compose.ui.graphics.Color
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
-import androidx.compose.ui.graphics.Color
 import android.graphics.BitmapFactory
-import androidx.compose.ui.graphics.Color
 import android.graphics.Canvas
 import android.graphics.Color as AColor
 import android.graphics.Paint
@@ -458,7 +456,7 @@ object NoteExporter {
                     val ts = f.codeStart + t.start
                     val te = (f.codeStart + t.end).coerceAtMost(fe)
                     if (ts in 0 until te && te <= sp.length) {
-                        sp.setSpan(ForegroundColorSpan(AColor.argb(255, (t.color.Color.Red * 255).toInt(), (t.color.Color.Green * 255).toInt(), (t.color.Color.Blue * 255).toInt())), ts, te, flag)
+                        sp.setSpan(ForegroundColorSpan(AColor.argb(255, (t.color.red * 255).toInt(), (t.color.green * 255).toInt(), (t.color.blue * 255).toInt())), ts, te, flag)
                     }
                 }
             }
