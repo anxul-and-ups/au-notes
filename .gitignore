@@ -20,3 +20,11 @@ local.properties
 debug.keystore
 debug.keystore.base64
 my-upload-key.jks
+*.bak
+*.bak2
+*.bak*
+diag.py
+fix_build*.py
+verify_push.py
+cleanup.py
+*.log
