@@ -255,7 +255,35 @@ fun ImageEditorDialog(
                     Text("Zoom  ${"%.0f".format(draft.zoom * 100)}%", fontSize = 12.sp, color = sub)
                     EditSlider(draft.zoom, 0.5f..5f, !locked) { draft = draft.copy(zoom = it) }
 
-                    if (showSizeControl) {
+                    // Full Page: the image gets its own A4 page (fits inside, keeps its aspect ratio; also in the PDF)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (draft.fullPage) CrimsonPrimary.copy(alpha = 0.16f) else Color.Gray.copy(alpha = 0.10f))
+                            .clickable(enabled = !locked) {
+                                draft = if (draft.fullPage) draft.copy(fullPage = false)
+                                else draft.copy(fullPage = true, widthFraction = 1f, zoom = 1f, posX = 0f, posY = 0f)
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Full Page", fontWeight = FontWeight.SemiBold, color = if (draft.fullPage) CrimsonPrimary else textColor, fontSize = 14.sp)
+                            Text("Image takes one whole page (fits inside, never stretched)", fontSize = 11.sp, color = sub)
+                        }
+                        Switch(
+                            checked = draft.fullPage,
+                            enabled = !locked,
+                            onCheckedChange = { on ->
+                                draft = if (on) draft.copy(fullPage = true, widthFraction = 1f, zoom = 1f, posX = 0f, posY = 0f) else draft.copy(fullPage = false)
+                            },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = CrimsonPrimary)
+                        )
+                    }
+
+                    if (showSizeControl && !draft.fullPage) {
                         Text("Size  ${"%.0f".format(draft.widthFraction * 100)}% of note width", fontSize = 12.sp, color = sub)
                         EditSlider(draft.widthFraction, 0.2f..1f, !locked) { draft = draft.copy(widthFraction = it) }
                     }

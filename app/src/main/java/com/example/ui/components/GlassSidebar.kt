@@ -55,6 +55,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -99,6 +100,7 @@ fun GlassSidebar(
     onNavigateFolder: (String) -> Unit = {},
     onOpenFileEditor: () -> Unit,
     onOpenHtmlViewer: () -> Unit = {},
+    onOpenMyDocuments: () -> Unit = {},
     onOpenNameGenerator: () -> Unit,
     onOpenCommandMode: () -> Unit,
     onOpenTempMail: () -> Unit = {},
@@ -246,6 +248,17 @@ fun GlassSidebar(
                         onClick = {
                             onClose()
                             onOpenHtmlViewer()
+                        }
+                    )
+
+                    // 2c. My Documents (files kept inside AU Notes)
+                    SidebarMenuItemPainter(
+                        icon = androidx.compose.ui.graphics.vector.rememberVectorPainter(androidx.compose.material.icons.Icons.Default.FolderOpen),
+                        title = "My Documents",
+                        isDarkMode = isDarkMode,
+                        onClick = {
+                            onClose()
+                            onOpenMyDocuments()
                         }
                     )
 

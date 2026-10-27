@@ -261,7 +261,7 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Phone Control and AGENT Settings (permissions, voice adjuster, orb style, AI memory)
+            // AGENT Settings (live voice, voice adjuster, orb style, AI memory)
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -283,8 +283,8 @@ fun SettingsScreen(
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
-                            Text("Phone Control and AGENT Settings", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
-                            Text("Permissions • Voice • Orb • AI memory", fontSize = 11.sp, color = CrimsonPrimary)
+                            Text("AGENT Settings", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                            Text("Voice • Orb • AI memory", fontSize = 11.sp, color = CrimsonPrimary)
                         }
                     }
                     Icon(Icons.Default.ChevronRight, null, tint = CrimsonPrimary, modifier = Modifier.size(20.dp))

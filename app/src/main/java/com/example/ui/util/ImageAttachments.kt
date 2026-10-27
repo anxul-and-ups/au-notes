@@ -53,7 +53,20 @@ object AttachmentRenderer {
     }
 
     /** Aspect ratio (width / height) of the frame after rotation and crop. */
+    /** A4 portrait: the frame of an image that has its own page. */
+    const val FULL_PAGE_ASPECT = 210f / 297f
+
+    /** Aspect of the rotated + cropped picture itself (not of its frame). */
+    fun pictureAspect(att: AttachmentInfo): Float {
+        var (w, h) = sourceSize(att)
+        if (att.rotation == 90 || att.rotation == 270) { val t = w; w = h; h = t }
+        val cw = w * (1f - att.cropLeft - att.cropRight).coerceAtLeast(0.1f)
+        val ch = h * (1f - att.cropTop - att.cropBottom).coerceAtLeast(0.1f)
+        return cw / ch
+    }
+
     fun frameAspect(att: AttachmentInfo): Float {
+        if (att.fullPage) return FULL_PAGE_ASPECT
         var (w, h) = sourceSize(att)
         if (att.rotation == 90 || att.rotation == 270) { val t = w; w = h; h = t }
         val cw = w * (1f - att.cropLeft - att.cropRight).coerceAtLeast(0.1f)
@@ -94,13 +107,16 @@ object AttachmentRenderer {
     fun frameBitmap(att: AttachmentInfo, outWidth: Int, background: Int = android.graphics.Color.WHITE): Bitmap? {
         val base = baseBitmap(att, maxOf(outWidth, 800)) ?: return null
         val outW = outWidth.coerceAtLeast(1)
-        val outH = (outW * base.height.toFloat() / base.width).toInt().coerceAtLeast(1)
+        val outH = if (att.fullPage) (outW / FULL_PAGE_ASPECT).toInt().coerceAtLeast(1)
+        else (outW * base.height.toFloat() / base.width).toInt().coerceAtLeast(1)
+        // full page: the whole picture is fitted inside the page frame (never stretched, never cut)
+        val fit = if (att.fullPage) minOf(1f, (base.width.toFloat() / base.height) / FULL_PAGE_ASPECT) else 1f
         val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         val c = Canvas(out)
         c.drawColor(background)
         val m = Matrix().apply {
             postTranslate(-base.width / 2f, -base.height / 2f)
-            val s = (outW.toFloat() / base.width) * att.zoom
+            val s = (outW.toFloat() / base.width) * att.zoom * fit
             postScale(s, s)
             postTranslate(outW / 2f + att.posX * outW, outH / 2f + att.posY * outH)
         }

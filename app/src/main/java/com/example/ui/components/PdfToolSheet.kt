@@ -74,8 +74,13 @@ fun PdfToolSheet(
     var exporting by remember { mutableStateOf(false) }
     val hasWatermark = remember { NoteExporter.hasWatermarkAsset(context) }
     var watermarkOn by remember { mutableStateOf(NoteExporter.watermarkEnabled) }
+    val optPrefs = remember { context.getSharedPreferences("au_pdf_options", android.content.Context.MODE_PRIVATE) }
+    var pageSize by remember { mutableStateOf(optPrefs.getString("size", "A4") ?: "A4") }
+    var marginPt by remember { mutableStateOf(optPrefs.getFloat("margin", 40f)) }
 
-    LaunchedEffect(singlePage, watermarkOn) {
+    LaunchedEffect(singlePage, watermarkOn, pageSize, marginPt) {
+        optPrefs.edit().putString("size", pageSize).putFloat("margin", marginPt).apply()
+        NoteExporter.setPdfOptions(pageSize, marginPt)
         NoteExporter.watermarkEnabled = watermarkOn
         loading = true
         failed = false
@@ -95,6 +100,7 @@ fun PdfToolSheet(
 
     fun export(kind: String) {
         if (exporting) return
+        NoteExporter.setPdfOptions(pageSize, marginPt)
         exporting = true
         scope.launch(Dispatchers.IO) {
             val saved = try {
@@ -127,9 +133,9 @@ fun PdfToolSheet(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = true)
+        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = true, decorFitsSystemWindows = false)
     ) {
-        Column(Modifier.fillMaxSize().background(bg).statusBarsPadding().navigationBarsPadding()) {
+        Column(Modifier.fillMaxSize().background(bg).statusBarsPadding().navigationBarsPadding().padding(bottom = 4.dp)) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -163,6 +169,26 @@ fun PdfToolSheet(
                             .clickable { singlePage = single }
                             .padding(horizontal = 14.dp, vertical = 7.dp)
                     ) { Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (on) Color.White else barText) }
+                }
+            }
+            // page size + margins (what you see below is rendered with exactly these)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Page", fontSize = 11.sp, color = barText.copy(alpha = 0.6f))
+                listOf("A4", "Letter", "A5").forEach { sz ->
+                    val on = pageSize == sz
+                    Box(
+                        Modifier.clip(RoundedCornerShape(8.dp)).background(if (on) CrimsonPrimary else barText.copy(alpha = 0.08f))
+                            .clickable { pageSize = sz }.padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) { Text(sz, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (on) Color.White else barText) }
+                }
+                Spacer(Modifier.width(6.dp))
+                Text("Margins", fontSize = 11.sp, color = barText.copy(alpha = 0.6f))
+                listOf(24f to "Narrow", 40f to "Normal", 64f to "Wide").forEach { (m, label) ->
+                    val on = marginPt == m
+                    Box(
+                        Modifier.clip(RoundedCornerShape(8.dp)).background(if (on) CrimsonPrimary else barText.copy(alpha = 0.08f))
+                            .clickable { marginPt = m }.padding(horizontal = 8.dp, vertical = 5.dp)
+                    ) { Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (on) Color.White else barText) }
                 }
             }
             if (hasWatermark) {

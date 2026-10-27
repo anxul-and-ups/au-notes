@@ -52,20 +52,10 @@ object AgentTools {
             "Copy text to the clipboard. Empty text copies the open note.", "text (optional)"),
         AgentToolDef("read_screen", "Clipboard & screen", "Read open note",
             "Return the title and text of the note currently open on screen.", "(none)"),
-        AgentToolDef("open_app", "Phone control", "Open an app",
-            "Open an installed app on the phone by its name (e.g. WhatsApp, YouTube, Chrome). Only works when the user enabled 'Open apps & links' in Settings → Phone Control and AGENT Settings.", "app_name"),
-        AgentToolDef("open_url", "Phone control", "Open a link",
-            "Open a web link in the browser. Same permission switch as open_app.", "url"),
-        AgentToolDef("phone_read_screen", "Phone control", "Read the screen",
-            "Read the visible text of whatever app is on screen right now ('[tap]' marks tappable items). Needs the Accessibility control to be enabled.", "(none)"),
-        AgentToolDef("phone_tap", "Phone control", "Tap on screen",
-            "Tap the on-screen element whose text/label contains the given text. Read the screen first so the text is exact.", "text"),
-        AgentToolDef("phone_type", "Phone control", "Type text",
-            "Type text into the focused (or first) text field of the app on screen.", "text"),
-        AgentToolDef("phone_press", "Phone control", "Press a system button",
-            "Press a system button: back, home, recents or notifications.", "button"),
-        AgentToolDef("phone_scroll", "Phone control", "Scroll the screen",
-            "Scroll the app on screen: direction is down or up.", "direction"),
+        AgentToolDef("export_note", "Organize", "Export a note",
+            "Export a note to a file in Downloads/AU Notes. format is pdf, md, txt, html or docx.", "note_id, format"),
+        AgentToolDef("save_to_my_documents", "Organize", "Save note to My Documents",
+            "Save a note (as a PDF) into the My Documents section of AU Notes.", "note_id"),
         AgentToolDef("remember_fact", "Memory", "Remember something",
             "Save a short fact about the user so you can use it in later chats (only when the user asks you to remember it, or states a lasting preference).", "fact"),
         AgentToolDef("forget_fact", "Memory", "Forget something",
@@ -83,8 +73,6 @@ object AgentTools {
         notesIndex: String,
         sessionNotes: String,
         memory: List<String> = emptyList(),
-        phoneActionsEnabled: Boolean = false,
-        accessibilityEnabled: Boolean = false,
         nativeTools: Boolean = false,
         spoken: Boolean = false
     ): String = buildString {
@@ -123,15 +111,11 @@ object AgentTools {
             append("Tools NOT listed are switched off; do not call them.\n")
         }
 
-        append("\n## You are BOTH a notes assistant and a phone assistant\n")
-        append("AU Notes is first of all a complete notes app: you can create, read, search, edit, format, move and delete notes (and folders), and you can also act on the phone (open apps/links) when allowed. ")
-        append("Never drop one skill for the other: a question about notes is answered with the note tools, a phone request with the phone tools.\n")
-        append("- Phone actions are ").append(if (phoneActionsEnabled) "ENABLED" else "DISABLED").append(" right now.\n")
-        append("- If a phone action is requested and its tool says a permission/switch is missing, tell the user in your own words: you cannot do it yet because the permission is missing, and where to enable it: Settings → Phone Control and AGENT Settings. ")
-        append("NEVER say an action worked unless the TOOL RESULT confirms it. If a tool failed, say it failed and why.\n")
-        append("- Accessibility control (reading/tapping/typing inside other apps) is ").append(if (accessibilityEnabled) "ENABLED" else "DISABLED").append(".\n")
-        append("- To work inside another app: open_app, then phone_read_screen to see it, then phone_tap / phone_type / phone_scroll / phone_press step by step, reading the screen again after each step to verify. If the Accessibility control is disabled, say it must be enabled in Settings → Phone Control and AGENT Settings → Accessibility control.\n")
-        append("- You cannot make calls or send SMS by yourself, and you never enter passwords, payment details or OTPs into other apps unless the user clearly dictates them. Sending a message or confirming a payment inside another app needs the user's explicit OK first.\n")
+        append("\n## Your scope\n")
+        append("You are the assistant INSIDE the AU Notes app and you work only with AU Notes: create, read, search, edit, format, move, delete and export notes and folders, remember facts the user asks you to remember, and answer questions. ")
+        append("You do NOT control the phone: you cannot open other apps, tap or type in other apps, call, send messages or change phone settings. If asked, say politely that you only work inside AU Notes.\n")
+        append("When the user attaches a PDF or images and asks you to recreate it as a note: read the attached pages carefully and rebuild them as faithfully as you can with create_note — same order, headings (# ##), bold/==highlight==, tables, [ ] checkboxes, code boxes and spacing; say honestly what could not be reproduced (scanned pages, unusual fonts, complex layouts, pictures).\n")
+        append("NEVER say an action worked unless the TOOL RESULT confirms it. If a tool failed, say it failed and why. Deleting or moving a note always needs the user's confirmation card.\n")
         if (memory.isNotEmpty()) {
             append("\n## What you remember about the user (stored only on this phone)\n")
             memory.forEach { append("- ").append(it).append("\n") }

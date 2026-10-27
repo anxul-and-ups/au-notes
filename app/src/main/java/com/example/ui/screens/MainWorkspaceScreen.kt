@@ -356,7 +356,7 @@ fun MainWorkspaceScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
             ) {
                 // Top Action Bar
                 Row(
@@ -372,8 +372,8 @@ fun MainWorkspaceScreen(
                                 icon = Icons.Default.Menu,
                                 contentDescription = "Open Sidebar",
                                 isDarkMode = isDarkMode,
-                                size = 40.dp,
-                                iconSize = 20.dp,
+                                size = 36.dp,
+                                iconSize = 18.dp,
                                 tint = if (isDarkMode) Color.White else Color(0xFF222222),
                                 onClick = onOpenSidebar
                             )
@@ -402,7 +402,7 @@ fun MainWorkspaceScreen(
                         Column {
                             Text(
                                 text = if (pickForHide) "SELECT NOTES TO HIDE" else if (bulkMode) "SELECT NOTES" else "AU NOTES",
-                                fontSize = 18.sp,
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = CrimsonPrimary,
                                 letterSpacing = 1.sp
@@ -460,8 +460,8 @@ fun MainWorkspaceScreen(
                                 painter = painterResource(R.drawable.ic_settings_gear),
                                 contentDescription = "Settings",
                                 isDarkMode = isDarkMode,
-                                size = 38.dp,
-                                iconSize = 18.dp,
+                                size = 34.dp,
+                                iconSize = 17.dp,
                                 tint = CrimsonPrimary,
                                 onClick = onOpenSettings
                             )

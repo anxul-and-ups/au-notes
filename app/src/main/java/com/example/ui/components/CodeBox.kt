@@ -125,7 +125,7 @@ fun CodeBoxCard(
     if (maximized) {
         Dialog(
             onDismissRequest = { maximized = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
         ) {
             Column(Modifier.fillMaxSize().background(boxBg).statusBarsPadding().navigationBarsPadding()) {
                 Row(

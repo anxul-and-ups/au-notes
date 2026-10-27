@@ -51,7 +51,8 @@ object RichTextFormatter {
         val cropRight: Float = 0f,
         val cropBottom: Float = 0f,
         val locked: Boolean = false,
-        val order: Int = 0
+        val order: Int = 0,
+        val fullPage: Boolean = false
     )
 
     fun serializeSpans(spans: List<TextSpan>): String {
@@ -110,6 +111,7 @@ object RichTextFormatter {
             obj.put("cb", att.cropBottom.toDouble())
             obj.put("locked", att.locked)
             obj.put("order", att.order)
+            obj.put("fp", att.fullPage)
             array.put(obj)
         }
         return array.toString()
@@ -141,7 +143,8 @@ object RichTextFormatter {
                         cropRight = obj.optDouble("cr", 0.0).toFloat().coerceIn(0f, 0.45f),
                         cropBottom = obj.optDouble("cb", 0.0).toFloat().coerceIn(0f, 0.45f),
                         locked = obj.optBoolean("locked", false),
-                        order = obj.optInt("order", 0)
+                        order = obj.optInt("order", 0),
+                        fullPage = obj.optBoolean("fp", false)
                     )
                 )
             }
@@ -189,7 +192,9 @@ object RichTextFormatter {
         if (start >= end) return spans
         val existing = spans.filter { it.type == type && it.start <= start && it.end >= end }
         return if (existing.isNotEmpty()) {
-            spans.filterNot { it.type == type && it.start <= start && it.end >= end }
+            // turn it OFF for the selected part only: a wider span is trimmed / split around the selection
+            // (before, removing bold from one word removed the bold of the whole span)
+            clearType(spans, type, start, end)
         } else {
             spans + TextSpan(start, end, type)
         }
@@ -197,8 +202,9 @@ object RichTextFormatter {
 
     fun setValueProperty(spans: List<TextSpan>, type: String, start: Int, end: Int, value: String): List<TextSpan> {
         if (start >= end) return spans
-        val filtered = spans.filterNot { it.type == type && it.start >= start && it.end <= end }
-        return filtered + TextSpan(start, end, type, value)
+        // anything of this type overlapping the selection is cut back first, so the new value
+        // (size / colour / highlight) lands ONLY on the selected text
+        return clearType(spans, type, start, end) + TextSpan(start, end, type, value)
     }
 
     /** Removes every span of [type] inside [start, end); spans that only partly overlap are trimmed / split. */

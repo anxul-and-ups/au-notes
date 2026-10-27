@@ -410,11 +410,6 @@ class AppPreferences(context: Context) {
     val orbEnabled: StateFlow<Boolean> = _orbEnabled.asStateFlow()
     fun setOrbEnabled(v: Boolean) { _orbEnabled.value = v; prefs.edit().putBoolean("agent_orb_enabled", v).apply() }
 
-    /** Master switch: may AU Agent open apps / links on the phone? Off until the user turns it on. */
-    private val _phoneActionsEnabled = boolFlow("agent_phone_actions", false)
-    val phoneActionsEnabled: StateFlow<Boolean> = _phoneActionsEnabled.asStateFlow()
-    fun setPhoneActionsEnabled(v: Boolean) { _phoneActionsEnabled.value = v; prefs.edit().putBoolean("agent_phone_actions", v).apply() }
-
     // ---- Realistic live voice (Gemini Live): needs a Gemini key; falls back to the normal voice otherwise ----
     private val _liveVoiceEnabled = boolFlow("agent_live_voice", true)
     val liveVoiceEnabled: StateFlow<Boolean> = _liveVoiceEnabled.asStateFlow()

@@ -75,8 +75,6 @@ import com.example.ui.components.GlassCard
 import com.example.ui.components.OrbView
 import com.example.ui.theme.CrimsonPrimary
 
-private enum class PermState { ENABLED, DISABLED, ATTENTION }
-
 /**
  * "Phone Control and AGENT Settings": what AU Agent is allowed to do on the phone (every switch here is
  * read by the real tools), the voice adjuster (applied to the real TTS engine), the orb look and the AI memory.
@@ -94,36 +92,6 @@ fun AgentSettingsScreen(
     val sub = if (isDarkMode) Color.White.copy(alpha = 0.65f) else Color(0xFF555555)
     val accent = Color(0xFF38BDF8)
 
-    // re-check permissions whenever the user comes back from Android settings
-    var refresh by remember { mutableIntStateOf(0) }
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val obs = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) refresh++ }
-        lifecycleOwner.lifecycle.addObserver(obs)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
-    }
-
-    val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
-    val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
-
-    val micState = remember(refresh) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) PermState.ENABLED else PermState.DISABLED
-    }
-    val notifState = remember(refresh) {
-        if (Build.VERSION.SDK_INT < 33) PermState.ENABLED
-        else if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) PermState.ENABLED
-        else PermState.DISABLED
-    }
-    val exactAlarmState = remember(refresh) {
-        if (Build.VERSION.SDK_INT < 31) PermState.ENABLED
-        else if ((context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).canScheduleExactAlarms()) PermState.ENABLED
-        else PermState.ATTENTION
-    }
-
-    val accessibilityState = remember(refresh) {
-        if (com.example.data.ai.AuAccessibilityService.isEnabled(context)) PermState.ENABLED else PermState.DISABLED
-    }
-    val phoneActions by preferences.phoneActionsEnabled.collectAsState()
     val voiceSpeed by preferences.voiceSpeed.collectAsState()
     val voicePitch by preferences.voicePitch.collectAsState()
     val voiceVolume by preferences.voiceVolume.collectAsState()
@@ -144,46 +112,10 @@ fun AgentSettingsScreen(
     var voiceList by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var showVoicePicker by remember { mutableStateOf(false) }
 
-    fun openAppSettings() {
-        context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    }
-
     @Composable
     fun SectionTitle(text: String) {
         Text(text, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = accent, letterSpacing = 1.sp,
             modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
-    }
-
-    @Composable
-    fun StatusChip(state: PermState) {
-        val (label, color) = when (state) {
-            PermState.ENABLED -> "Enabled" to Color(0xFF22C55E)
-            PermState.DISABLED -> "Disabled" to Color(0xFFEF4444)
-            PermState.ATTENTION -> "Needs attention" to Color(0xFFF59E0B)
-        }
-        Text(label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = color,
-            modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(color.copy(alpha = 0.15f)).padding(horizontal = 8.dp, vertical = 3.dp))
-    }
-
-    @Composable
-    fun PermissionRow(title: String, why: String, state: PermState, actionLabel: String, onAction: () -> Unit) {
-        GlassCard(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
-            Column(Modifier.padding(14.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(title, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = fg, modifier = Modifier.weight(1f))
-                    StatusChip(state)
-                }
-                Spacer(Modifier.height(4.dp))
-                Text(why, fontSize = 12.sp, color = sub)
-                if (state != PermState.ENABLED) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        actionLabel, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White,
-                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(CrimsonPrimary).clickable(onClick = onAction).padding(horizontal = 14.dp, vertical = 8.dp)
-                    )
-                }
-            }
-        }
     }
 
     @Composable
@@ -216,60 +148,12 @@ fun AgentSettingsScreen(
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = fg) }
                 Column {
-                    Text("Phone Control and AGENT Settings", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = fg)
-                    Text("Nothing is requested until you turn it on here", fontSize = 11.sp, color = sub)
+                    Text("AGENT Settings", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = fg)
+                    Text("Voice • Orb • AI memory (AU Agent works only inside AU Notes)", fontSize = 11.sp, color = sub)
                 }
             }
 
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
-
-                SectionTitle("PHONE CONTROL PERMISSIONS")
-                PermissionRow(
-                    "Microphone", "Needed for voice mode: AU Agent listens to what you say and the orb moves with your voice.",
-                    micState, "Allow microphone"
-                ) { micLauncher.launch(Manifest.permission.RECORD_AUDIO) }
-                PermissionRow(
-                    "Notifications", "Needed so alarms/reminders and Temp Mail alerts can appear.",
-                    notifState, "Allow notifications"
-                ) {
-                    if (Build.VERSION.SDK_INT >= 33) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    else openAppSettings()
-                }
-                PermissionRow(
-                    "Exact alarms", "Needed so note reminders ring at the exact minute you chose.",
-                    exactAlarmState, "Open alarm settings"
-                ) {
-                    if (Build.VERSION.SDK_INT >= 31) {
-                        context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    }
-                }
-                PermissionRow(
-                    "Accessibility control",
-                    "Lets AU Agent read the screen of other apps and tap, type, scroll or press Back/Home for you (\"open WhatsApp and search for Rahul\"). Android asks you to turn on \"AU Agent phone control\" in its Accessibility list; you can switch it off there at any time.",
-                    accessibilityState, "Open Accessibility settings"
-                ) { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                GlassCard(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
-                    Column(Modifier.padding(14.dp)) {
-                        SwitchRow(
-                            "Open apps & links for me",
-                            "Master switch for phone actions: opening apps and links, and (with Accessibility control) tapping and typing inside other apps. Off by default.",
-                            phoneActions
-                        ) { preferences.setPhoneActionsEnabled(it) }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            StatusChip(if (phoneActions) PermState.ENABLED else PermState.DISABLED)
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "Open Android app settings", fontSize = 11.sp, color = accent, fontWeight = FontWeight.Bold,
-                                modifier = Modifier.clickable { openAppSettings() }
-                            )
-                        }
-                    }
-                }
-                Text(
-                    "Screen sharing is asked for each time you start it from the voice assistant. " +
-                        "Apps are only opened with the switch above on; if something is missing, AU Agent tells you which setting to enable and never says an action worked when it did not.",
-                    fontSize = 11.sp, color = sub, modifier = Modifier.padding(top = 6.dp)
-                )
 
                 SectionTitle("REALISTIC LIVE VOICE (GEMINI)")
                 GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {

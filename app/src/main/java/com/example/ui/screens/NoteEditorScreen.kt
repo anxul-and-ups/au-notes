@@ -20,6 +20,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.material.icons.filled.Remove
@@ -320,7 +321,12 @@ fun NoteEditorScreen(
     var isItalic by remember { mutableStateOf(initialNote?.isItalic ?: false) }
     var isUnderline by remember { mutableStateOf(initialNote?.isUnderline ?: false) }
     var isStrikethrough by remember { mutableStateOf(initialNote?.isStrikethrough ?: false) }
-    var isCodeFormat by remember { mutableStateOf(initialNote?.isCodeFormat ?: false) }
+    var isCodeFormat by remember {
+        mutableStateOf(
+            (initialNote?.isCodeFormat ?: false) &&
+                !AutoClassifier.hasRichStructure(initialNote?.content.orEmpty(), initialNote?.tableData.orEmpty(), initialNote?.styleSpansJson.orEmpty(), initialNote?.attachmentsJson.orEmpty())
+        )
+    }
     var showFormatSheet by remember { mutableStateOf(false) }
     var showParagraphStyleSheet by remember { mutableStateOf(false) }
     // "Save in": null = automatic (old behaviour), otherwise the folder the user picked
@@ -353,6 +359,7 @@ fun NoteEditorScreen(
     var showPdfMode by remember { mutableStateOf(false) }
     var titleBarHidden by remember { mutableStateOf(false) }
     var toolsOpen by remember { mutableStateOf(false) }
+    var toolbarHidden by remember { mutableStateOf(false) }
     var showTableFullscreen by remember { mutableStateOf(false) }
 
 
@@ -385,7 +392,8 @@ fun NoteEditorScreen(
                                 newText = text.substring(0, lineStart) + marker + tail + text.substring(lineEnd)
                                 caret = lineStart + marker.length + 1
                             } else {
-                                newText = text.substring(0, lineEnd) + "\n" + marker + "\n" + text.substring(lineEnd)
+                                // marker line + one empty line after it, so there is always room to type below the image
+                                newText = text.substring(0, lineEnd) + "\n" + marker + "\n\n" + text.substring(lineEnd)
                                 caret = lineEnd + 1 + marker.length + 1
                             }
                             spans = RichTextFormatter.adjustSpansForEdit(spans, text, newText)
@@ -619,10 +627,11 @@ fun NoteEditorScreen(
             newText = text.substring(0, sel.min) + block + text.substring(sel.max)
             caret = sel.min + block.length
         } else if (line.isBlank()) {
-            newText = text.substring(0, lineStart) + "```\n\n```" + text.substring(lineEnd)
+            // box + a free line right after it, so you can keep writing below the box
+            newText = text.substring(0, lineStart) + "```\n\n```\n" + text.substring(lineEnd)
             caret = lineStart + 4
         } else {
-            newText = text.substring(0, lineEnd) + "\n```\n\n```" + text.substring(lineEnd)
+            newText = text.substring(0, lineEnd) + "\n```\n\n```\n" + text.substring(lineEnd)
             caret = lineEnd + 5
         }
         spans = RichTextFormatter.adjustSpansForEdit(spans, text, newText)
@@ -882,6 +891,27 @@ fun NoteEditorScreen(
     }
     val shownWriteSeconds = savedWriteBase + writeSeconds
 
+    // The hidden image marker line must never receive typed text (it would break the image). A caret that lands on
+    // it (tapping beside / on the picture) is moved to the free line right below it, which is always available.
+    LaunchedEffect(contentValue.selection, contentValue.text) {
+        val sel = contentValue.selection
+        if (!sel.collapsed) return@LaunchedEffect
+        val t = contentValue.text
+        if (!t.contains("[img:")) return@LaunchedEffect
+        val pos = sel.start.coerceIn(0, t.length)
+        val ls = t.lastIndexOf('\n', (pos - 1).coerceAtLeast(0)).let { if (pos == 0) 0 else it + 1 }
+        val le = t.indexOf('\n', pos).let { if (it < 0) t.length else it }
+        if (ImageMarkers.idOf(t.substring(ls, le)) != null) {
+            if (le >= t.length) {
+                val nt = t + "\n"
+                contentValue = TextFieldValue(nt, selection = TextRange(nt.length))
+            } else {
+                contentValue = contentValue.copy(selection = TextRange(le + 1))
+            }
+        }
+    }
+
+
     val mainScrollState = rememberScrollState()
     // Keep the caret visible without fighting the parent scroll state.
     // A single debounced bring-into-view request is used for a burst of edits;
@@ -930,7 +960,7 @@ fun NoteEditorScreen(
         }
     }
 
-    GlassBackground(isDarkMode = isDarkMode) {
+    com.example.ui.components.NoteBackground(isDarkMode = isDarkMode) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -943,7 +973,7 @@ fun NoteEditorScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                        .padding(horizontal = 12.dp, vertical = 3.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -952,7 +982,7 @@ fun NoteEditorScreen(
                             icon = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
                             isDarkMode = isDarkMode,
-                            size = 38.dp,
+                            size = 34.dp,
                             iconSize = 18.dp,
                             tint = if (isDarkMode) Color.White else Color.Black,
                             onClick = { performSave(showToast = false, thenNavigateBack = true) }
@@ -960,7 +990,7 @@ fun NoteEditorScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = if (initialNote == null) "New Note" else "Edit Note",
-                            fontSize = 17.sp,
+                            fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (isDarkMode) Color.White else Color(0xFF111111)
                         )
@@ -975,8 +1005,8 @@ fun NoteEditorScreen(
                             icon = if (titleBarHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                             contentDescription = if (titleBarHidden) "Show title bar" else "Hide title bar",
                             isDarkMode = isDarkMode,
-                            size = 36.dp,
-                            iconSize = 17.dp,
+                            size = 32.dp,
+                            iconSize = 16.dp,
                             tint = if (titleBarHidden) CrimsonPrimary else (if (isDarkMode) Color.White else Color.Black),
                             onClick = { titleBarHidden = !titleBarHidden }
                         )
@@ -986,8 +1016,8 @@ fun NoteEditorScreen(
                             icon = Icons.AutoMirrored.Filled.Undo,
                             contentDescription = "Undo",
                             isDarkMode = isDarkMode,
-                            size = 36.dp,
-                            iconSize = 17.dp,
+                            size = 32.dp,
+                            iconSize = 16.dp,
                             tint = if (undoStack.isNotEmpty()) (if (isDarkMode) Color.White else Color.Black) else Color.Gray.copy(0.3f),
                             onClick = {
                                 if (undoStack.isNotEmpty()) {
@@ -1004,8 +1034,8 @@ fun NoteEditorScreen(
                             icon = Icons.AutoMirrored.Filled.Redo,
                             contentDescription = "Redo",
                             isDarkMode = isDarkMode,
-                            size = 36.dp,
-                            iconSize = 17.dp,
+                            size = 32.dp,
+                            iconSize = 16.dp,
                             tint = if (redoStack.isNotEmpty()) (if (isDarkMode) Color.White else Color.Black) else Color.Gray.copy(0.3f),
                             onClick = {
                                 if (redoStack.isNotEmpty()) {
@@ -1053,36 +1083,35 @@ fun NoteEditorScreen(
                     isDarkMode = isDarkMode,
                     elevation = 3.dp
                 ) {
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
-                        // Writing timer (same clock icon as the alarm)
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp)) {
+                        // title + writing timer on ONE line (smaller bar, more room to write)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            BasicTextField(
+                                value = title,
+                                onValueChange = { title = it },
+                                textStyle = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = if (isDarkMode) Color.White else Color(0xFF111111)),
+                                cursorBrush = SolidColor(CrimsonPrimary),
+                                singleLine = false,
+                                decorationBox = { innerTextField ->
+                                    if (title.isBlank()) Text("Untitled Note", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = if (isDarkMode) Color.White.copy(.35f) else Color.Gray.copy(.6f))
+                                    innerTextField()
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
                             Icon(
                                 Icons.Default.Alarm, contentDescription = "Writing timer",
-                                tint = if (writeStarted || savedWriteBase > 0) CrimsonPrimary else Color.Gray, modifier = Modifier.size(13.dp)
+                                tint = if (writeStarted || savedWriteBase > 0) CrimsonPrimary else Color.Gray, modifier = Modifier.size(12.dp)
                             )
-                            Spacer(Modifier.width(4.dp))
+                            Spacer(Modifier.width(3.dp))
                             Text(
                                 text = if (shownWriteSeconds >= 3600) String.format("%d:%02d:%02d", shownWriteSeconds / 3600, (shownWriteSeconds % 3600) / 60, shownWriteSeconds % 60)
                                 else String.format("%02d:%02d", shownWriteSeconds / 60, shownWriteSeconds % 60),
-                                fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                                fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold,
                                 color = if (writeStarted || savedWriteBase > 0) CrimsonPrimary else Color.Gray
                             )
-                            if (!writeStarted && savedWriteBase == 0L) {
-                                Text("  starts when you type", fontSize = 10.sp, color = Color.Gray.copy(alpha = 0.7f))
-                            }
                         }
-                        BasicTextField(
-                            value = title,
-                            onValueChange = { title = it },
-                            textStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = if (isDarkMode) Color.White else Color(0xFF111111)),
-                            cursorBrush = SolidColor(CrimsonPrimary),
-                            decorationBox = { innerTextField ->
-                                if (title.isBlank()) Text("Untitled Note", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = if (isDarkMode) Color.White.copy(.35f) else Color.Gray.copy(.6f))
-                                innerTextField()
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(3.dp))
+                        Spacer(Modifier.height(1.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1090,8 +1119,8 @@ fun NoteEditorScreen(
                         ) {
                             Text(
                                 "$wordCount ${if (wordCount == 1) "word" else "words"} • $lineCount ${if (lineCount == 1) "line" else "lines"}",
-                                fontSize = 11.sp,
-                                color = if (isDarkMode) Color.White.copy(.6f) else Color(0xFF666666)
+                                fontSize = 10.sp,
+                                color = if (isDarkMode) Color.White.copy(.55f) else Color(0xFF666666)
                             )
                             Box {
                                 Row(
@@ -1100,11 +1129,11 @@ fun NoteEditorScreen(
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(CrimsonPrimary.copy(alpha = 0.14f))
                                         .clickable { showSaveInMenu = true }
-                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                        .padding(horizontal = 8.dp, vertical = 3.dp)
                                 ) {
-                                    Text("Save in: ", fontSize = 11.sp, color = if (isDarkMode) Color.White.copy(.7f) else Color(0xFF555555))
-                                    Text(saveInLabel, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary, maxLines = 1)
-                                    Icon(Icons.Default.ExpandMore, null, tint = CrimsonPrimary, modifier = Modifier.size(16.dp))
+                                    Text("Save in: ", fontSize = 10.sp, color = if (isDarkMode) Color.White.copy(.7f) else Color(0xFF555555))
+                                    Text(saveInLabel, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary, maxLines = 1)
+                                    Icon(Icons.Default.ExpandMore, null, tint = CrimsonPrimary, modifier = Modifier.size(14.dp))
                                 }
                                 DropdownMenu(expanded = showSaveInMenu, onDismissRequest = { showSaveInMenu = false }) {
                                     saveInOptions.forEach { folderName ->
@@ -1351,35 +1380,23 @@ fun NoteEditorScreen(
                                                 if (moved && !att.locked) moveImageLine(att.id, dropY)
                                             }
                                         )
-                                        .clickable { showImageEditModal = att }
-                                )
-                                // visible controls on the image: edit / smaller / bigger
-                                Row(
-                                    modifier = Modifier
-                                        .offset {
-                                            IntOffset(
-                                                (fieldWidthPx * att.widthFraction - with(density) { 108.dp.toPx() }).roundToInt().coerceAtLeast(0),
-                                                top.roundToInt() + 6
+                                        // long-press, then drag with ONE finger: the image follows your finger and drops on that line
+                                        .pointerInput(att.id, att.locked) {
+                                            detectDragGesturesAfterLongPress(
+                                                onDragStart = { if (!att.locked) { movingImageId = att.id; movingDy = 0f } },
+                                                onDrag = { change, drag -> if (movingImageId == att.id) { change.consume(); movingDy += drag.y } },
+                                                onDragEnd = {
+                                                    val dropY = top + movingDy
+                                                    val moved = movingImageId == att.id && kotlin.math.abs(movingDy) > 24f
+                                                    movingImageId = null
+                                                    movingDy = 0f
+                                                    if (moved && !att.locked) moveImageLine(att.id, dropY)
+                                                },
+                                                onDragCancel = { movingImageId = null; movingDy = 0f }
                                             )
                                         }
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .background(Color(0xAA000000)),
-                                    horizontalArrangement = Arrangement.spacedBy(0.dp)
-                                ) {
-                                    listOf(
-                                        Triple<androidx.compose.ui.graphics.vector.ImageVector, String, () -> Unit>(Icons.Default.Edit, "Edit image", { showImageEditModal = att }),
-                                        Triple<androidx.compose.ui.graphics.vector.ImageVector, String, () -> Unit>(Icons.Default.Remove, "Smaller", {
-                                            attachments = attachments.map { if (it.id == att.id && !it.locked) it.copy(widthFraction = (it.widthFraction - 0.1f).coerceIn(0.2f, 1f)) else it }
-                                        }),
-                                        Triple<androidx.compose.ui.graphics.vector.ImageVector, String, () -> Unit>(Icons.Default.Add, "Bigger", {
-                                            attachments = attachments.map { if (it.id == att.id && !it.locked) it.copy(widthFraction = (it.widthFraction + 0.1f).coerceIn(0.2f, 1f)) else it }
-                                        })
-                                    ).forEach { (icon, desc, action) ->
-                                        Box(Modifier.size(36.dp).clickable { action() }, contentAlignment = Alignment.Center) {
-                                            Icon(icon, desc, tint = Color.White, modifier = Modifier.size(18.dp))
-                                        }
-                                    }
-                                }
+                                        .clickable { showImageEditModal = att }
+                                )
                                 if (att.locked) {
                                     Icon(
                                         Icons.Default.Lock, "Locked",
@@ -1461,8 +1478,14 @@ fun NoteEditorScreen(
                     Spacer(modifier = Modifier.height(160.dp))
                 }
 
-                // Quick format bar: sits right above the keyboard, so text styles change live while typing
-                if (WindowInsets.isImeVisible) {
+
+
+                // Bottom toolbar — Samsung Notes style: one scrolling row of tools
+                val curLine = firstSelectedLine()
+                val curPrefix = linePrefixOf(curLine)
+                val idleTint = if (isDarkMode) Color.White else Color(0xFF222222)
+                // ---- one toolbar card: text formatting row + tools row; tap the round button to open/close it ----
+
                     val qSel = contentValue.selection
                     fun qActive(type: String, typing: Boolean) =
                         if (qSel.collapsed) typing else RichTextFormatter.isPropertyActiveThroughout(spans, type, qSel.min, qSel.max)
@@ -1476,13 +1499,36 @@ fun NoteEditorScreen(
                     val qColor: String? = if (qSel.collapsed) activeColorHex
                     else spans.lastOrNull { it.type == "color" && it.start <= qSel.min && it.end >= qSel.max }?.value
                     val qIdle = if (isDarkMode) Color.White else Color(0xFF222222)
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        isDarkMode = isDarkMode,
-                        elevation = 4.dp
+                                    Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    val showCard = toolsOpen && !toolbarHidden
+                    Box(
+                        Modifier.size(38.dp).clip(CircleShape)
+                            .background(if (toolbarHidden) Color.Gray.copy(alpha = 0.55f) else CrimsonPrimary)
+                            .clickable {
+                                if (toolbarHidden) { toolbarHidden = false; toolsOpen = true } else toolsOpen = !toolsOpen
+                            },
+                        contentAlignment = Alignment.Center
                     ) {
-                        Row(
+                        Icon(
+                            if (toolbarHidden) Icons.Default.VisibilityOff else if (showCard) Icons.Default.KeyboardArrowDown else Icons.Default.Build,
+                            contentDescription = "Tools", tint = Color.White, modifier = Modifier.size(19.dp)
+                        )
+                    }
+                }
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 2.dp)
+                        .hiddenWhen(!(toolsOpen && !toolbarHidden)),
+                    shape = RoundedCornerShape(18.dp),
+                    isDarkMode = isDarkMode,
+                    elevation = 5.dp
+                ) {
+                    Column {
+Row(
                             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(2.dp)
@@ -1490,7 +1536,7 @@ fun NoteEditorScreen(
                             @Composable
                             fun QBtn(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, on: Boolean, onClick: () -> Unit) {
                                 Box(
-                                    Modifier.size(36.dp).clip(RoundedCornerShape(10.dp))
+                                    Modifier.size(32.dp).clip(RoundedCornerShape(9.dp))
                                         .background(if (on) CrimsonPrimary.copy(alpha = 0.25f) else Color.Transparent)
                                         .clickable(onClick = onClick),
                                     contentAlignment = Alignment.Center
@@ -1523,35 +1569,8 @@ fun NoteEditorScreen(
                             QBtn(Icons.Default.FormatClear, "Clear formatting", false) { clearFormattingOnSelection() }
                             QBtn(Icons.Default.MoreHoriz, "More text styles", false) { showFormatSheet = true }
                         }
-                    }
-                }
-
-                // Bottom toolbar — Samsung Notes style: one scrolling row of tools
-                val curLine = firstSelectedLine()
-                val curPrefix = linePrefixOf(curLine)
-                val idleTint = if (isDarkMode) Color.White else Color(0xFF222222)
-                // The tools stay hidden until this icon is tapped, then open right above the keyboard
-                if (!toolsOpen) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        Box(
-                            Modifier.size(46.dp).clip(CircleShape).background(CrimsonPrimary).clickable { toolsOpen = true },
-                            contentAlignment = Alignment.Center
-                        ) { Icon(Icons.Default.Build, contentDescription = "Tools", tint = Color.White, modifier = Modifier.size(22.dp)) }
-                    }
-                }
-                GlassCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                        .hiddenWhen(!toolsOpen),
-                    shape = RoundedCornerShape(20.dp),
-                    isDarkMode = isDarkMode,
-                    elevation = 6.dp
-                ) {
-                    Row(
+                        Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(1.dp).background(if (isDarkMode) Color(0x22FFFFFF) else Color(0x14000000)))
+                        Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .horizontalScroll(rememberScrollState())
@@ -1559,9 +1578,6 @@ fun NoteEditorScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // Collapse the tools again
-                        EditorTool(icon = Icons.Default.KeyboardArrowDown, label = "Hide tools", active = false, idleTint = idleTint) { toolsOpen = false }
-                        ToolDivider(isDarkMode)
                         // (Text styles now live in the quick format bar above the keyboard)
                         EditorTool(icon = Icons.Default.FormatListNumbered, label = "Paragraph style",
                             active = currentListKind != "none" && currentListKind != "check" || alignment != "left", idleTint = idleTint) { showParagraphStyleSheet = true }
@@ -1607,6 +1623,11 @@ fun NoteEditorScreen(
                             icon = Icons.Default.PictureAsPdf, label = "PDF",
                             active = false, idleTint = idleTint
                         ) { showPdfMode = true }
+
+                        ToolDivider(isDarkMode)
+                        // eye: hide the whole toolbar card (the eye-closed button below brings it back)
+                        EditorTool(icon = Icons.Default.Visibility, label = "Hide toolbar", active = false, idleTint = idleTint) { toolbarHidden = true }
+                    }
                     }
                 }
             }
@@ -2013,15 +2034,15 @@ private fun EditorTool(
 ) {
     Box(
         modifier = Modifier
-            .size(42.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .size(36.dp)
+            .clip(RoundedCornerShape(10.dp))
             .background(if (active) CrimsonPrimary.copy(alpha = 0.18f) else Color.Transparent)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         val tint = if (active) CrimsonPrimary else idleTint
-        if (icon != null) Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
-        else if (painter != null) Icon(painter, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
+        if (icon != null) Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(19.dp))
+        else if (painter != null) Icon(painter, contentDescription = label, tint = tint, modifier = Modifier.size(19.dp))
     }
 }
 
@@ -2078,12 +2099,4 @@ private fun Modifier.pinchAndMove(
 private fun Modifier.hiddenWhen(hide: Boolean): Modifier = this.layout { measurable, constraints ->
     val placeable = measurable.measure(constraints)
     if (hide) layout(0, 0) {} else layout(placeable.width, placeable.height) { placeable.place(0, 0) }
-}
-
-// Flexible fallback implementation to bypass compilation error
-private fun decorateCodeFences(vararg args: Any?): androidx.compose.ui.text.AnnotatedString {
-    for (arg in args) {
-        if (arg is androidx.compose.ui.text.AnnotatedString) return arg
-    }
-    return androidx.compose.ui.text.AnnotatedString("")
 }

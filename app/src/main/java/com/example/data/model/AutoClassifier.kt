@@ -23,6 +23,19 @@ object AutoClassifier {
         "my password", "my pin", "bank", "account number", "journal", "memories"
     )
 
+    private val fenceBlock = Regex("```[\\s\\S]*?```")
+    private val checkboxLine = Regex("(?m)^[ \\t]*\\[( |x|!)] ")
+
+    /** Images, code boxes, checkboxes: structure that only the rich renderer can show. */
+    fun hasRichMarkers(content: String): Boolean =
+        content.contains("[img:") || content.contains("```") || checkboxLine.containsMatchIn(content)
+
+    /** True when a saved note carries rich content (so it must never be shown as a plain code file). */
+    fun hasRichStructure(content: String, tableData: String, spansJson: String, attachmentsJson: String): Boolean =
+        hasRichMarkers(content) || tableData.isNotBlank() ||
+            (spansJson.isNotBlank() && spansJson.trim() != "[]") ||
+            (attachmentsJson.isNotBlank() && attachmentsJson.trim() != "[]")
+
     fun detectCategory(title: String, content: String): String {
         val combined = "$title\n$content"
         val lower = combined.lowercase()
@@ -32,11 +45,20 @@ object AutoClassifier {
             return "API"
         }
 
-        // 2. Check Code
-        val codeMatches = codeKeywords.count { lower.contains(it) }
-        if (codeMatches >= 2 || lower.contains("<!doctype") || lower.contains("<html>") || lower.contains("def ") || lower.contains("fun ") || combined.contains("```")) {
-            return "Code"
+        // 2. Check Code — only when the WHOLE note is source code. A normal note that merely contains a code box
+        //    (fenced block), a word like "fun " or "def ", must never be filed under Code (that used to hide
+        //    its images, checkboxes and formatting).
+        val withoutFences = fenceBlock.replace(combined, "")
+        val lowerNoFence = withoutFences.lowercase()
+        val lines = withoutFences.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val codeLike = lines.count { l ->
+            l.endsWith(";") || l.endsWith("{") || l.endsWith("}") || l.startsWith("//") || l.startsWith("#include") ||
+                l.startsWith("import ") || l.startsWith("def ") || l.startsWith("function ") || l.startsWith("</") ||
+                (l.startsWith("<") && l.endsWith(">"))
         }
+        val looksLikeSource = lowerNoFence.contains("<!doctype") || lowerNoFence.contains("<html>") ||
+            (lines.size >= 3 && codeLike * 2 >= lines.size && codeKeywords.count { lowerNoFence.contains(it) } >= 2)
+        if (looksLikeSource && !hasRichMarkers(content)) return "Code"
 
         // 3. Check Media
         if (mediaRegex.containsMatchIn(combined)) {

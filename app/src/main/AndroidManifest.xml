@@ -24,15 +24,6 @@
         <intent>
             <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
         </intent>
-        <!-- lets AU Agent find launchable apps by name (only used when "Open apps & links" is on) -->
-        <intent>
-            <action android:name="android.intent.action.MAIN" />
-            <category android:name="android.intent.category.LAUNCHER" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="https" />
-        </intent>
     </queries>
 
     <application
@@ -69,20 +60,6 @@
                 <action android:name="com.example.ACTION_STOP_ALARM_SOUND" />
             </intent-filter>
         </receiver>
-
-        <!-- Phone control: only active after the user enables it in Android Accessibility settings -->
-        <service
-            android:name="com.example.data.ai.AuAccessibilityService"
-            android:exported="true"
-            android:label="AU Agent phone control"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/au_accessibility_config" />
-        </service>
 
         <!-- Keeps the microphone alive during live voice when you switch to another app -->
         <service

@@ -2,6 +2,9 @@ package com.example.ui.util
 
 import android.content.ContentValues
 import android.content.Context
+import androidx.compose.ui.graphics.blue
+import androidx.compose.ui.graphics.green
+import androidx.compose.ui.graphics.red
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -273,9 +276,20 @@ object NoteExporter {
 
     // ---------------------------------------------------------------- PDF
 
-    private const val PAGE_W = 595
-    private const val PAGE_H = 842
-    private const val MARGIN = 40f
+    // Page size and margins are user options (PDF mode screen); defaults are A4 with normal margins.
+    @Volatile private var PAGE_W = 595
+    @Volatile private var PAGE_H = 842
+    @Volatile private var MARGIN = 40f
+
+    /** sizeName: "A4", "Letter" or "A5"; marginPt: 24 (narrow) .. 40 (normal) .. 64 (wide). */
+    fun setPdfOptions(sizeName: String, marginPt: Float) {
+        when (sizeName) {
+            "Letter" -> { PAGE_W = 612; PAGE_H = 792 }
+            "A5" -> { PAGE_W = 420; PAGE_H = 595 }
+            else -> { PAGE_W = 595; PAGE_H = 842 }
+        }
+        MARGIN = marginPt.coerceIn(12f, 90f)
+    }
 
     // ---------------------------------------------------------------- Watermark (optional assets/watermark.png)
 
@@ -287,6 +301,9 @@ object NoteExporter {
         try { context.assets.open("watermark.png").close(); true } catch (e: Exception) { false }
 
     private fun prepareWatermark(context: Context) {
+        // every export (dialog, bulk zip, PDF mode) uses the page size / margins chosen in PDF mode
+        val o = context.getSharedPreferences("au_pdf_options", Context.MODE_PRIVATE)
+        setPdfOptions(o.getString("size", "A4") ?: "A4", o.getFloat("margin", 40f))
         if (!watermarkEnabled) { watermark = null; return }
         if (watermark == null) {
             watermark = try {
@@ -480,6 +497,21 @@ object NoteExporter {
      * and its saved size (fraction of the page's content width).
      */
     private fun drawImageAt(pager: Pager, att: RichTextFormatter.AttachmentInfo, paint: TextPaint, cw: Int) {
+        if (att.fullPage && !pager.single) {
+            // dedicated page: the image alone, centred, aspect ratio kept
+            if (pager.y > MARGIN + 1f) pager.newPage()
+            val availH = pager.pageH - 2 * MARGIN
+            val fw = minOf(pager.contentW, availH * AttachmentRenderer.FULL_PAGE_ASPECT)
+            val fh = fw / AttachmentRenderer.FULL_PAGE_ASPECT
+            val fb = AttachmentRenderer.frameBitmap(att, (fw * 4).toInt().coerceIn(400, 3600))
+            if (fb != null) {
+                val l = MARGIN + (pager.contentW - fw) / 2f
+                val t = MARGIN + (availH - fh) / 2f
+                pager.canvas!!.drawBitmap(fb, null, android.graphics.RectF(l, t, l + fw, t + fh), Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+                pager.y = pager.bottom + 1f // whatever follows starts on the next page
+                return
+            }
+        }
         pager.y += 6f
         val maxH = pager.bottom - MARGIN
         var w = pager.contentW * att.widthFraction.coerceIn(0.2f, 1f)

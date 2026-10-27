@@ -56,6 +56,8 @@ import com.example.R
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.ui.draw.alpha
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.StopScreenShare
 import androidx.compose.material.icons.filled.ScreenShare
@@ -182,6 +184,9 @@ data class PendingAiAction(
 )
 
 /** What running one agent tool produced: text for the model plus optional UI extras. */
+/** One real stage shown under "Working…" (state: 0 running, 1 done, 2 failed). */
+data class AgentStep(val label: String, val state: Int)
+
 data class ToolOutcome(
     val result: String,
     val noteResults: List<com.example.data.model.NoteEntity>? = null,
@@ -295,7 +300,7 @@ fun AiChatScreen(
     var screenShareOn by remember { mutableStateOf(com.example.data.ai.ScreenShare.active) }
     var voiceTextMode by remember { mutableStateOf(false) }
     var voiceTextInput by remember { mutableStateOf("") }
-    val agentUserName by preferences.agentUserName.collectAsState()
+    val userName by preferences.agentUserName.collectAsState()
     val namePrompted by preferences.agentNamePrompted.collectAsState()
     val disabledTools by preferences.agentDisabledTools.collectAsState()
     var showToolsSheet by remember { mutableStateOf(false) }
@@ -474,6 +479,36 @@ fun AiChatScreen(
 
     // Runs one tool the model asked for and returns what the MODEL should see.
     // Read-only and create run immediately; move/delete only post a confirmation card.
+    // ---- Working status: only REAL stages (model call, each tool that actually runs) are listed ----
+    val agentSteps = remember { mutableStateListOf<AgentStep>() }
+    fun stepRunning(label: String) { agentSteps.add(AgentStep(label, 0)) }
+    fun stepFinish(ok: Boolean = true) {
+        val i = agentSteps.indexOfLast { it.state == 0 }
+        if (i >= 0) agentSteps[i] = agentSteps[i].copy(state = if (ok) 1 else 2)
+    }
+    fun toolLabel(name: String): String = when (name) {
+        "search_notes" -> "Searching notes"
+        "list_notes" -> "Listing notes"
+        "list_folders" -> "Checking folders"
+        "read_note" -> "Reading note"
+        "read_screen" -> "Reading the open note"
+        "create_note" -> "Creating note & saving"
+        "edit_note", "edit_current_note" -> "Editing note & saving changes"
+        "move_note_to_folder" -> "Preparing to move note"
+        "delete_note" -> "Preparing to delete note"
+        "create_folder" -> "Creating folder"
+        "delete_folder" -> "Deleting folder"
+        "open_folder" -> "Opening folder"
+        "open_note" -> "Opening note"
+        "copy_to_clipboard" -> "Copying text"
+        "read_temp_mail" -> "Reading temp mail"
+        "remember_fact" -> "Saving to memory"
+        "forget_fact" -> "Updating memory"
+        "export_note" -> "Exporting note"
+        else -> "Running $name"
+    }
+    fun toolFailed(result: String) = result.startsWith("NOT DONE") || result.startsWith("FAILED") || result.startsWith("Tool failed") || result.contains("not found", true)
+
     suspend fun runTool(name: String, args: org.json.JSONObject): ToolOutcome {
         if (name in disabledTools) return ToolOutcome("Tool '$name' is switched off by the user.")
         val systemFolders = listOf("All Notes", "Favorites", "APIs Keys", "Code", "Media", "Personal")
@@ -602,75 +637,30 @@ fun AiChatScreen(
                 if (note == null || note.isTrash) ToolOutcome("Note not found.")
                 else { trackNote(note); openNoteRespectingLock(note); ToolOutcome("Opening \"${note.title}\" for the user.") }
             }
-            "open_app" -> {
-                val wanted = args.optString("app_name", "").trim()
-                when {
-                    !preferences.phoneActionsEnabled.value -> ToolOutcome(
-                        "NOT DONE: the user has not enabled 'Open apps & links for me'. Tell them to open Settings → Phone Control and AGENT Settings and turn it on."
-                    )
-                    wanted.isBlank() -> ToolOutcome("NOT DONE: no app name was given. Ask which app to open.")
-                    else -> {
-                        val pm = context.packageManager
-                        val launchers = pm.queryIntentActivities(
-                            android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER), 0
-                        )
-                        val match = launchers.filter { it.loadLabel(pm).toString().contains(wanted, ignoreCase = true) }
-                            .minByOrNull { it.loadLabel(pm).toString().length }
-                        val launch = match?.activityInfo?.packageName?.let { pm.getLaunchIntentForPackage(it) }
-                        if (launch == null) ToolOutcome(
-                            "NOT DONE: no installed app matching \"$wanted\" was found (or Android hides it from AU Notes). Say that honestly."
-                        ) else try {
-                            launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                            context.startActivity(launch)
-                            ToolOutcome("DONE: asked Android to open ${match.loadLabel(pm)}.")
-                        } catch (e: Exception) {
-                            ToolOutcome("FAILED to open it: ${e.message ?: "Android blocked it"}. Say that honestly.")
-                        }
-                    }
-                }
-            }
-            "open_url" -> {
-                val raw = args.optString("url", "").trim()
-                if (!preferences.phoneActionsEnabled.value) ToolOutcome(
-                    "NOT DONE: the user has not enabled 'Open apps & links for me'. Tell them to open Settings → Phone Control and AGENT Settings and turn it on."
-                ) else if (raw.isBlank()) ToolOutcome("NOT DONE: no link was given.")
+            "export_note" -> {
+                val note = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
+                val fmt = ".${args.optString("format", "pdf").trim().trimStart('.').lowercase()}"
+                if (note == null || !agentVisible(note)) ToolOutcome("NOT DONE: note not found or not accessible.")
+                else if (fmt !in listOf(".pdf", ".md", ".txt", ".html", ".docx", ".json", ".xml")) ToolOutcome("NOT DONE: format must be pdf, md, txt, html or docx.")
                 else {
-                    com.example.ui.util.LinkText.open(context, if (raw.startsWith("http", true)) raw else "https://$raw")
-                    ToolOutcome("DONE: asked Android to open $raw in the browser.")
+                    val fileName = note.title.ifBlank { "Untitled" }.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").trim().take(60).ifBlank { "note" } + fmt
+                    val saved = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        try {
+                            val f = com.example.ui.util.NoteExporter.buildFile(context, note, fileName, fmt)
+                            com.example.ui.util.NoteExporter.saveToDevice(context, f, fileName, com.example.ui.util.NoteExporter.mimeFor(fmt))?.displayPath
+                        } catch (e: Throwable) { null }
+                    }
+                    if (saved != null) ToolOutcome("DONE: exported \"${note.title}\" as $fileName to $saved.")
+                    else ToolOutcome("FAILED: the file could not be written to device storage.")
                 }
             }
-            "phone_read_screen", "phone_tap", "phone_type", "phone_press", "phone_scroll" -> {
-                val svc = com.example.data.ai.AuAccessibilityService.instance
-                when {
-                    !preferences.phoneActionsEnabled.value -> ToolOutcome(
-                        "NOT DONE: phone control is off. Tell the user to turn on 'Open apps & links for me' in Settings → Phone Control and AGENT Settings."
-                    )
-                    svc == null -> ToolOutcome(
-                        "NOT DONE: the Accessibility control is not enabled. Tell the user to open Settings → Phone Control and AGENT Settings → Accessibility control and enable AU Agent phone control."
-                    )
-                    else -> when (name) {
-                        "phone_read_screen" -> ToolOutcome(svc.readScreen())
-                        "phone_tap" -> {
-                            val t = args.optString("text", "").trim()
-                            if (t.isBlank()) ToolOutcome("NOT DONE: no text to tap was given.")
-                            else if (svc.tapByText(t)) ToolOutcome("DONE: tapped \"$t\". Read the screen again to confirm what changed.")
-                            else ToolOutcome("FAILED: nothing tappable matching \"$t\" was found on screen. Read the screen and try the exact label.")
-                        }
-                        "phone_type" -> {
-                            val t = args.optString("text", "")
-                            if (svc.typeText(t)) ToolOutcome("DONE: typed the text into the field.")
-                            else ToolOutcome("FAILED: no text field was focused or found on screen. Tap the field first.")
-                        }
-                        "phone_press" -> {
-                            val b = args.optString("button", "").trim()
-                            if (svc.press(b)) ToolOutcome("DONE: pressed $b.") else ToolOutcome("FAILED: could not press \"$b\" (use back, home, recents or notifications).")
-                        }
-                        else -> {
-                            val down = !args.optString("direction", "down").equals("up", ignoreCase = true)
-                            if (svc.scroll(down)) ToolOutcome("DONE: scrolled ${if (down) "down" else "up"}.")
-                            else ToolOutcome("FAILED: nothing scrollable was found on screen.")
-                        }
-                    }
+            "save_to_my_documents" -> {
+                val note = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
+                if (note == null || !agentVisible(note)) ToolOutcome("NOT DONE: note not found or not accessible.")
+                else {
+                    val f = saveNoteToMyDocuments(context, note)
+                    if (f != null) ToolOutcome("DONE: saved \"${note.title}\" to My Documents as ${f.name}.")
+                    else ToolOutcome("FAILED: could not save to My Documents.")
                 }
             }
             "remember_fact" -> {
@@ -713,6 +703,16 @@ fun AiChatScreen(
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose {
             voiceManager.release()
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            beginVoice()
+        } else {
+            Toast.makeText(context, "Microphone permission is required for voice assistant", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -782,8 +782,7 @@ fun AiChatScreen(
             val system = AgentTools.buildSystemPrompt(
                 agentUserName, enabledNow, openCtx, index,
                 sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" },
-                memory = memFacts, phoneActionsEnabled = preferences.phoneActionsEnabled.value,
-                accessibilityEnabled = com.example.data.ai.AuAccessibilityService.instance != null,
+                memory = memFacts,
                 nativeTools = true, spoken = true
             )
             liveSession = com.example.data.live.LiveVoiceSession(
@@ -793,12 +792,15 @@ fun AiChatScreen(
                 systemPrompt = system,
                 tools = if (enabledNow.isEmpty()) null else AgentTools.toDeclarations(enabledNow),
                 executeTool = { name, args ->
+                    stepRunning(toolLabel(name))
                     val out = runTool(name, args)
+                    stepFinish(!toolFailed(out.result))
+                    coroutineScope.launch { delay(2500); if (agentSteps.none { it.state == 0 }) agentSteps.clear() }
                     // confirmations / note cards still appear in the chat while you talk
                     if (out.pending != null || out.noteResults != null) {
-                        messages.add(ChatMessage(sender = "bot", text = out.result, noteResults = out.noteResults, pendingAction = out.pending))
+                        messages.add(ChatMessage(sender = "bot", text = out.finalMessage ?: "", noteResults = out.noteResults, pendingAction = out.pending))
                     }
-                    if (out.pending != null) out.result + " (the user must confirm on screen)" else out.result
+                    out.finalMessage?.let { out.result + " (the user must confirm on screen)" } ?: out.result
                 },
                 onTurn = { u, a ->
                     if (u.isNotBlank()) messages.add(ChatMessage(sender = "user", text = u))
@@ -823,16 +825,6 @@ fun AiChatScreen(
             if (liveSession == null) startLive()
         } else if (!voiceManager.isVoiceModeActive) {
             voiceManager.startVoiceMode()
-        }
-    }
-
-    val audioPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            beginVoice()
-        } else {
-            Toast.makeText(context, "Microphone permission is required for voice assistant", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -922,9 +914,8 @@ fun AiChatScreen(
             val sessionText = sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" }
             val memoryFacts = if (preferences.memoryEnabled.value) preferences.agentMemory.value else emptyList()
             val system = AgentTools.buildSystemPrompt(
-                agentUserName, enabled, openNoteContext, notesIndex, sessionText,
-                memory = memoryFacts, phoneActionsEnabled = preferences.phoneActionsEnabled.value,
-                accessibilityEnabled = com.example.data.ai.AuAccessibilityService.instance != null
+                userName, enabled, openNoteContext, notesIndex, sessionText,
+                memory = memoryFacts
             )
 
             var prompt = buildString {
@@ -948,17 +939,22 @@ fun AiChatScreen(
             var results: List<NoteEntity>? = null
             var pending: PendingAiAction? = null
             var steps = 0
+            agentSteps.clear()
             while (true) {
+                stepRunning(if (steps == 0) "Analyzing your request" else "Preparing the next step")
                 val reply = aiService.chatOnce(activeProvider, key, baseUrl, chosenModel, system, turns, prompt, images)
+                stepFinish(!reply.startsWith("⚠️"))
                 val call = if (enabled.isNotEmpty() && !reply.startsWith("⚠️")) AgentTools.parse(reply) else null
                 if (call == null) { finalText = reply; break }
                 if (steps >= 6) { finalText = call.textBefore.ifBlank { "Maine kaam kar diya." }; break }
                 steps++
+                stepRunning(toolLabel(call.name))
                 val outcome = try {
                     runTool(call.name, call.args)
                 } catch (e: Exception) {
                     ToolOutcome("Tool failed: ${e.message}")
                 }
+                stepFinish(!toolFailed(outcome.result))
                 outcome.noteResults?.let { results = it }
                 outcome.pending?.let { pending = it }
                 turns.add(ConversationTurn("user", prompt))
@@ -967,6 +963,8 @@ fun AiChatScreen(
                 images = emptyList()
             }
 
+            if (!finalText.startsWith("⚠️")) { agentSteps.add(AgentStep("Completed", 1)) }
+            coroutineScope.launch { delay(1800); if (!isLoading) agentSteps.clear() }
             isLoading = false
             val words = finalText.ifBlank { "Done." }.split(" ")
             val sb = StringBuilder()
@@ -1240,7 +1238,11 @@ fun AiChatScreen(
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(vertical = 4.dp)
+                                            .padding(vertical = 3.dp)
+                                            .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 20.dp))
+                                            .background(if (isDarkMode) Color(0xFF12141B) else Color(0xFFFFFFFF).copy(alpha = 0.92f))
+                                            .border(0.6.dp, if (isDarkMode) Color(0x22FFFFFF) else Color(0x14000000), RoundedCornerShape(topStart = 6.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 20.dp))
+                                            .padding(horizontal = 13.dp, vertical = 10.dp)
                                     ) {
                                         Column {
                                             Row(
@@ -1253,10 +1255,10 @@ fun AiChatScreen(
                                                         painter = painterResource(R.drawable.au_bot_icon_1790271144581),
                                                         contentDescription = "AU Agent",
                                                         modifier = Modifier
-                                                            .size(16.dp)
+                                                            .size(22.dp)
                                                             .clip(CircleShape)
                                                     )
-                                                    Spacer(Modifier.width(6.dp))
+                                                    Spacer(Modifier.width(8.dp))
                                                     Text(
                                                         text = "AU Agent",
                                                         fontSize = 11.sp,
@@ -1361,26 +1363,53 @@ fun AiChatScreen(
 
                                         Box(
                                             modifier = Modifier
-                                                .clip(RoundedCornerShape(16.dp))
-                                                .background(CrimsonPrimary.copy(alpha = 0.92f))
-                                                .padding(horizontal = 14.dp, vertical = 9.dp)
+                                                .widthIn(max = 310.dp)
+                                                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 5.dp))
+                                                .background(Brush.linearGradient(listOf(CrimsonPrimary, Color(0xFFE11D48))))
+                                                .padding(horizontal = 15.dp, vertical = 10.dp)
                                         ) {
                                             SelectionContainer {
-                                                Text(text = msg.text, fontSize = 13.sp, color = Color.White)
+                                                Text(text = msg.text, fontSize = 14.sp, lineHeight = 20.sp, color = Color.White)
                                             }
                                         }
                                     }
                                 }
                             }
 
-                            if (isLoading) {
+                            if (isLoading || agentSteps.isNotEmpty()) {
                                 item {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    // Working status: real stages, soft opacity so the chat stays readable
+                                    Column(
+                                        modifier = Modifier.padding(start = 4.dp, top = 2.dp).alpha(0.62f),
+                                        verticalArrangement = Arrangement.spacedBy(5.dp)
                                     ) {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = CrimsonPrimary, strokeWidth = 2.dp)
-                                        Text("Soch rahi hoon…", fontSize = 12.sp, color = CrimsonPrimary)
+                                        if (isLoading) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                val pulse = rememberInfiniteTransition(label = "work_pulse")
+                                                val a by pulse.animateFloat(0.35f, 1f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "a")
+                                                Box(Modifier.size(7.dp).alpha(a).clip(CircleShape).background(CrimsonPrimary))
+                                                Text("Working…", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = CrimsonPrimary)
+                                            }
+                                        }
+                                        agentSteps.forEach { st ->
+                                            androidx.compose.animation.AnimatedVisibility(
+                                                visible = true,
+                                                enter = androidx.compose.animation.fadeIn(tween(220)) + androidx.compose.animation.slideInVertically(tween(220)) { it / 2 }
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(start = 2.dp)) {
+                                                    when (st.state) {
+                                                        0 -> CircularProgressIndicator(modifier = Modifier.size(11.dp), color = CrimsonPrimary, strokeWidth = 1.5.dp)
+                                                        1 -> Icon(Icons.Default.Check, null, tint = Color(0xFF22C55E), modifier = Modifier.size(12.dp))
+                                                        else -> Icon(Icons.Default.Close, null, tint = Color(0xFFEF4444), modifier = Modifier.size(12.dp))
+                                                    }
+                                                    Text(
+                                                        st.label + if (st.state == 0) "…" else "",
+                                                        fontSize = 11.5.sp,
+                                                        color = if (isDarkMode) Color.White else Color(0xFF222222)
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2015,14 +2044,14 @@ fun AiChatScreen(
         }
         val stateTitle = when (voiceState) {
             VoiceState.LISTENING -> if (who.isBlank()) "Listening…" else "Listening, $who…"
-            VoiceState.THINKING -> "Thinking…"
+            VoiceState.THINKING -> "Working…"
             VoiceState.SPEAKING -> "Speaking…"
             else -> "Ready"
         }
 
         Dialog(
             onDismissRequest = { showVoiceOverlay = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
         ) {
             Box(
                 modifier = Modifier
@@ -2035,7 +2064,7 @@ fun AiChatScreen(
                         .statusBarsPadding()
                         .navigationBarsPadding()
                         .imePadding()
-                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                        .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 22.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     // Top bar
@@ -2128,6 +2157,17 @@ fun AiChatScreen(
 
                     Spacer(Modifier.height(14.dp))
                     Text(stateTitle, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                    if (agentSteps.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.alpha(0.6f)) {
+                            agentSteps.takeLast(3).forEach { st ->
+                                Text(
+                                    (if (st.state == 1) "✓ " else if (st.state == 2) "✕ " else "● ") + st.label,
+                                    fontSize = 12.sp, color = Color.White
+                                )
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(14.dp))
 
                     if (userTranscript.isNotBlank()) {

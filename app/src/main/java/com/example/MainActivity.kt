@@ -18,6 +18,8 @@ import com.example.ui.components.AppBackdropState
 import com.example.ui.components.LocalAppBackdrop
 import com.example.ui.screens.SecuritySettingsScreen
 import com.example.ui.screens.ThemeSettingsScreen
+import com.example.ui.screens.AgentSettingsScreen
+import com.example.ui.screens.MyDocumentsScreen
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
@@ -38,7 +40,6 @@ import com.example.data.preferences.AppPreferences
 import com.example.data.repository.NoteRepository
 import com.example.ui.components.GlassSidebar
 import com.example.ui.screens.AiChatScreen
-import com.example.ui.screens.AgentSettingsScreen
 import com.example.ui.screens.ApiRoomScreen
 import com.example.ui.screens.CommandModeScreen
 import com.example.ui.screens.HtmlViewerScreen
@@ -70,6 +71,7 @@ sealed class Screen {
     data object ApiRoom : Screen()
     data object NameGenerator : Screen()
     data object HtmlViewer : Screen()
+    data object MyDocuments : Screen()
     data object CommandMode : Screen()
     data object TempMail : Screen()
     data class TableEditor(val initialTableData: String, val onSaved: (String) -> Unit) : Screen()
@@ -380,12 +382,14 @@ fun AuNotesApp(
                         coroutineScope.launch {
                             val finalTitle = title.ifBlank { "Untitled Note" }
                             val existing = screen.note
-                            val targetFolder = when (category) {
-                                "API" -> "APIs Keys"
-                                "Code" -> "Code"
-                                "Media" -> "Media"
-                                "Personal" -> "Personal"
-                                else -> existing?.folder ?: "All Notes"
+                            // Only a NEW note is filed by its detected type; saving an existing note never moves it.
+                            val targetFolder = when {
+                                existing != null && existing.id != 0L -> existing.folder
+                                category == "API" -> "APIs Keys"
+                                category == "Code" -> "Code"
+                                category == "Media" -> "Media"
+                                category == "Personal" -> "Personal"
+                                else -> "All Notes"
                             }.let { auto ->
                                 when {
                                     existing?.isHidden == true -> existing.folder // never move a hidden note out of the vault
@@ -512,6 +516,14 @@ fun AuNotesApp(
                     preferences = preferences,
                     isDarkMode = isDarkMode,
                     onBack = { currentScreen = Screen.Settings }
+                )
+            }
+
+            is Screen.MyDocuments -> {
+                MyDocumentsScreen(
+                    isDarkMode = isDarkMode,
+                    repository = repository,
+                    onBack = { currentScreen = Screen.MainWorkspace() }
                 )
             }
 
@@ -643,6 +655,10 @@ fun AuNotesApp(
             onOpenHtmlViewer = {
                 isSidebarOpen = false
                 currentScreen = Screen.HtmlViewer
+            },
+            onOpenMyDocuments = {
+                isSidebarOpen = false
+                currentScreen = Screen.MyDocuments
             },
             onOpenNameGenerator = {
                 isSidebarOpen = false

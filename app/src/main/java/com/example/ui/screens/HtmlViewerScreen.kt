@@ -1,7 +1,5 @@
 package com.example.ui.screens
 
-import com.example.data.model.NoteEntity
-
 import android.annotation.SuppressLint
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -12,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -55,7 +54,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -467,9 +465,8 @@ fun HtmlViewerScreen(
     var collapsed by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var confirmClear by remember { mutableStateOf(false) }
     var showNotePicker by remember { mutableStateOf(false) }
-    val dbNotes by (repository?.allActiveNotes
-        ?: kotlinx.coroutines.flow.flowOf(emptyList<NoteEntity>()))
-        .collectAsState(initial = emptyList<NoteEntity>())
+    val dbNotes by (repository?.allActiveNotes ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+        .collectAsState(initial = emptyList())
 
     val colors = remember(viewerDark) { HtmlColors(viewerDark) }
     val appText = if (isDarkMode) Color.White else Color(0xFF1A1A1A)
@@ -555,11 +552,10 @@ fun HtmlViewerScreen(
             Spacer(modifier = Modifier.height(10.dp))
 
             // ---- Tools (same actions as the HTML viewer website) ----
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            androidx.compose.foundation.layout.FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ToolButton(Icons.Default.Visibility, "Preview (Full page)", mode == 1, isDarkMode) { mode = 1 }
                 ToolButton(Icons.Default.Code, "Highlight (Full page)", mode == 2, isDarkMode) { mode = 2 }
@@ -908,7 +904,17 @@ private inline fun AnnotatedString.Builder.withStyleMuted(color: Color, block: (
 // Preview
 // ---------------------------------------------------------------------------------------------
 
+/** Takes the page out of a ```html markdown fence if it was pasted that way. */
+private fun unwrapFence(html: String): String {
+    val t = html.trim()
+    if (!t.startsWith("```")) return html
+    val firstNl = t.indexOf('\n')
+    if (firstNl < 0) return html
+    return t.substring(firstNl + 1).removeSuffix("```").trimEnd()
+}
+
 @SuppressLint("SetJavaScriptEnabled")
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
     if (html.isBlank()) {
@@ -917,17 +923,21 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
         }
         return
     }
-    val doc = remember(html, dark) { if (dark) injectDarkScheme(html) else html }
+    val context = LocalContext.current
+    val doc = remember(html, dark) { unwrapFence(html).let { if (dark) injectDarkScheme(it) else it } }
     val webRef = remember { arrayOfNulls<WebView>(1) }
+    // real problems from the page (script errors / files that could not load) instead of a silent white screen
+    val problems = remember(doc) { mutableStateListOf<String>() }
+    var showProblems by remember(doc) { mutableStateOf(true) }
+
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 WebView(ctx).apply {
-                    // WebGL (three.js orbs etc.) needs JS + a hardware layer
-                    setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
+                    // no local-file access: only the page text and normal web requests are allowed
                     settings.allowFileAccess = false
                     settings.allowContentAccess = false
                     settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
@@ -938,9 +948,34 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
                     settings.displayZoomControls = false
                     settings.useWideViewPort = true
                     settings.loadWithOverviewMode = true
-                    webChromeClient = android.webkit.WebChromeClient()
-                    webViewClient = WebViewClient()
-                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    setBackgroundColor(if (dark) android.graphics.Color.parseColor("#0B0B10") else android.graphics.Color.WHITE)
+                    webChromeClient = object : android.webkit.WebChromeClient() {
+                        override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
+                            if (m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR && problems.size < 6) {
+                                problems.add("Script error: ${m.message()} (line ${m.lineNumber()})")
+                            }
+                            return true
+                        }
+                    }
+                    webViewClient = object : WebViewClient() {
+                        // three.js is bundled with the app: relative <script src="three.min.js"> and the common CDN copies
+                        // are answered from the app's own assets (works offline, never a white screen from a missing file)
+                        override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
+                            val path = request.url.lastPathSegment.orEmpty()
+                            if (path.equals("three.min.js", true)) {
+                                return try {
+                                    android.webkit.WebResourceResponse("application/javascript", "UTF-8", context.assets.open("three.min.js"))
+                                } catch (e: Exception) { null }
+                            }
+                            return null
+                        }
+                        override fun onReceivedError(view: WebView, request: android.webkit.WebResourceRequest, error: android.webkit.WebResourceError) {
+                            if (problems.size < 6) problems.add("Could not load ${request.url.lastPathSegment ?: request.url} (${error.description})")
+                        }
+                        override fun onReceivedHttpError(view: WebView, request: android.webkit.WebResourceRequest, errorResponse: android.webkit.WebResourceResponse) {
+                            if (problems.size < 6) problems.add("Could not load ${request.url.lastPathSegment ?: request.url} (HTTP ${errorResponse.statusCode})")
+                        }
+                    }
                     webRef[0] = this
                 }
             },
@@ -948,6 +983,7 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
                 webRef[0] = wv
                 if (wv.tag != doc) {
                     wv.tag = doc
+                    problems.clear()
                     wv.loadDataWithBaseURL("https://localhost/", doc, "text/html", "UTF-8", null)
                 }
             },
@@ -957,6 +993,21 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
                 webRef[0] = null
             }
         )
+        if (problems.isNotEmpty() && showProblems) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(8.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xE6B3261E))
+                    .clickable { showProblems = false }
+                    .padding(10.dp)
+            ) {
+                Text("This page has problems (tap to hide):", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                problems.take(4).forEach { Text("• $it", color = Color.White, fontSize = 11.sp, maxLines = 2) }
+            }
+        }
         // zoom buttons (pinch-to-zoom works too)
         Column(
             modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
@@ -966,16 +1017,16 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
             fun ZoomBtn(label: String, onClick: () -> Unit) {
                 Box(
                     modifier = Modifier
-                        .size(42.dp)
+                        .size(38.dp)
                         .clip(CircleShape)
                         .background(Color(0xCC000000))
                         .clickable(onClick = onClick),
                     contentAlignment = Alignment.Center
-                ) { Text(label, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+                ) { Text(label, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold) }
             }
             ZoomBtn("+") { webRef[0]?.zoomIn() }
             ZoomBtn("−") { webRef[0]?.zoomOut() }
-            ZoomBtn("1×") { webRef[0]?.let { it.tag = null; it.loadDataWithBaseURL("https://localhost/", doc, "text/html", "UTF-8", null); it.tag = doc } }
+            ZoomBtn("1×") { webRef[0]?.let { it.tag = null; problems.clear(); it.loadDataWithBaseURL("https://localhost/", doc, "text/html", "UTF-8", null); it.tag = doc } }
         }
     }
 }

@@ -191,7 +191,7 @@ fun ReadNoteScreen(
         SimpleDateFormat("EEE, MMM dd, yyyy 'at' HH:mm", Locale.getDefault())
     }
 
-    GlassBackground(isDarkMode = isDarkMode) {
+    com.example.ui.components.NoteBackground(isDarkMode = isDarkMode) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -609,7 +609,8 @@ fun ReadNoteScreen(
                             }
                         }
 
-                        if (note.category == "Code" || note.isCodeFormat) {
+                        if ((note.category == "Code" || note.isCodeFormat) &&
+                            !com.example.data.model.AutoClassifier.hasRichStructure(note.content, note.tableData, note.styleSpansJson, note.attachmentsJson)) {
                             // Syntax colours are computed in the background so big code never freezes the screen.
                             val coloredCode by androidx.compose.runtime.produceState(
                                 initialValue = AnnotatedString(displayContent),

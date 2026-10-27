@@ -90,6 +90,20 @@ fun ExportDialog(
     }
 
     val extensions = listOf(".txt", ".md", ".pdf", ".png", ".docx", ".html", ".py", ".xml", ".json")
+    val builtIn = extensions.toSet()
+
+    // Custom extension: the user types any extension; only the file NAME changes, the content is exported as text
+    var customMode by remember { mutableStateOf(false) }
+    var customExt by remember { mutableStateOf("") }
+    var lastBuiltIn by remember { mutableStateOf(selectedExtension) }
+
+    fun cleanExt(raw: String): String = raw.lowercase().trimStart('.', ' ').filter { it.isLetterOrDigit() || it == '_' || it == '-' || it == '+' }.take(12)
+
+    /** "report" + ".md" -> "report.md"; a name that already ends with the extension is not doubled. */
+    fun composeName(base: String, ext: String): String {
+        val b = base.trim().ifBlank { "AU_Note_${note.id}" }
+        return if (b.endsWith(ext, ignoreCase = true) && b.length > ext.length) b else "$b$ext"
+    }
 
     var savedPath by remember { mutableStateOf<String?>(null) }
     var isWorking by remember { mutableStateOf(false) }
@@ -100,8 +114,11 @@ fun ExportDialog(
     // and "success" is only shown once the file really exists.
     fun doSave() {
         if (isWorking) return
-        val safeName = fileNameWithoutExt.trim().ifBlank { "AU_Note_${note.id}" }
-        val fullFileName = "$safeName$selectedExtension"
+        if (customMode && cleanExt(customExt).isEmpty()) {
+            Toast.makeText(context, "Type an extension first (for example md or log)", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val fullFileName = composeName(fileNameWithoutExt, selectedExtension)
         isWorking = true
         scope.launch {
             val outcome: Result<String?> = withContext(Dispatchers.IO) {
@@ -187,7 +204,7 @@ fun ExportDialog(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     extensions.forEach { ext ->
-                        val isSelected = selectedExtension == ext
+                        val isSelected = !customMode && selectedExtension == ext
                         val iconRes = when (ext) {
                             ".txt" -> R.drawable.ic_svg_txt
                             ".html" -> R.drawable.ic_svg_html
@@ -209,7 +226,7 @@ fun ExportDialog(
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(if (isSelected) accent.copy(alpha = 0.18f) else if (isDarkMode) Color(0x22FFFFFF) else Color(0x0F000000))
                                 .border(if (isSelected) 1.5.dp else 1.dp, if (isSelected) accent else Color(0x22FFFFFF), RoundedCornerShape(12.dp))
-                                .clickable { selectedExtension = ext }
+                                .clickable { selectedExtension = ext; lastBuiltIn = ext; customMode = false }
                                 .padding(vertical = 8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
@@ -228,6 +245,55 @@ fun ExportDialog(
                             )
                         }
                     }
+                }
+
+                // Custom Extension
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (customMode) CrimsonPrimary.copy(alpha = 0.16f) else if (isDarkMode) Color(0x22FFFFFF) else Color(0x0F000000))
+                        .border(if (customMode) 1.5.dp else 1.dp, if (customMode) CrimsonPrimary else Color(0x22FFFFFF), RoundedCornerShape(12.dp))
+                        .clickable {
+                            customMode = !customMode
+                            val c = cleanExt(customExt)
+                            selectedExtension = if (customMode && c.isNotEmpty()) ".$c" else lastBuiltIn
+                        }
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(painter = painterResource(R.drawable.ic_svg_file_doc), contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Custom Extension", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = if (isDarkMode) Color.White else Color(0xFF222222))
+                }
+                if (customMode) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = customExt,
+                        onValueChange = { raw ->
+                            customExt = raw.take(14)
+                            val c = cleanExt(raw)
+                            selectedExtension = if (c.isNotEmpty()) ".$c" else lastBuiltIn
+                        },
+                        label = { Text("Extension (e.g. md, log, conf)") },
+                        prefix = { Text(".") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = if (isDarkMode) Color.White else Color.Black,
+                            unfocusedTextColor = if (isDarkMode) Color.White else Color.Black,
+                            focusedBorderColor = CrimsonPrimary,
+                            unfocusedBorderColor = Color(0x44FF2D55)
+                        )
+                    )
+                    val c = cleanExt(customExt)
+                    val note1 = when {
+                        c.isEmpty() -> "Type the extension you want. Letters, numbers, - _ + only."
+                        ".$c" in builtIn -> ".$c is a built-in format, so the file is built exactly like the normal .$c export."
+                        else -> ".$c is not a standard format of this app. Only the file name changes: the content is saved as plain text (a Markdown note saved as .py is still Markdown text, not Python code), and other apps may not know this extension."
+                    }
+                    Text(note1, fontSize = 11.sp, color = if (isDarkMode) Color(0xFFFFCC80) else Color(0xFF8A5A00), modifier = Modifier.padding(top = 6.dp))
                 }
 
                 if (showMediaWarning) {
@@ -330,8 +396,11 @@ fun ExportDialog(
                     Button(
                         enabled = !isWorking,
                         onClick = {
-                            val safeName = fileNameWithoutExt.trim().ifBlank { "AU_Note_${note.id}" }
-                            val fullFileName = "$safeName$selectedExtension"
+                            if (customMode && cleanExt(customExt).isEmpty()) {
+                                Toast.makeText(context, "Type an extension first (for example md or log)", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+                            val fullFileName = composeName(fileNameWithoutExt, selectedExtension)
                             isWorking = true
                             scope.launch {
                                 val built: Result<File> = withContext(Dispatchers.IO) {
@@ -351,6 +420,31 @@ fun ExportDialog(
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("2. Share", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
                     }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                // keeps the note inside AU Notes (as a PDF) without exporting and importing again
+                Button(
+                    enabled = !isWorking,
+                    onClick = {
+                        isWorking = true
+                        scope.launch {
+                            val saved = com.example.ui.screens.saveNoteToMyDocuments(context, note)
+                            isWorking = false
+                            Toast.makeText(
+                                context,
+                                if (saved != null) "Saved to My Documents as ${saved.name}" else "Could not save to My Documents",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Save to My Documents", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
                 }
             }
         }

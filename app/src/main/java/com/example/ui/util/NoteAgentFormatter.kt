@@ -366,9 +366,9 @@ object NoteAgentFormatter {
         }
 
         val finalContent = contentBuilder.toString().trim()
-        val category = forcedCategory
-            ?: if (rawAiText.contains("```") || rawAiText.contains("def ") || rawAiText.contains("fun ") || rawAiText.contains("class ")) "Code"
-            else AutoClassifier.detectCategory(title, finalContent)
+        // A code box inside a note does not make the whole note a "Code" note (that used to file it in the Code
+        // folder and flatten its images / checkboxes / formatting).
+        val category = forcedCategory ?: AutoClassifier.detectCategory(title, finalContent)
 
         return NoteEntity(
             id = 0L,
@@ -378,7 +378,7 @@ object NoteAgentFormatter {
             tableData = extractedTableData,
             styleSpansJson = RichTextFormatter.serializeSpans(spans),
             fontSize = 16,
-            isCodeFormat = category == "Code"
+            isCodeFormat = false
         )
     }
 
