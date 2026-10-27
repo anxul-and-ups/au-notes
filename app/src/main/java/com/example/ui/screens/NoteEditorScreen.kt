@@ -1283,22 +1283,12 @@ fun NoteEditorScreen(
                                 if (isJsonMode) {
                                     buildJsonHighlightedText(text.text)
                                 } else {
-// TODO(build-fix): decorateCodeFences removed/renamed — reimplement
-//                                     com.example.ui.util.LinkText.highlight(decorateCodeFences(decorateListMarkers(
-                                        RichTextFormatter.buildStyledText(
-                                            text = text.text,
-                                            spans = spans,
-                                            defaultColor = effectiveTextColor,
-                                            fontSize = fontSize.toFloat()
-                                        ),
-                                        imageLineHeight = { id ->
-                                            val att = attachments.firstOrNull { it.id == id }
-                                            if (att == null || fieldWidthPx <= 0f) null
-                                            else with(density) {
-                                                (AttachmentRenderer.frameHeightPx(att, fieldWidthPx * att.widthFraction) + 10.dp.toPx()).toSp()
-                                            }
-                                        }
-                                    ), isDarkMode))
+RichTextFormatter.buildStyledText(
+                                        text = text.text,
+                                        spans = spans,
+                                        defaultColor = effectiveTextColor,
+                                        fontSize = fontSize.toFloat()
+                                    )
                                 },
                                 OffsetMapping.Identity
                             )
