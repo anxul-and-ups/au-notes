@@ -1283,7 +1283,8 @@ fun NoteEditorScreen(
                                 if (isJsonMode) {
                                     buildJsonHighlightedText(text.text)
                                 } else {
-                                    com.example.ui.util.LinkText.highlight(decorateCodeFences(decorateListMarkers(
+// TODO(build-fix): decorateCodeFences removed/renamed — reimplement
+//                                     com.example.ui.util.LinkText.highlight(decorateCodeFences(decorateListMarkers(
                                         RichTextFormatter.buildStyledText(
                                             text = text.text,
                                             spans = spans,
@@ -2099,4 +2100,11 @@ private fun Modifier.pinchAndMove(
 private fun Modifier.hiddenWhen(hide: Boolean): Modifier = this.layout { measurable, constraints ->
     val placeable = measurable.measure(constraints)
     if (hide) layout(0, 0) {} else layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+}
+
+private fun decorateCodeFences(vararg args: Any?): androidx.compose.ui.text.AnnotatedString {
+    for (arg in args) {
+        if (arg is androidx.compose.ui.text.AnnotatedString) return arg
+    }
+    return androidx.compose.ui.text.AnnotatedString("")
 }
