@@ -2125,7 +2125,7 @@ fun AiChatScreen(
                             theme = orbTheme,
                             customColor = orbColor,
                             intensity = orbIntensity,
-                            modifier = Modifier.fillMaxWidth().height(300.dp)
+                            modifier = Modifier.fillMaxWidth().height(220.dp)
                         )
                     } else {
                     // Sound-wave bars that move with the state / microphone level
