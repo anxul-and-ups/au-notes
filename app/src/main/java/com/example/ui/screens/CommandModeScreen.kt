@@ -76,6 +76,7 @@ import com.example.data.repository.NoteRepository
 import com.example.ui.components.GlassBackground
 import com.example.ui.components.GlassCard
 import com.example.ui.components.NeuIconButton
+import com.example.ui.components.OrbView
 import com.example.ui.components.PinLockDialog
 import com.example.ui.theme.CrimsonPrimary
 import com.example.ui.util.SirenAudioPlayer
@@ -103,6 +104,10 @@ fun CommandModeScreen(
     val allNotes by repository.allActiveNotes.collectAsState(initial = emptyList())
 
     var isListening by remember { mutableStateOf(false) }
+    var micLevel by remember { mutableStateOf(0f) }
+    val orbTheme by preferences.orbTheme.collectAsState()
+    val orbColor by preferences.orbColor.collectAsState()
+    val orbIntensity by preferences.orbIntensity.collectAsState()
     var recognizedText by remember { mutableStateOf("") }
     val logs = remember {
         mutableStateListOf(
@@ -310,14 +315,16 @@ fun CommandModeScreen(
             recognizer.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) { isListening = true }
                 override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onRmsChanged(rmsdB: Float) { micLevel = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f) }
                 override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() { isListening = false }
+                override fun onEndOfSpeech() { isListening = false; micLevel = 0f }
                 override fun onError(error: Int) {
                     isListening = false
+                    micLevel = 0f
                 }
                 override fun onResults(results: Bundle?) {
                     isListening = false
+                    micLevel = 0f
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty()) {
                         val text = matches[0]
@@ -419,13 +426,23 @@ fun CommandModeScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Interactive Glowing Mic Hero Box
+                // JARVIS 3D particle orb, with the existing mic control layered above it.
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(180.dp),
+                        .height(210.dp),
                     contentAlignment = Alignment.Center
                 ) {
+                    OrbView(
+                        state = if (isListening) "listening" else "idle",
+                        level = { if (isListening) micLevel else 0f },
+                        theme = orbTheme,
+                        customColor = orbColor,
+                        intensity = orbIntensity,
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    // Existing mic control remains available above the orb.
                     // Outer pulsating glow
                     Box(
                         modifier = Modifier
