@@ -3,7 +3,6 @@ plugins {
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
-  alias(libs.plugins.secrets)
 }
 
 android {
@@ -11,6 +10,7 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
+    buildConfigField("String", "GEMINI_API_KEY", "\"MY_GEMINI_API_KEY\"")
     applicationId = "com.aistudio.aunotes.mstrly"
     minSdk = 24
     targetSdk = 36
@@ -67,11 +67,7 @@ android {
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
-secrets {
-  propertiesFileName = ".env"
-  defaultPropertiesFileName = ".env.example"
-  ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
-}
+
 
 dependencies {
   implementation(platform(libs.androidx.compose.bom))
