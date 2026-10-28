@@ -106,7 +106,7 @@ fun CodeBoxCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = title.ifBlank { lang.ifBlank { "Code" } },
+                text = title.ifBlank { lang.ifBlank { "Title" } },
                 modifier = Modifier.weight(1f),
                 fontSize = 11.5.sp,
                 color = if (isDarkMode) text.copy(alpha = 0.65f) else Color(0xFF333333),
@@ -155,7 +155,7 @@ fun CodeBoxCard(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     IconButton(onClick = { maximized = false }) { Icon(Icons.Default.Close, "Close", tint = text) }
-                    Text(title.ifBlank { lang.ifBlank { "Code" } }, modifier = Modifier.weight(1f), color = text.copy(alpha = 0.7f), fontSize = 13.sp, maxLines = 1, fontWeight = FontWeight.Bold)
+                    Text(title.ifBlank { lang.ifBlank { "Title" } }, modifier = Modifier.weight(1f), color = text.copy(alpha = 0.7f), fontSize = 13.sp, maxLines = 1, fontWeight = FontWeight.Bold)
                     Row(
                         Modifier.clip(RoundedCornerShape(8.dp)).clickable { copy() }.padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically

@@ -104,6 +104,7 @@ fun GlassSidebar(
     onOpenNameGenerator: () -> Unit,
     onOpenCommandMode: () -> Unit,
     onOpenTempMail: () -> Unit = {},
+    onOpenAccountant: () -> Unit = {},
     onOpenSettings: () -> Unit,
     onOpenRecycleBin: () -> Unit,
     onOpenFeaturesModal: () -> Unit,
@@ -259,6 +260,17 @@ fun GlassSidebar(
                         onClick = {
                             onClose()
                             onOpenMyDocuments()
+                        }
+                    )
+
+                    // 2d. Accountant (Milk Dairy Hisab)
+                    SidebarMenuItemPainter(
+                        icon = painterResource(R.drawable.ic_accountant),
+                        title = "Accountant",
+                        isDarkMode = isDarkMode,
+                        onClick = {
+                            onClose()
+                            onOpenAccountant()
                         }
                     )
 

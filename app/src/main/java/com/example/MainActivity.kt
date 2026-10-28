@@ -39,6 +39,8 @@ import com.example.data.model.NoteEntity
 import com.example.data.preferences.AppPreferences
 import com.example.data.repository.NoteRepository
 import com.example.ui.components.GlassSidebar
+import com.example.data.repository.MilkAccountingRepository
+import com.example.ui.screens.AccountantScreen
 import com.example.ui.screens.AiChatScreen
 import com.example.ui.screens.ApiRoomScreen
 import com.example.ui.screens.CommandModeScreen
@@ -74,6 +76,7 @@ sealed class Screen {
     data object MyDocuments : Screen()
     data object CommandMode : Screen()
     data object TempMail : Screen()
+    data object Accountant : Screen()
     data class TableEditor(val initialTableData: String, val onSaved: (String) -> Unit) : Screen()
     data object RecycleBin : Screen()
     data object StorageEditor : Screen()
@@ -99,6 +102,7 @@ class MainActivity : FragmentActivity() {
 
         val database = AppDatabase.getInstance(applicationContext)
         val repository = NoteRepository(database.noteDao())
+        val milkRepository = MilkAccountingRepository(database.milkRecordDao())
         val preferences = AppPreferences(applicationContext)
 
         setContent {
@@ -139,6 +143,7 @@ class MainActivity : FragmentActivity() {
                         AuNotesApp(
                             activity = this,
                             repository = repository,
+                            milkRepository = milkRepository,
                             preferences = preferences,
                             isDarkMode = isDarkMode,
                             onToggleDarkMode = {
@@ -156,6 +161,7 @@ class MainActivity : FragmentActivity() {
 fun AuNotesApp(
     activity: FragmentActivity,
     repository: NoteRepository,
+    milkRepository: MilkAccountingRepository,
     preferences: AppPreferences,
     isDarkMode: Boolean,
     onToggleDarkMode: () -> Unit
@@ -605,6 +611,14 @@ fun AuNotesApp(
                 )
             }
 
+            is Screen.Accountant -> {
+                AccountantScreen(
+                    repository = milkRepository,
+                    isDarkMode = isDarkMode,
+                    onBack = { currentScreen = Screen.MainWorkspace() }
+                )
+            }
+
             is Screen.PdfViewer -> {
                 PdfViewerScreen(
                     pdfUri = screen.uri,
@@ -672,6 +686,10 @@ fun AuNotesApp(
             onOpenTempMail = {
                 isSidebarOpen = false
                 currentScreen = Screen.TempMail
+            },
+            onOpenAccountant = {
+                isSidebarOpen = false
+                currentScreen = Screen.Accountant
             },
             onOpenSettings = {
                 isSidebarOpen = false

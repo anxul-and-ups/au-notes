@@ -80,7 +80,10 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -663,28 +666,14 @@ fun ReadNoteScreen(
 
                             val linkedText = remember(styledText) { com.example.ui.util.LinkText.linkify(styledText, context) }
 
-                            val hasRichLines = remember(displayContent) {
-                                displayContent.contains("[img:") ||
-                                    displayContent.contains("```") ||
-                                    Regex("(?m)^[ \\t]*\\[( |x|!)] ").containsMatchIn(displayContent)
-                            }
-                            if (!hasRichLines) {
-                                Text(
-                                    text = linkedText,
-                                    fontSize = note.fontSize.sp,
-                                    color = currentFontColor,
-                                    lineHeight = (note.fontSize + 6).sp
-                                )
-                            } else {
-                                ReadRichBody(
-                                    content = displayContent,
-                                    styled = linkedText,
-                                    attachments = allAttachments,
-                                    fontSize = note.fontSize,
-                                    color = currentFontColor,
-                                    isDarkMode = isDarkMode
-                                )
-                            }
+                            ReadRichBody(
+                                content = displayContent,
+                                styled = linkedText,
+                                attachments = allAttachments,
+                                fontSize = note.fontSize,
+                                color = currentFontColor,
+                                isDarkMode = isDarkMode
+                            )
                         }
 
                         // Render Table if table data exists
@@ -1098,9 +1087,9 @@ fun RenderTable(tableData: String, isDarkMode: Boolean) {
 
 
 /**
- * Read-mode body for notes containing checkbox lines or inline images. Plain lines stay grouped in
- * one Text (keeping all styling); checkbox lines get a real box; "[img:id]" lines draw the picture
- * with its saved size / crop / rotation / zoom.
+ * Advanced Read-mode body for notes:
+ * Renders Markdown (#, ##, ###, bullets with crimson dots, dividers, tables, blockquotes,
+ * bold/italic inline formatting, code boxes with Copy, checkboxes, and inline images).
  */
 @Composable
 private fun ReadRichBody(
@@ -1113,60 +1102,164 @@ private fun ReadRichBody(
 ) {
     val checkRegex = remember { Regex("^([ \\t]*)(\\[ ]|\\[x]|\\[!]) (.*)$") }
     val lines = content.split("\n")
-    // absolute start offset of every line inside [content]
     val starts = IntArray(lines.size)
     var acc = 0
     lines.forEachIndexed { i, l -> starts[i] = acc; acc += l.length + 1 }
 
     val fences = remember(content) { com.example.ui.components.CodeFences.find(content) }
+    val borderColor = if (isDarkMode) Color(0xFF333B48) else Color(0xFFCBD5E1)
+    val subColor = if (isDarkMode) Color.LightGray.copy(alpha = 0.8f) else Color.DarkGray.copy(alpha = 0.8f)
     var i = 0
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         while (i < lines.size) {
-            val imgId = com.example.ui.util.ImageMarkers.idOf(lines[i])
-            val check = checkRegex.matchEntire(lines[i])
+            val rawLine = lines[i]
+            val trimmedLine = rawLine.trim()
+            val imgId = com.example.ui.util.ImageMarkers.idOf(rawLine)
+            val check = checkRegex.matchEntire(rawLine)
             val fence = fences.firstOrNull { it.start == starts[i] }
+
             when {
+                // Fenced code block
                 fence != null -> {
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(6.dp))
                     val codeStart = fence.codeStart
                     val codeEnd = (fence.codeStart + fence.code.length).coerceAtMost(styled.length)
                     val codeStyled = if (codeStart in 0..codeEnd && codeStart < codeEnd) styled.subSequence(codeStart, codeEnd) else null
                     com.example.ui.components.CodeBoxCard(
-                        title = fence.title,
+                        title = fence.title.ifBlank { "Title" },
                         code = fence.code,
                         lang = fence.lang,
                         isDarkMode = isDarkMode,
                         modifier = Modifier.fillMaxWidth(),
-                        fontSize = (fontSize - 3).coerceAtLeast(11),
+                        fontSize = (fontSize - 2).coerceAtLeast(11),
                         styledCode = codeStyled
                     )
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(6.dp))
                     var k = i
                     while (k < lines.size && starts[k] < fence.end) k++
                     i = if (k > i) k else i + 1
                 }
+
+                // Inline image
                 imgId != null -> {
                     val att = attachments.firstOrNull { it.id == imgId }
                     if (att != null) {
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(8.dp))
                         com.example.ui.components.AttachmentFrame(
                             att = att,
                             modifier = Modifier.fillMaxWidth(att.widthFraction)
                         )
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(8.dp))
                     }
                     i++
                 }
+
+                // Heading 1: # Title
+                rawLine.startsWith("# ") -> {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = parseInlineMarkdown(rawLine.removePrefix("# "), color),
+                        fontSize = (fontSize + 7).sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = color,
+                        lineHeight = (fontSize + 13).sp
+                    )
+                    HorizontalDivider(thickness = 2.dp, color = CrimsonPrimary, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+                    i++
+                }
+
+                // Heading 2: ## Title (with full-width subtle underline divider as seen in My Documents)
+                rawLine.startsWith("## ") -> {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = parseInlineMarkdown(rawLine.removePrefix("## "), color),
+                        fontSize = (fontSize + 4).sp,
+                        fontWeight = FontWeight.Bold,
+                        color = color,
+                        lineHeight = (fontSize + 9).sp
+                    )
+                    HorizontalDivider(thickness = 1.dp, color = borderColor, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+                    i++
+                }
+
+                // Heading 3: ### Title
+                rawLine.startsWith("### ") -> {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = parseInlineMarkdown(rawLine.removePrefix("### "), color),
+                        fontSize = (fontSize + 2).sp,
+                        fontWeight = FontWeight.Bold,
+                        color = color,
+                        lineHeight = (fontSize + 6).sp
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    i++
+                }
+
+                // Heading 4+: #### Title
+                rawLine.startsWith("#### ") -> {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = parseInlineMarkdown(rawLine.removePrefix("#### "), color),
+                        fontSize = fontSize.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = color
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    i++
+                }
+
+                // Horizontal Rule: --- or ***
+                trimmedLine == "---" || trimmedLine == "***" -> {
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = borderColor,
+                        modifier = Modifier.padding(vertical = 10.dp)
+                    )
+                    i++
+                }
+
+                // Blockquote: > text
+                rawLine.startsWith("> ") -> {
+                    val quoteText = rawLine.removePrefix("> ")
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
+                            .padding(start = 10.dp, end = 8.dp, top = 6.dp, bottom = 6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .height(18.dp)
+                                .background(CrimsonPrimary, RoundedCornerShape(2.dp))
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = parseInlineMarkdown(quoteText, subColor),
+                            fontStyle = FontStyle.Italic,
+                            fontSize = fontSize.sp,
+                            color = subColor,
+                            lineHeight = (fontSize + 6).sp
+                        )
+                    }
+                    i++
+                }
+
+                // Task item with checkbox: [ ] / [x] / [!]
                 check != null -> {
                     val state = check.groupValues[2]
                     val bodyStart = starts[i] + check.groupValues[1].length + 4
-                    val bodyEnd = starts[i] + lines[i].length
+                    val bodyEnd = starts[i] + rawLine.length
                     val tint = when (state) {
                         "[x]" -> Color(0xFF35B65B)
                         "[!]" -> Color(0xFFE05252)
                         else -> if (isDarkMode) Color.White.copy(.75f) else Color(0xFF555555)
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
                         Box(
                             modifier = Modifier
                                 .size(18.dp)
@@ -1182,8 +1275,9 @@ private fun ReadRichBody(
                             }
                         }
                         Spacer(Modifier.width(10.dp))
+                        val lineText = if (bodyStart <= bodyEnd && bodyEnd <= styled.length) styled.subSequence(bodyStart, bodyEnd).text else check.groupValues[3]
                         Text(
-                            text = if (bodyStart <= bodyEnd && bodyEnd <= styled.length) styled.subSequence(bodyStart, bodyEnd) else AnnotatedString(check.groupValues[3]),
+                            text = parseInlineMarkdown(lineText, if (state == "[x]") Color.Gray else color),
                             fontSize = fontSize.sp,
                             color = if (state == "[x]") Color.Gray else color,
                             textDecoration = if (state == "[x]") androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
@@ -1192,19 +1286,102 @@ private fun ReadRichBody(
                     }
                     i++
                 }
+
+                // Markdown Task item: - [ ] or - [x]
+                rawLine.trimStart().startsWith("- [ ] ") || rawLine.trimStart().startsWith("- [x] ") ||
+                rawLine.trimStart().startsWith("* [ ] ") || rawLine.trimStart().startsWith("* [x] ") -> {
+                    val isChecked = rawLine.contains("[x]")
+                    val body = rawLine.substringAfter("] ")
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(if (isChecked) Color(0xFF35B65B).copy(alpha = .18f) else Color.Transparent)
+                                .border(1.6.dp, if (isChecked) Color(0xFF35B65B) else (if (isDarkMode) Color.White.copy(.75f) else Color(0xFF555555)), RoundedCornerShape(4.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isChecked) {
+                                Icon(Icons.Default.Check, null, tint = Color(0xFF35B65B), modifier = Modifier.size(14.dp))
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = parseInlineMarkdown(body, if (isChecked) Color.Gray else color),
+                            fontSize = fontSize.sp,
+                            color = if (isChecked) Color.Gray else color,
+                            textDecoration = if (isChecked) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                            lineHeight = (fontSize + 6).sp
+                        )
+                    }
+                    i++
+                }
+
+                // Bullet item: - text or * text with Crimson/Pink round dot indicator
+                rawLine.trimStart().startsWith("- ") || rawLine.trimStart().startsWith("* ") -> {
+                    val item = rawLine.trimStart().drop(2)
+                    Row(modifier = Modifier.padding(start = 6.dp, top = 2.dp, bottom = 2.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .padding(top = 8.dp)
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(CrimsonPrimary)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = parseInlineMarkdown(item, color),
+                            fontSize = fontSize.sp,
+                            color = color,
+                            lineHeight = (fontSize + 6).sp
+                        )
+                    }
+                    i++
+                }
+
+                // Markdown Table
+                rawLine.trimStart().startsWith("|") && rawLine.trimEnd().endsWith("|") -> {
+                    val tableLines = mutableListOf<String>()
+                    while (i < lines.size && lines[i].trimStart().startsWith("|") && lines[i].trimEnd().endsWith("|")) {
+                        tableLines.add(lines[i])
+                        i++
+                    }
+                    ReadMarkdownTableView(tableLines, fontSize, isDarkMode)
+                    Spacer(Modifier.height(6.dp))
+                }
+
+                // Regular Paragraph lines
                 else -> {
-                    // group consecutive plain lines into one Text so styling/wrapping stay natural
                     var j = i
                     while (j < lines.size &&
                         com.example.ui.util.ImageMarkers.idOf(lines[j]) == null &&
                         !checkRegex.matches(lines[j]) &&
-                        fences.none { it.start == starts[j] }
+                        fences.none { it.start == starts[j] } &&
+                        !lines[j].startsWith("# ") &&
+                        !lines[j].startsWith("## ") &&
+                        !lines[j].startsWith("### ") &&
+                        !lines[j].startsWith("#### ") &&
+                        !lines[j].startsWith("> ") &&
+                        lines[j].trim() != "---" &&
+                        lines[j].trim() != "***" &&
+                        !lines[j].trimStart().startsWith("- ") &&
+                        !lines[j].trimStart().startsWith("* ") &&
+                        !(lines[j].trimStart().startsWith("|") && lines[j].trimEnd().endsWith("|"))
                     ) j++
+
                     val from = starts[i]
                     val to = (starts[j - 1] + lines[j - 1].length).coerceAtMost(styled.length)
                     if (from <= to) {
+                        val subText = styled.subSequence(from, to)
+                        // If it contains inline markdown markers (** or * or `), parse them
+                        val rawSub = subText.text
+                        val textToRender = if (rawSub.contains("**") || rawSub.contains("`") || (rawSub.contains("*") && !rawSub.contains(" * "))) {
+                            parseInlineMarkdown(rawSub, color)
+                        } else {
+                            subText
+                        }
                         Text(
-                            text = styled.subSequence(from, to),
+                            text = textToRender,
                             fontSize = fontSize.sp,
                             color = color,
                             lineHeight = (fontSize + 6).sp
@@ -1216,3 +1393,93 @@ private fun ReadRichBody(
         }
     }
 }
+
+/** Parses inline markdown: **bold**, *italic*, `inline code` */
+private fun parseInlineMarkdown(text: String, baseColor: Color): AnnotatedString {
+    return buildAnnotatedString {
+        var cursor = 0
+        val regex = Regex("(`[^`\\n]+`|\\*\\*[^*\\n]+\\*\\*|\\*[^*\\n]+\\*)")
+        val matches = regex.findAll(text).toList()
+        for (m in matches) {
+            if (m.range.first > cursor) {
+                append(text.substring(cursor, m.range.first))
+            }
+            val matchVal = m.value
+            when {
+                matchVal.startsWith("`") && matchVal.endsWith("`") -> {
+                    val raw = matchVal.removeSurrounding("`")
+                    pushStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0x22888888)))
+                    append(" $raw ")
+                    pop()
+                }
+                matchVal.startsWith("**") && matchVal.endsWith("**") -> {
+                    val raw = matchVal.removeSurrounding("**")
+                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
+                    append(raw)
+                    pop()
+                }
+                matchVal.startsWith("*") && matchVal.endsWith("*") -> {
+                    val raw = matchVal.removeSurrounding("*")
+                    pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
+                    append(raw)
+                    pop()
+                }
+                else -> append(matchVal)
+            }
+            cursor = m.range.last + 1
+        }
+        if (cursor < text.length) {
+            append(text.substring(cursor))
+        }
+    }
+}
+
+/** Markdown Table View with borders for note read mode */
+@Composable
+private fun ReadMarkdownTableView(
+    tableLines: List<String>,
+    fontSize: Int,
+    isDarkMode: Boolean
+) {
+    val borderColor = if (isDarkMode) Color(0xFF3B4354) else Color(0xFFCBD5E1)
+    val headerBg = if (isDarkMode) Color(0xFF202531) else Color(0xFFE6EDF5)
+    val rows = tableLines.filter { !it.contains("---") }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(8.dp))
+            .horizontalScroll(rememberScrollState())
+    ) {
+        Column {
+            rows.forEachIndexed { rowIndex, rawRow ->
+                val cells = rawRow.split("|").filter { it.isNotBlank() }.map { it.trim() }
+                Row(
+                    modifier = Modifier
+                        .background(
+                            if (rowIndex == 0) headerBg
+                            else if (rowIndex % 2 == 0) (if (isDarkMode) Color(0x12FFFFFF) else Color(0x06000000))
+                            else Color.Transparent
+                        )
+                ) {
+                    cells.forEach { cell ->
+                        Box(
+                            modifier = Modifier
+                                .border(0.5.dp, borderColor)
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = parseInlineMarkdown(cell, if (isDarkMode) Color.White else Color.Black),
+                                fontSize = (fontSize - 2).coerceAtLeast(11).sp,
+                                fontWeight = if (rowIndex == 0) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isDarkMode) Color.White else Color.Black
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

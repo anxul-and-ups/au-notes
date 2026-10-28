@@ -24,6 +24,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -31,6 +32,9 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -681,16 +685,16 @@ fun NoteEditorScreen(
         val caret: Int
         if (selected.isNotEmpty()) {
             // wrap the selected text in a box
-            val block = (if (sel.min > 0 && text[sel.min - 1] != '\n') "\n" else "") + "```\n" + selected + "\n```" + (if (sel.max < text.length && text[sel.max] != '\n') "\n" else "")
+            val block = (if (sel.min > 0 && text[sel.min - 1] != '\n') "\n" else "") + "```Title\n" + selected + "\n```" + (if (sel.max < text.length && text[sel.max] != '\n') "\n" else "")
             newText = text.substring(0, sel.min) + block + text.substring(sel.max)
             caret = sel.min + block.length
         } else if (line.isBlank()) {
             // box + a free line right after it, so you can keep writing below the box
-            newText = text.substring(0, lineStart) + "```\n\n```\n" + text.substring(lineEnd)
-            caret = lineStart + 4
+            newText = text.substring(0, lineStart) + "```Title\n\n```\n" + text.substring(lineEnd)
+            caret = lineStart + 9
         } else {
-            newText = text.substring(0, lineEnd) + "\n```\n\n```\n" + text.substring(lineEnd)
-            caret = lineEnd + 5
+            newText = text.substring(0, lineEnd) + "\n```Title\n\n```\n" + text.substring(lineEnd)
+            caret = lineEnd + 10
         }
         spans = RichTextFormatter.adjustSpansForEdit(spans, text, newText)
         contentValue = TextFieldValue(newText, selection = TextRange(caret.coerceAtMost(newText.length)))
@@ -1375,7 +1379,7 @@ fun NoteEditorScreen(
                                         val openEnd = f.openLineEnd.coerceIn(openStart, raw.length)
                                         if (openStart < openEnd) {
                                             addStyle(
-                                                SpanStyle(color = Color.Transparent),
+                                                SpanStyle(color = Color.Transparent, fontSize = 22.sp),
                                                 openStart,
                                                 openEnd
                                             )
@@ -1527,143 +1531,59 @@ fun NoteEditorScreen(
                                         .offset { IntOffset(0, (top + if (movingImageId == att.id) movingDy else 0f).roundToInt()) }
                                         .width(with(density) { (fieldWidthPx * att.widthFraction).toDp() })
                                 ) {
-                                    // Sleek Inline Image Editor Toolbar right inside the note
-                                    if (activeEditImageId == att.id) {
-                                        androidx.compose.material3.Surface(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(bottom = 6.dp),
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = if (isDarkMode) Color(0xFF1E222B) else Color(0xFFF2F4F8),
-                                            shadowElevation = 6.dp,
-                                            border = androidx.compose.foundation.BorderStroke(1.dp, if (isDarkMode) Color(0xFF3B4354) else Color(0xFFCBD5E1))
-                                        ) {
-                                            Column(Modifier.padding(6.dp)) {
-                                                // Row 1: Size presets & Done
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                        listOf(0.33f to "33%", 0.5f to "50%", 0.75f to "75%", 1.0f to "100%").forEach { (frac, label) ->
-                                                            val selected = kotlin.math.abs(att.widthFraction - frac) < 0.08f
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .clip(RoundedCornerShape(6.dp))
-                                                                    .background(if (selected) CrimsonPrimary else Color.Transparent)
-                                                                    .clickable {
-                                                                        if (!att.locked) {
-                                                                            attachments = attachments.map { if (it.id == att.id) it.copy(widthFraction = frac) else it }
-                                                                        }
-                                                                    }
-                                                                    .padding(horizontal = 6.dp, vertical = 3.dp)
-                            ) {
-                                                                Text(label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (selected) Color.White else (if (isDarkMode) Color.LightGray else Color.DarkGray))
-                                                            }
-                                                        }
-                                                    }
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .clip(RoundedCornerShape(6.dp))
-                                                            .background(Color(0xFF22C55E))
-                                                            .clickable { activeEditImageId = null }
-                                                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                                                    ) {
-                                                        Text("Done", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                                    }
-                                                }
-
-                                                Spacer(Modifier.height(4.dp))
-
-                                                // Row 2: Move Up, Move Down, Rotate, Lock, Delete
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                        IconButton(
-                                                            onClick = { if (!att.locked) shiftImage(att.id, moveUp = true) },
-                                                            modifier = Modifier.size(28.dp)
-                                                        ) {
-                                                            Icon(Icons.Default.KeyboardArrowDown, "Move Up", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(16.dp).graphicsLayer(rotationZ = 180f))
-                                                        }
-                                                        IconButton(
-                                                            onClick = { if (!att.locked) shiftImage(att.id, moveUp = false) },
-                                                            modifier = Modifier.size(28.dp)
-                                                        ) {
-                                                            Icon(Icons.Default.KeyboardArrowDown, "Move Down", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(16.dp))
-                                                        }
-                                                        IconButton(
-                                                            onClick = {
-                                                                if (!att.locked) {
-                                                                    attachments = attachments.map { if (it.id == att.id) it.copy(rotation = (it.rotation + 90) % 360) else it }
-                                                                }
-                                                            },
-                                                            modifier = Modifier.size(28.dp)
-                                                        ) {
-                                                            Icon(Icons.Default.Refresh, "Rotate", tint = CrimsonPrimary, modifier = Modifier.size(16.dp))
-                                                        }
-                                                    }
-
-                                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                        IconButton(
-                                                            onClick = {
-                                                                attachments = attachments.map { if (it.id == att.id) it.copy(locked = !it.locked) else it }
-                                                            },
-                                                            modifier = Modifier.size(28.dp)
-                                                        ) {
-                                                            Icon(if (att.locked) Icons.Default.Lock else Icons.Default.LockOpen, "Lock", tint = if (att.locked) Color.Red else (if (isDarkMode) Color.White else Color.Black), modifier = Modifier.size(16.dp))
-                                                        }
-                                                        IconButton(
-                                                            onClick = {
-                                                                if (!att.locked) {
-                                                                    activeEditImageId = null
-                                                                    attachments = attachments.filter { it.id != att.id }
-                                                                    val t = contentValue.text
-                                                                    val marker = ImageMarkers.marker(att.id)
-                                                                    val newT = t.replace("\n$marker\n", "\n").replace("$marker\n", "").replace(marker, "")
-                                                                    pushUndo()
-                                                                    spans = RichTextFormatter.adjustSpansForEdit(spans, t, newT)
-                                                                    contentValue = TextFieldValue(newT, selection = TextRange(contentValue.selection.start.coerceIn(0, newT.length)))
-                                                                } else {
-                                                                    Toast.makeText(context, "Image is locked", Toast.LENGTH_SHORT).show()
-                                                                }
-                                                            },
-                                                            modifier = Modifier.size(28.dp)
-                                                        ) {
-                                                            Icon(Icons.Default.Delete, "Delete", tint = Color.Red, modifier = Modifier.size(16.dp))
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Image Frame with selection border & tap to edit inline
-                                    AttachmentFrame(
-                                        att = att,
+                                    Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .then(
                                                 if (activeEditImageId == att.id) Modifier.border(2.dp, CrimsonPrimary, RoundedCornerShape(10.dp))
                                                 else Modifier
                                             )
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .pointerInput(att.id, att.locked) {
+                                                detectTransformGestures { _, pan, zoomChange, _ ->
+                                                    if (!att.locked) {
+                                                        attachments = attachments.map {
+                                                            if (it.id == att.id) {
+                                                                val newZoom = (it.zoom * zoomChange).coerceIn(0.5f, 4f)
+                                                                val newWidth = if (zoomChange != 1f) {
+                                                                    (it.widthFraction * zoomChange).coerceIn(0.25f, 1f)
+                                                                } else it.widthFraction
+                                                                val newPosX = (it.posX + pan.x / 400f).coerceIn(-1f, 1f)
+                                                                val newPosY = (it.posY + pan.y / 400f).coerceIn(-1f, 1f)
+                                                                it.copy(
+                                                                    widthFraction = newWidth,
+                                                                    zoom = newZoom,
+                                                                    posX = newPosX,
+                                                                    posY = newPosY
+                                                                )
+                                                            } else it
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             .clickable {
                                                 activeEditImageId = if (activeEditImageId == att.id) null else att.id
+                                                if (activeEditImageId != null) {
+                                                    toolsOpen = true
+                                                    toolbarHidden = false
+                                                }
                                             }
-                                    )
-                                    if (att.locked) {
-                                        Icon(
-                                            Icons.Default.Lock, "Locked",
-                                            tint = Color.White,
-                                            modifier = Modifier
-                                                .offset { IntOffset(6, 6) }
-                                                .size(18.dp)
-                                                .background(Color(0x99000000), CircleShape)
-                                                .padding(3.dp)
+                                    ) {
+                                        AttachmentFrame(
+                                            att = att,
+                                            modifier = Modifier.fillMaxWidth()
                                         )
+                                        if (att.locked) {
+                                            Icon(
+                                                Icons.Default.Lock, "Locked",
+                                                tint = Color.White,
+                                                modifier = Modifier
+                                                    .offset { IntOffset(6, 6) }
+                                                    .size(18.dp)
+                                                    .background(Color(0x99000000), CircleShape)
+                                                    .padding(3.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1706,10 +1626,11 @@ fun NoteEditorScreen(
                         }
                     }
 
-                    // Full CodeBoxCard header bar (Title/Lang, Copy button with icon, Maximize button)
-                    textLayout?.let { layout ->
+                    // Full CodeBoxCard header bar (Title/Lang, Remove button, Copy button, Maximize button)
+                    val fenceLayout = textLayout ?: stableTextLayout
+                    fenceLayout?.let { layout ->
                         val full = contentValue.text
-                        if (layout.layoutInput.text.length == full.length && fieldWidthPx > 0f) {
+                        if (fieldWidthPx > 0f && full.contains("```")) {
                             val textCol = if (isDarkMode) Color(0xFFE6EAF2) else Color(0xFF1B1F27)
                             val headerBg = if (isDarkMode) Color(0xFF262B35) else Color(0xFFE2E6EE)
                             val boxWidth = with(density) { (fieldWidthPx + 16.dp.toPx()).toDp() }
@@ -1717,9 +1638,11 @@ fun NoteEditorScreen(
                             val pad2Px = with(density) { 2.dp.toPx() }
                             val pad4Px = with(density) { 4.dp.toPx() }
                             val minHPx = with(density) { 34.dp.toPx() }
+                            val maxOffset = (layout.layoutInput.text.length - 1).coerceAtLeast(0)
 
                             CodeFences.find(full).forEach { f ->
-                                val line = layout.getLineForOffset(f.start)
+                                val safeStart = f.start.coerceIn(0, maxOffset)
+                                val line = layout.getLineForOffset(safeStart)
                                 val top = layout.getLineTop(line)
                                 val headerHPx = (layout.getLineBottom(line) - top + pad4Px).coerceAtLeast(minHPx)
                                 val headerHDp = with(density) { headerHPx.toDp() }
@@ -1734,13 +1657,33 @@ fun NoteEditorScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = f.title.ifBlank { f.lang.ifBlank { "Code" } },
+                                        text = f.title.ifBlank { f.lang.ifBlank { "Title" } },
                                         modifier = Modifier.weight(1f),
                                         fontSize = 11.5.sp,
-                                        color = textCol.copy(alpha = 0.55f),
+                                        color = textCol.copy(alpha = 0.65f),
                                         maxLines = 1,
-                                        fontWeight = FontWeight.Medium
+                                        fontWeight = FontWeight.SemiBold
                                     )
+                                    // Remove code block button
+                                    IconButton(
+                                        onClick = {
+                                            pushUndo()
+                                            val before = full.substring(0, f.start)
+                                            val after = full.substring(f.end.coerceAtMost(full.length))
+                                            val newText = before.trimEnd('\n') + (if (before.isNotBlank() && after.isNotBlank()) "\n" else "") + after.trimStart('\n')
+                                            spans = RichTextFormatter.adjustSpansForEdit(spans, full, newText)
+                                            contentValue = TextFieldValue(newText, selection = TextRange(f.start.coerceIn(0, newText.length)))
+                                            Toast.makeText(context, "Code block removed", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Delete,
+                                            contentDescription = "Remove block",
+                                            tint = Color(0xFFEF4444).copy(alpha = 0.85f),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
                                     Row(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(8.dp))
@@ -1767,7 +1710,7 @@ fun NoteEditorScreen(
                                     }
                                     IconButton(
                                         onClick = { maximizedCodeFence = f },
-                                        modifier = Modifier.size(34.dp)
+                                        modifier = Modifier.size(32.dp)
                                     ) {
                                         Icon(
                                             Icons.Default.OpenInFull,
@@ -1838,15 +1781,182 @@ fun NoteEditorScreen(
                         )
                     }
                 }
+                val activeEditAtt = attachments.firstOrNull { it.id == activeEditImageId }
                 GlassCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 10.dp, vertical = 2.dp)
-                        .hiddenWhen(!(toolsOpen && !toolbarHidden)),
+                        .hiddenWhen(!((toolsOpen || activeEditAtt != null) && !toolbarHidden)),
                     shape = RoundedCornerShape(18.dp),
                     isDarkMode = isDarkMode,
                     elevation = 5.dp
                 ) {
+                    if (activeEditAtt != null) {
+                        // Image Editor Toolbar docked at the bottom above keyboard
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        "Image Tools",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = if (isDarkMode) Color.White else Color(0xFF1E293B)
+                                    )
+                                    if (activeEditAtt.locked) {
+                                        Text(
+                                            "(Locked)",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFFEF4444),
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF22C55E))
+                                        .clickable { activeEditImageId = null }
+                                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                                ) {
+                                    Text("Done", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            }
+
+                            // Size presets
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Size:",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isDarkMode) Color.LightGray else Color.DarkGray
+                                )
+                                listOf(0.33f to "33%", 0.5f to "50%", 0.75f to "75%", 1.0f to "100%").forEach { (frac, label) ->
+                                    val selected = kotlin.math.abs(activeEditAtt.widthFraction - frac) < 0.08f
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(7.dp))
+                                            .background(if (selected) CrimsonPrimary else (if (isDarkMode) Color(0x22FFFFFF) else Color(0x11000000)))
+                                            .clickable {
+                                                if (!activeEditAtt.locked) {
+                                                    attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(widthFraction = frac) else it }
+                                                }
+                                            }
+                                            .padding(horizontal = 9.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            label,
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (selected) Color.White else (if (isDarkMode) Color.LightGray else Color.DarkGray)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(6.dp))
+
+                            // Action tools
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Move Up
+                                IconButton(
+                                    onClick = { if (!activeEditAtt.locked) shiftImage(activeEditAtt.id, moveUp = true) },
+                                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
+                                ) {
+                                    Icon(Icons.Default.KeyboardArrowUp, "Move Up", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(19.dp))
+                                }
+                                // Move Down
+                                IconButton(
+                                    onClick = { if (!activeEditAtt.locked) shiftImage(activeEditAtt.id, moveUp = false) },
+                                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
+                                ) {
+                                    Icon(Icons.Default.KeyboardArrowDown, "Move Down", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(19.dp))
+                                }
+                                // Rotate 90
+                                IconButton(
+                                    onClick = {
+                                        if (!activeEditAtt.locked) {
+                                            attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(rotation = (it.rotation + 90) % 360) else it }
+                                        }
+                                    },
+                                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
+                                ) {
+                                    Icon(Icons.Default.Refresh, "Rotate 90°", tint = CrimsonPrimary, modifier = Modifier.size(19.dp))
+                                }
+                                // Zoom Out
+                                IconButton(
+                                    onClick = {
+                                        if (!activeEditAtt.locked) {
+                                            attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(zoom = (it.zoom - 0.2f).coerceAtLeast(0.5f)) else it }
+                                        }
+                                    },
+                                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
+                                ) {
+                                    Icon(Icons.Default.ZoomOut, "Zoom Out", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(19.dp))
+                                }
+                                // Zoom In
+                                IconButton(
+                                    onClick = {
+                                        if (!activeEditAtt.locked) {
+                                            attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(zoom = (it.zoom + 0.2f).coerceAtMost(4f)) else it }
+                                        }
+                                    },
+                                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
+                                ) {
+                                    Icon(Icons.Default.ZoomIn, "Zoom In", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(19.dp))
+                                }
+                                // Lock / Unlock
+                                IconButton(
+                                    onClick = {
+                                        attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(locked = !it.locked) else it }
+                                    },
+                                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
+                                ) {
+                                    Icon(
+                                        if (activeEditAtt.locked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                        "Lock",
+                                        tint = if (activeEditAtt.locked) Color(0xFFEF4444) else (if (isDarkMode) Color.White else Color.Black),
+                                        modifier = Modifier.size(19.dp)
+                                    )
+                                }
+                                // Delete
+                                IconButton(
+                                    onClick = {
+                                        if (!activeEditAtt.locked) {
+                                            val toDelId = activeEditAtt.id
+                                            activeEditImageId = null
+                                            attachments = attachments.filter { it.id != toDelId }
+                                            val t = contentValue.text
+                                            val marker = ImageMarkers.marker(toDelId)
+                                            val newT = t.replace("\n$marker\n", "\n").replace("$marker\n", "").replace(marker, "")
+                                            pushUndo()
+                                            spans = RichTextFormatter.adjustSpansForEdit(spans, t, newT)
+                                            contentValue = TextFieldValue(newT, selection = TextRange(contentValue.selection.start.coerceIn(0, newT.length)))
+                                            Toast.makeText(context, "Image deleted", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            Toast.makeText(context, "Image is locked", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFFEF4444).copy(alpha = 0.15f))
+                                ) {
+                                    Icon(Icons.Default.Delete, "Delete", tint = Color(0xFFEF4444), modifier = Modifier.size(19.dp))
+                                }
+                            }
+                        }
+                    } else {
                     Column {
 Row(
                             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 4.dp),
@@ -1947,6 +2057,7 @@ Row(
                         ToolDivider(isDarkMode)
                         // eye: hide the whole toolbar card (the eye-closed button below brings it back)
                         EditorTool(icon = Icons.Default.Visibility, label = "Hide toolbar", active = false, idleTint = idleTint) { toolbarHidden = true }
+                    }
                     }
                     }
                 }

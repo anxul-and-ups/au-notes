@@ -42,7 +42,7 @@ import com.example.ui.theme.CrimsonPrimary
 @Composable
 fun CodeBlockView(
     code: String,
-    language: String = "Code",
+    language: String = "Title",
     isDarkMode: Boolean = true,
     modifier: Modifier = Modifier
 ) {

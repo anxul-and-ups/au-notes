@@ -1356,7 +1356,7 @@ fun CompactNoteCard(
     val displayContent = if (note.category == "API" && blurApis) {
         "•••••••••••••••••••• (API Key Blurred)"
     } else {
-        com.example.ui.util.ImageMarkers.strip(note.content).lines().firstOrNull { it.isNotBlank() } ?: ""
+        extractCleanSnippet(note.content)
     }
 
     val formattedTime = remember(note.updatedAt) {
@@ -1618,3 +1618,29 @@ fun TelegramActionItem(
         )
     }
 }
+
+private fun extractCleanSnippet(rawContent: String): String {
+    val stripped = com.example.ui.util.ImageMarkers.strip(rawContent)
+    val lines = stripped.lines()
+    for (line in lines) {
+        val trimmed = line.trim()
+        if (trimmed.isNotBlank() && !trimmed.startsWith("```") && trimmed != "---" && trimmed != "***") {
+            val clean = trimmed
+                .removePrefix("#").removePrefix("#").removePrefix("#").removePrefix("#")
+                .removePrefix("- [ ] ").removePrefix("- [x] ").removePrefix("- [!] ")
+                .removePrefix("- ").removePrefix("* ").removePrefix("> ")
+                .replace(Regex("\\*\\*(.*?)\\*\\*"), "$1")
+                .replace(Regex("`+(.*?)`+"), "$1")
+                .trim()
+            if (clean.isNotBlank()) return clean
+        }
+    }
+    for (line in lines) {
+        val trimmed = line.trim()
+        if (trimmed.isNotBlank() && !trimmed.startsWith("```")) {
+            return trimmed
+        }
+    }
+    return ""
+}
+

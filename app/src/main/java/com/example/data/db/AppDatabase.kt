@@ -11,10 +11,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-@Database(entities = [NoteEntity::class, SavedNameEntity::class], version = 3, exportSchema = false)
+import com.example.data.model.MilkRecordEntity
+
+@Database(entities = [NoteEntity::class, SavedNameEntity::class, MilkRecordEntity::class], version = 4, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun savedNameDao(): SavedNameDao
+    abstract fun milkRecordDao(): MilkRecordDao
 
     companion object {
         @Volatile
