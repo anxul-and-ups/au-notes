@@ -20,7 +20,7 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-    signingConfigs {
+      signingConfigs {
     create("persistent") {
       storeFile = rootProject.file("my-upload-key.jks")
       storePassword = "CodeForgeAU2026!"
