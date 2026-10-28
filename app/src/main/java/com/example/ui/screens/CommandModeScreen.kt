@@ -124,6 +124,9 @@ fun CommandModeScreen(
 
     fun speak(text: String) {
         if (isTtsReady && tts != null) {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            audioManager?.mode = android.media.AudioManager.MODE_NORMAL
+            audioManager?.isSpeakerphoneOn = true
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "AU_COMMAND_TTS")
         }
     }
@@ -131,6 +134,16 @@ fun CommandModeScreen(
     DisposableEffect(Unit) {
         val ttsInstance = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
+                try {
+                    val attrs = android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                    tts?.setAudioAttributes(attrs)
+                    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+                    audioManager?.mode = android.media.AudioManager.MODE_NORMAL
+                    audioManager?.isSpeakerphoneOn = true
+                } catch (_: Exception) {}
                 tts?.language = Locale.US
                 isTtsReady = true
             }
@@ -141,6 +154,8 @@ fun CommandModeScreen(
             ttsInstance.stop()
             ttsInstance.shutdown()
             SirenAudioPlayer.stop()
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            audioManager?.mode = android.media.AudioManager.MODE_NORMAL
         }
     }
 
@@ -426,11 +441,11 @@ fun CommandModeScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // JARVIS 3D particle orb, with the existing mic control layered above it.
+                // JARVIS 3D Particle Voice Orb (Unobstructed Hero Visual)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(210.dp),
+                        .height(240.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     OrbView(
@@ -439,26 +454,39 @@ fun CommandModeScreen(
                         theme = orbTheme,
                         customColor = orbColor,
                         intensity = orbIntensity,
+                        onTap = {
+                            if (isListening) {
+                                speechRecognizer?.stopListening()
+                                isListening = false
+                            } else {
+                                val hasPermission = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+
+                                if (hasPermission) {
+                                    startListening()
+                                } else {
+                                    recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
+                }
 
-                    // Existing mic control remains available above the orb.
-                    // Outer pulsating glow
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Interactive Mic Action Button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Box(
                         modifier = Modifier
-                            .size(110.dp)
+                            .size(64.dp)
                             .scale(pulseScale)
-                            .clip(CircleShape)
-                            .background(
-                                if (isListening) CrimsonPrimary.copy(alpha = 0.35f)
-                                else Color(0xFF7C3AED).copy(alpha = 0.2f)
-                            )
-                    )
-
-                    // Main mic button
-                    Box(
-                        modifier = Modifier
-                            .size(76.dp)
                             .clip(CircleShape)
                             .background(
                                 Brush.linearGradient(
@@ -489,13 +517,15 @@ fun CommandModeScreen(
                             imageVector = if (isListening) Icons.Default.Mic else Icons.Default.Mic,
                             contentDescription = "Voice Input",
                             tint = Color.White,
-                            modifier = Modifier.size(34.dp)
+                            modifier = Modifier.size(30.dp)
                         )
                     }
                 }
 
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Text(
-                    text = if (isListening) "Listening... Speak your command now" else "Tap microphone to speak",
+                    text = if (isListening) "Listening... Speak your command now" else "Tap Orb or Microphone to speak",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = if (isListening) CrimsonPrimary else (if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray),

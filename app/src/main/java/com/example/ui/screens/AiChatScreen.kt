@@ -30,6 +30,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
@@ -812,7 +816,8 @@ fun AiChatScreen(
                     Toast.makeText(context, msg + " Using the normal voice instead.", Toast.LENGTH_LONG).show()
                     stopLive()
                     if (!voiceManager.isVoiceModeActive) voiceManager.startVoiceMode()
-                }
+                },
+                context = context.applicationContext
             ).also { it.start() }
         }
     }
@@ -2053,6 +2058,11 @@ fun AiChatScreen(
             onDismissRequest = { showVoiceOverlay = false },
             properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
         ) {
+            val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            val safeBottom = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
+            val maxNav = if (navBottom > safeBottom) navBottom else safeBottom
+            val effectiveBottom = if (maxNav > 56.dp) maxNav + 24.dp else 80.dp
+
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -2062,9 +2072,8 @@ fun AiChatScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .statusBarsPadding()
-                        .navigationBarsPadding()
                         .imePadding()
-                        .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 22.dp),
+                        .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = effectiveBottom),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     // Top bar

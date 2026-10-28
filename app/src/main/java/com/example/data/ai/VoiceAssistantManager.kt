@@ -3,6 +3,7 @@ package com.example.data.ai
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -126,13 +127,16 @@ class VoiceAssistantManager(
         engine.setPitch(1.02f) // Natural calm pitch
         engine.setSpeechRate(0.96f) // Normal attentive working assistant pace
 
-        // Setup audio attributes so speech plays cleanly in background
+        // Setup audio attributes so speech plays cleanly on loudspeaker/media stream
         try {
             val audioAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
             engine.setAudioAttributes(audioAttributes)
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            audioManager?.mode = AudioManager.MODE_NORMAL
+            audioManager?.isSpeakerphoneOn = true
         } catch (_: Exception) {}
 
         try {
@@ -191,6 +195,9 @@ class VoiceAssistantManager(
             .trim()
 
         if (cleanSpeech.isBlank()) return
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        audioManager?.mode = AudioManager.MODE_NORMAL
+        audioManager?.isSpeakerphoneOn = true
 
         _lastSpokenText.value = cleanSpeech
         _voiceState.value = VoiceState.SPEAKING

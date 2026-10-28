@@ -145,6 +145,13 @@ fun ReadNoteScreen(
             if (status == TextToSpeech.SUCCESS) {
                 tts?.setSpeechRate(0.97f)
                 tts?.setPitch(1.0f)
+                try {
+                    val attrs = android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                    tts?.setAudioAttributes(attrs)
+                } catch (_: Exception) {}
                 tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {}
                     override fun onDone(utteranceId: String?) { if (utteranceId?.endsWith("_last") == true) isSpeaking = false }
@@ -1121,13 +1128,17 @@ private fun ReadRichBody(
             when {
                 fence != null -> {
                     Spacer(Modifier.height(4.dp))
+                    val codeStart = fence.codeStart
+                    val codeEnd = (fence.codeStart + fence.code.length).coerceAtMost(styled.length)
+                    val codeStyled = if (codeStart in 0..codeEnd && codeStart < codeEnd) styled.subSequence(codeStart, codeEnd) else null
                     com.example.ui.components.CodeBoxCard(
                         title = fence.title,
                         code = fence.code,
                         lang = fence.lang,
                         isDarkMode = isDarkMode,
                         modifier = Modifier.fillMaxWidth(),
-                        fontSize = (fontSize - 3).coerceAtLeast(11)
+                        fontSize = (fontSize - 3).coerceAtLeast(11),
+                        styledCode = codeStyled
                     )
                     Spacer(Modifier.height(4.dp))
                     var k = i

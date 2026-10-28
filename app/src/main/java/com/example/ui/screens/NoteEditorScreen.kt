@@ -7,8 +7,13 @@ import android.graphics.BitmapFactory
 import android.media.RingtoneManager
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -75,6 +80,12 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.ui.components.CodeFence
+import com.example.ui.components.CodeFences
+import com.example.ui.util.SyntaxHighlighter
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -95,6 +106,8 @@ import androidx.compose.material.icons.filled.FormatStrikethrough
 import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Title
@@ -147,6 +160,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -356,11 +370,16 @@ fun NoteEditorScreen(
     // Dialogs & Modals state
     // (Alarm dialog moved to ReadNoteScreen — Item 14)
     var showImageEditModal by remember { mutableStateOf<RichTextFormatter.AttachmentInfo?>(null) }
+    var activeEditImageId by remember { mutableStateOf<String?>(null) }
+    val contentFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    var stableTextLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var showPdfMode by remember { mutableStateOf(false) }
     var titleBarHidden by remember { mutableStateOf(false) }
     var toolsOpen by remember { mutableStateOf(false) }
     var toolbarHidden by remember { mutableStateOf(false) }
     var showTableFullscreen by remember { mutableStateOf(false) }
+    var maximizedCodeFence by remember { mutableStateOf<CodeFence?>(null) }
 
 
     // Image Attachment picker
@@ -406,8 +425,25 @@ fun NoteEditorScreen(
         }
     }
 
+    fun isNoteEmpty(): Boolean {
+        return title.trim().isBlank() && contentValue.text.trim().isBlank() && attachments.isEmpty() && tableData.trim().isBlank()
+    }
+
+    // Undo/Redo Stacks
+    val undoStack = remember { mutableStateListOf<Pair<String, List<RichTextFormatter.TextSpan>>>() }
+    val redoStack = remember { mutableStateListOf<Pair<String, List<RichTextFormatter.TextSpan>>>() }
+
+    fun pushUndo() {
+        if (undoStack.size > 20) undoStack.removeAt(0)
+        undoStack.add(Pair(contentValue.text, spans))
+        redoStack.clear()
+    }
+
     fun performSave(showToast: Boolean, thenNavigateBack: Boolean) {
-        if (title.isBlank() && contentValue.text.isBlank() && attachments.isEmpty()) {
+        if (isNoteEmpty()) {
+            if (currentNoteId != 0L) {
+                coroutineScope.launch(Dispatchers.IO) { repository.moveToTrash(currentNoteId) }
+            }
             if (thenNavigateBack) onBack()
             return
         }
@@ -453,6 +489,7 @@ fun NoteEditorScreen(
         isBold, isItalic, isUnderline, isStrikethrough, isCodeFormat,
         fontSize, selectedColorHex, alignment, listType, saveInChoice
     ) {
+        if (isNoteEmpty()) return@LaunchedEffect
         hasUnsavedChanges = true
         kotlinx.coroutines.delay(1200)
         performSave(showToast = false, thenNavigateBack = false)
@@ -461,20 +498,41 @@ fun NoteEditorScreen(
     // Save on pause/exit
     DisposableEffect(Unit) {
         onDispose {
-            if (hasUnsavedChanges) {
+            if (isNoteEmpty()) {
+                if (currentNoteId != 0L) {
+                    coroutineScope.launch(Dispatchers.IO) { repository.moveToTrash(currentNoteId) }
+                }
+            } else if (hasUnsavedChanges) {
                 performSave(showToast = false, thenNavigateBack = false)
             }
         }
     }
 
-    // Undo/Redo Stacks
-    val undoStack = remember { mutableStateListOf<Pair<String, List<RichTextFormatter.TextSpan>>>() }
-    val redoStack = remember { mutableStateListOf<Pair<String, List<RichTextFormatter.TextSpan>>>() }
+    BackHandler {
+        if (isNoteEmpty()) {
+            if (currentNoteId != 0L) {
+                coroutineScope.launch(Dispatchers.IO) { repository.moveToTrash(currentNoteId) }
+            }
+            onBack()
+        } else {
+            performSave(showToast = false, thenNavigateBack = true)
+        }
+    }
 
-    fun pushUndo() {
-        if (undoStack.size > 20) undoStack.removeAt(0)
-        undoStack.add(Pair(contentValue.text, spans))
-        redoStack.clear()
+    fun shiftImage(id: String, moveUp: Boolean) {
+        val text = contentValue.text
+        val marker = ImageMarkers.marker(id)
+        val lines = text.lines().toMutableList()
+        val lineIdx = lines.indexOfFirst { it.trim() == marker }
+        if (lineIdx < 0) return
+        val targetIdx = if (moveUp) (lineIdx - 1).coerceAtLeast(0) else (lineIdx + 1).coerceAtMost(lines.size - 1)
+        if (targetIdx == lineIdx) return
+        lines.removeAt(lineIdx)
+        lines.add(targetIdx, marker)
+        val newText = lines.joinToString("\n")
+        pushUndo()
+        spans = RichTextFormatter.adjustSpansForEdit(spans, text, newText)
+        contentValue = TextFieldValue(newText, selection = TextRange(contentValue.selection.start.coerceIn(0, newText.length)))
     }
 
     fun applyOrSetFontSize(size: Int) {
@@ -1161,6 +1219,14 @@ fun NoteEditorScreen(
                         .weight(1f)
                         .verticalScroll(mainScrollState)
                         .padding(horizontal = 8.dp, vertical = 8.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            contentFocusRequester.requestFocus()
+                            contentValue = contentValue.copy(selection = TextRange(contentValue.text.length))
+                            keyboardController?.show()
+                        }
                 ) {
 
                     // Inline Attached Images (with Move, Resize, Crop, Rename support - PART F Item 5)
@@ -1279,19 +1345,81 @@ fun NoteEditorScreen(
                             // Do not launch a second scroll request for every keystroke.
                         },
                         visualTransformation = VisualTransformation { text ->
-                            TransformedText(
-                                if (isJsonMode) {
-                                    buildJsonHighlightedText(text.text)
-                                } else {
-RichTextFormatter.buildStyledText(
-                                        text = text.text,
-                                        spans = spans,
-                                        defaultColor = effectiveTextColor,
-                                        fontSize = fontSize.toFloat()
-                                    )
-                                },
-                                OffsetMapping.Identity
-                            )
+                            val raw = text.text
+                            val baseStyled = if (isJsonMode) {
+                                buildJsonHighlightedText(raw)
+                            } else {
+                                RichTextFormatter.buildStyledText(
+                                    text = raw,
+                                    spans = spans,
+                                    defaultColor = effectiveTextColor,
+                                    fontSize = fontSize.toFloat()
+                                )
+                            }
+                            val finalStyled = androidx.compose.ui.text.buildAnnotatedString {
+                                append(baseStyled)
+                                // Completely hide [img:id] markers so they never show behind the image
+                                val imgMarkerRegex = Regex("(?m)^\\[img:([A-Za-z0-9]{4,32})]$")
+                                for (m in imgMarkerRegex.findAll(raw)) {
+                                    val start = m.range.first.coerceIn(0, raw.length)
+                                    val end = (m.range.last + 1).coerceIn(start, raw.length)
+                                    if (start < end) {
+                                        addStyle(SpanStyle(color = Color.Transparent, fontSize = 0.sp), start, end)
+                                    }
+                                }
+                                if (raw.contains("```")) {
+                                    CodeFences.find(raw).forEach { f ->
+                                        // The opening fence line (where the header bar is overlaid) is hidden
+                                        // so it does not collide with the header bar
+                                        val openStart = f.start.coerceIn(0, raw.length)
+                                        val openEnd = f.openLineEnd.coerceIn(openStart, raw.length)
+                                        if (openStart < openEnd) {
+                                            addStyle(
+                                                SpanStyle(color = Color.Transparent),
+                                                openStart,
+                                                openEnd
+                                            )
+                                        }
+                                        // Code content: Monospace font & Syntax highlighting
+                                        val cStart = f.codeStart.coerceIn(0, raw.length)
+                                        val cEnd = (f.end - 3).coerceIn(cStart, raw.length)
+                                        if (cStart < cEnd) {
+                                            addStyle(
+                                                SpanStyle(
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontSize = (fontSize - 2).coerceAtLeast(11).sp
+                                                ),
+                                                cStart,
+                                                cEnd
+                                            )
+                                            try {
+                                                SyntaxHighlighter.tokens(f.code, f.lang, isDarkMode).forEach { tok ->
+                                                    val tokStart = (cStart + tok.start).coerceIn(cStart, cEnd)
+                                                    val tokEnd = (cStart + tok.end).coerceIn(tokStart, cEnd)
+                                                    if (tokStart < tokEnd) {
+                                                        addStyle(SpanStyle(color = tok.color), tokStart, tokEnd)
+                                                    }
+                                                }
+                                            } catch (_: Exception) {}
+                                        }
+                                        // Closing fence line is styled subtly
+                                        val closeStart = (f.end - 3).coerceIn(0, raw.length)
+                                        val closeEnd = f.end.coerceIn(closeStart, raw.length)
+                                        if (closeStart < closeEnd) {
+                                            addStyle(
+                                                SpanStyle(
+                                                    color = if (isDarkMode) Color.White.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.25f),
+                                                    fontSize = 10.sp,
+                                                    fontFamily = FontFamily.Monospace
+                                                ),
+                                                closeStart,
+                                                closeEnd
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            TransformedText(finalStyled, OffsetMapping.Identity)
                         },
                         textStyle = TextStyle(
                             fontSize = fontSize.sp,
@@ -1315,26 +1443,70 @@ RichTextFormatter.buildStyledText(
                             }
                             innerTextField()
                         },
-                        onTextLayout = { textLayout = it },
+                        onTextLayout = {
+                            textLayout = it
+                            stableTextLayout = it
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 260.dp)
+                            .focusRequester(contentFocusRequester)
                             .drawBehind {
-                                // one full-width rounded box behind every code block
+                                // Real CodeBoxCard styling behind every code block
                                 val layout = textLayout ?: return@drawBehind
                                 val full = contentValue.text
                                 if (layout.layoutInput.text.length != full.length || !full.contains("```")) return@drawBehind
-                                val boxColor = if (isDarkMode) Color(0xFF1B1F27) else Color(0xFFE3E7EF)
-                                com.example.ui.components.CodeFences.find(full).forEach { f ->
+                                val boxBg = if (isDarkMode) Color(0xFF1B1F27) else Color(0xFFF1F3F7)
+                                val headerBg = if (isDarkMode) Color(0xFF262B35) else Color(0xFFE2E6EE)
+                                val borderColor = if (isDarkMode) Color(0xFF333B48) else Color(0xFFD0D7DE)
+                                val cornerRadiusPx = 12.dp.toPx()
+                                val boxLeft = -8.dp.toPx()
+                                val boxWidth = size.width + 16.dp.toPx()
+
+                                CodeFences.find(full).forEach { f ->
                                     val firstLine = layout.getLineForOffset(f.start)
                                     val lastLine = layout.getLineForOffset((f.end - 1).coerceAtLeast(f.start))
-                                    val top = layout.getLineTop(firstLine)
-                                    val bottom = layout.getLineBottom(lastLine)
+                                    val boxTop = layout.getLineTop(firstLine) - 2.dp.toPx()
+                                    val headerH = (layout.getLineBottom(firstLine) - layout.getLineTop(firstLine) + 4.dp.toPx()).coerceAtLeast(34.dp.toPx())
+                                    val headerBottom = boxTop + headerH
+                                    val boxBottom = layout.getLineBottom(lastLine) + 6.dp.toPx()
+                                    val totalH = (boxBottom - boxTop).coerceAtLeast(headerH + 16.dp.toPx())
+
+                                    // 1. Entire card background
                                     drawRoundRect(
-                                        color = boxColor,
-                                        topLeft = androidx.compose.ui.geometry.Offset(-8.dp.toPx(), top - 4.dp.toPx()),
-                                        size = androidx.compose.ui.geometry.Size(size.width + 16.dp.toPx(), bottom - top + 8.dp.toPx()),
-                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(12.dp.toPx())
+                                        color = boxBg,
+                                        topLeft = androidx.compose.ui.geometry.Offset(boxLeft, boxTop),
+                                        size = androidx.compose.ui.geometry.Size(boxWidth, totalH),
+                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadiusPx)
+                                    )
+
+                                    // 2. Header background with rounded top corners
+                                    val headerPath = androidx.compose.ui.graphics.Path().apply {
+                                        moveTo(boxLeft, headerBottom)
+                                        lineTo(boxLeft, boxTop + cornerRadiusPx)
+                                        quadraticTo(boxLeft, boxTop, boxLeft + cornerRadiusPx, boxTop)
+                                        lineTo(boxLeft + boxWidth - cornerRadiusPx, boxTop)
+                                        quadraticTo(boxLeft + boxWidth, boxTop, boxLeft + boxWidth, boxTop + cornerRadiusPx)
+                                        lineTo(boxLeft + boxWidth, headerBottom)
+                                        close()
+                                    }
+                                    drawPath(headerPath, headerBg)
+
+                                    // 3. Subtle card border
+                                    drawRoundRect(
+                                        color = borderColor,
+                                        topLeft = androidx.compose.ui.geometry.Offset(boxLeft, boxTop),
+                                        size = androidx.compose.ui.geometry.Size(boxWidth, totalH),
+                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadiusPx),
+                                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx())
+                                    )
+
+                                    // 4. Divider line between header and code body
+                                    drawLine(
+                                        color = borderColor,
+                                        start = androidx.compose.ui.geometry.Offset(boxLeft, headerBottom),
+                                        end = androidx.compose.ui.geometry.Offset(boxLeft + boxWidth, headerBottom),
+                                        strokeWidth = 1.dp.toPx()
                                     )
                                 }
                             }
@@ -1342,62 +1514,157 @@ RichTextFormatter.buildStyledText(
                     )
 
                     // Inline images: drawn over their "[img:id]" lines (those lines reserve the height).
-                    textLayout?.let { layout ->
+                    val activeLayout = if (textLayout != null && textLayout!!.layoutInput.text.length == contentValue.text.length) textLayout else stableTextLayout
+                    activeLayout?.let { layout ->
                         val full = contentValue.text
-                        if (layout.layoutInput.text.length == full.length && fieldWidthPx > 0f) {
+                        if (fieldWidthPx > 0f) {
                             Regex("(?m)^\\[img:([A-Za-z0-9]{4,32})]$").findAll(full).forEach { m ->
                                 val att = attachments.firstOrNull { it.id == m.groupValues[1] } ?: return@forEach
-                                val line = layout.getLineForOffset(m.range.first)
+                                val line = layout.getLineForOffset(m.range.first.coerceIn(0, layout.layoutInput.text.length))
                                 val top = layout.getLineTop(line)
-                                AttachmentFrame(
-                                    att = att,
+                                Column(
                                     modifier = Modifier
                                         .offset { IntOffset(0, (top + if (movingImageId == att.id) movingDy else 0f).roundToInt()) }
                                         .width(with(density) { (fieldWidthPx * att.widthFraction).toDp() })
-                                        // two fingers: pinch resizes the image, dragging moves it to another line
-                                        .pinchAndMove(
-                                            key = att.id,
-                                            onScale = { scale ->
-                                                attachments = attachments.map {
-                                                    if (it.id == att.id && !it.locked) it.copy(widthFraction = (it.widthFraction * scale).coerceIn(0.2f, 1f)) else it
+                                ) {
+                                    // Sleek Inline Image Editor Toolbar right inside the note
+                                    if (activeEditImageId == att.id) {
+                                        androidx.compose.material3.Surface(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(bottom = 6.dp),
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = if (isDarkMode) Color(0xFF1E222B) else Color(0xFFF2F4F8),
+                                            shadowElevation = 6.dp,
+                                            border = androidx.compose.foundation.BorderStroke(1.dp, if (isDarkMode) Color(0xFF3B4354) else Color(0xFFCBD5E1))
+                                        ) {
+                                            Column(Modifier.padding(6.dp)) {
+                                                // Row 1: Size presets & Done
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                        listOf(0.33f to "33%", 0.5f to "50%", 0.75f to "75%", 1.0f to "100%").forEach { (frac, label) ->
+                                                            val selected = kotlin.math.abs(att.widthFraction - frac) < 0.08f
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .clip(RoundedCornerShape(6.dp))
+                                                                    .background(if (selected) CrimsonPrimary else Color.Transparent)
+                                                                    .clickable {
+                                                                        if (!att.locked) {
+                                                                            attachments = attachments.map { if (it.id == att.id) it.copy(widthFraction = frac) else it }
+                                                                        }
+                                                                    }
+                                                                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                            ) {
+                                                                Text(label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (selected) Color.White else (if (isDarkMode) Color.LightGray else Color.DarkGray))
+                                                            }
+                                                        }
+                                                    }
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .clip(RoundedCornerShape(6.dp))
+                                                            .background(Color(0xFF22C55E))
+                                                            .clickable { activeEditImageId = null }
+                                                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                                                    ) {
+                                                        Text("Done", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                                    }
                                                 }
-                                            },
-                                            onMove = { dy -> movingImageId = att.id; movingDy += dy },
-                                            onEnd = {
-                                                val dropY = top + movingDy
-                                                val moved = movingImageId == att.id && kotlin.math.abs(movingDy) > 24f
-                                                movingImageId = null
-                                                movingDy = 0f
-                                                if (moved && !att.locked) moveImageLine(att.id, dropY)
+
+                                                Spacer(Modifier.height(4.dp))
+
+                                                // Row 2: Move Up, Move Down, Rotate, Lock, Delete
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                        IconButton(
+                                                            onClick = { if (!att.locked) shiftImage(att.id, moveUp = true) },
+                                                            modifier = Modifier.size(28.dp)
+                                                        ) {
+                                                            Icon(Icons.Default.KeyboardArrowDown, "Move Up", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(16.dp).graphicsLayer(rotationZ = 180f))
+                                                        }
+                                                        IconButton(
+                                                            onClick = { if (!att.locked) shiftImage(att.id, moveUp = false) },
+                                                            modifier = Modifier.size(28.dp)
+                                                        ) {
+                                                            Icon(Icons.Default.KeyboardArrowDown, "Move Down", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(16.dp))
+                                                        }
+                                                        IconButton(
+                                                            onClick = {
+                                                                if (!att.locked) {
+                                                                    attachments = attachments.map { if (it.id == att.id) it.copy(rotation = (it.rotation + 90) % 360) else it }
+                                                                }
+                                                            },
+                                                            modifier = Modifier.size(28.dp)
+                                                        ) {
+                                                            Icon(Icons.Default.Refresh, "Rotate", tint = CrimsonPrimary, modifier = Modifier.size(16.dp))
+                                                        }
+                                                    }
+
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                        IconButton(
+                                                            onClick = {
+                                                                attachments = attachments.map { if (it.id == att.id) it.copy(locked = !it.locked) else it }
+                                                            },
+                                                            modifier = Modifier.size(28.dp)
+                                                        ) {
+                                                            Icon(if (att.locked) Icons.Default.Lock else Icons.Default.LockOpen, "Lock", tint = if (att.locked) Color.Red else (if (isDarkMode) Color.White else Color.Black), modifier = Modifier.size(16.dp))
+                                                        }
+                                                        IconButton(
+                                                            onClick = {
+                                                                if (!att.locked) {
+                                                                    activeEditImageId = null
+                                                                    attachments = attachments.filter { it.id != att.id }
+                                                                    val t = contentValue.text
+                                                                    val marker = ImageMarkers.marker(att.id)
+                                                                    val newT = t.replace("\n$marker\n", "\n").replace("$marker\n", "").replace(marker, "")
+                                                                    pushUndo()
+                                                                    spans = RichTextFormatter.adjustSpansForEdit(spans, t, newT)
+                                                                    contentValue = TextFieldValue(newT, selection = TextRange(contentValue.selection.start.coerceIn(0, newT.length)))
+                                                                } else {
+                                                                    Toast.makeText(context, "Image is locked", Toast.LENGTH_SHORT).show()
+                                                                }
+                                                            },
+                                                            modifier = Modifier.size(28.dp)
+                                                        ) {
+                                                            Icon(Icons.Default.Delete, "Delete", tint = Color.Red, modifier = Modifier.size(16.dp))
+                                                        }
+                                                    }
+                                                }
                                             }
-                                        )
-                                        // long-press, then drag with ONE finger: the image follows your finger and drops on that line
-                                        .pointerInput(att.id, att.locked) {
-                                            detectDragGesturesAfterLongPress(
-                                                onDragStart = { if (!att.locked) { movingImageId = att.id; movingDy = 0f } },
-                                                onDrag = { change, drag -> if (movingImageId == att.id) { change.consume(); movingDy += drag.y } },
-                                                onDragEnd = {
-                                                    val dropY = top + movingDy
-                                                    val moved = movingImageId == att.id && kotlin.math.abs(movingDy) > 24f
-                                                    movingImageId = null
-                                                    movingDy = 0f
-                                                    if (moved && !att.locked) moveImageLine(att.id, dropY)
-                                                },
-                                                onDragCancel = { movingImageId = null; movingDy = 0f }
-                                            )
                                         }
-                                        .clickable { showImageEditModal = att }
-                                )
-                                if (att.locked) {
-                                    Icon(
-                                        Icons.Default.Lock, "Locked",
-                                        tint = Color.White,
+                                    }
+
+                                    // Image Frame with selection border & tap to edit inline
+                                    AttachmentFrame(
+                                        att = att,
                                         modifier = Modifier
-                                            .offset { IntOffset(6, top.roundToInt() + 6) }
-                                            .size(18.dp)
-                                            .background(Color(0x99000000), CircleShape)
-                                            .padding(3.dp)
+                                            .fillMaxWidth()
+                                            .then(
+                                                if (activeEditImageId == att.id) Modifier.border(2.dp, CrimsonPrimary, RoundedCornerShape(10.dp))
+                                                else Modifier
+                                            )
+                                            .clickable {
+                                                activeEditImageId = if (activeEditImageId == att.id) null else att.id
+                                            }
                                     )
+                                    if (att.locked) {
+                                        Icon(
+                                            Icons.Default.Lock, "Locked",
+                                            tint = Color.White,
+                                            modifier = Modifier
+                                                .offset { IntOffset(6, 6) }
+                                                .size(18.dp)
+                                                .background(Color(0x99000000), CircleShape)
+                                                .padding(3.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1439,34 +1706,96 @@ RichTextFormatter.buildStyledText(
                         }
                     }
 
-                    // "Copy" chip on every code box (copies only that box's code)
+                    // Full CodeBoxCard header bar (Title/Lang, Copy button with icon, Maximize button)
                     textLayout?.let { layout ->
                         val full = contentValue.text
                         if (layout.layoutInput.text.length == full.length && fieldWidthPx > 0f) {
-                            com.example.ui.components.CodeFences.find(full).forEach { f ->
+                            val textCol = if (isDarkMode) Color(0xFFE6EAF2) else Color(0xFF1B1F27)
+                            val headerBg = if (isDarkMode) Color(0xFF262B35) else Color(0xFFE2E6EE)
+                            val boxWidth = with(density) { (fieldWidthPx + 16.dp.toPx()).toDp() }
+                            val pad8Px = with(density) { 8.dp.roundToPx() }
+                            val pad2Px = with(density) { 2.dp.toPx() }
+                            val pad4Px = with(density) { 4.dp.toPx() }
+                            val minHPx = with(density) { 34.dp.toPx() }
+
+                            CodeFences.find(full).forEach { f ->
                                 val line = layout.getLineForOffset(f.start)
                                 val top = layout.getLineTop(line)
+                                val headerHPx = (layout.getLineBottom(line) - top + pad4Px).coerceAtLeast(minHPx)
+                                val headerHDp = with(density) { headerHPx.toDp() }
                                 Row(
                                     modifier = Modifier
-                                        .offset { IntOffset((fieldWidthPx - with(density) { 74.dp.toPx() }).roundToInt().coerceAtLeast(0), top.roundToInt()) }
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(CrimsonPrimary.copy(alpha = 0.9f))
-                                        .clickable {
-                                            clipboard.setText(AnnotatedString(f.code))
-                                            Toast.makeText(context, "Code copied", Toast.LENGTH_SHORT).show()
-                                        }
-                                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                                        .offset { IntOffset(-pad8Px, (top - pad2Px).roundToInt()) }
+                                        .width(boxWidth)
+                                        .height(headerHDp)
+                                        .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                                        .background(headerBg)
+                                        .padding(start = 12.dp, end = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Copy", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        text = f.title.ifBlank { f.lang.ifBlank { "Code" } },
+                                        modifier = Modifier.weight(1f),
+                                        fontSize = 11.5.sp,
+                                        color = textCol.copy(alpha = 0.55f),
+                                        maxLines = 1,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                clipboard.setText(AnnotatedString(f.code))
+                                                Toast.makeText(context, "Code copied", Toast.LENGTH_SHORT).show()
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            Icons.Default.ContentCopy,
+                                            contentDescription = "Copy code",
+                                            tint = textCol.copy(alpha = 0.85f),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            text = "Copy",
+                                            fontSize = 11.5.sp,
+                                            color = textCol.copy(alpha = 0.85f),
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { maximizedCodeFence = f },
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.OpenInFull,
+                                            contentDescription = "Maximize",
+                                            tint = textCol.copy(alpha = 0.7f),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                     }
 
-                    // Safe Bottom Space so typing near the bottom never slips behind the toolbar
-                    Spacer(modifier = Modifier.height(160.dp))
+                    // Safe Bottom Space: tapping anywhere in this empty area opens the keyboard and moves cursor to the end
+                    Spacer(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(300.dp)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {
+                                contentFocusRequester.requestFocus()
+                                contentValue = contentValue.copy(selection = TextRange(contentValue.text.length))
+                                keyboardController?.show()
+                            }
+                    )
                 }
 
 
@@ -1974,6 +2303,83 @@ Row(
                 showImageEditModal = null
             }
         )
+    }
+
+    // Fullscreen Dialog for Maximized Code Block (Matching CodeBoxCard)
+    maximizedCodeFence?.let { fence ->
+        val boxBg = if (isDarkMode) Color(0xFF1B1F27) else Color(0xFFF1F3F7)
+        val headerBg = if (isDarkMode) Color(0xFF262B35) else Color(0xFFE2E6EE)
+        val textCol = if (isDarkMode) Color(0xFFE6EAF2) else Color(0xFF1B1F27)
+        val coloredCode = remember(fence.code, fence.lang, isDarkMode) {
+            androidx.compose.ui.text.buildAnnotatedString {
+                append(fence.code)
+                try {
+                    SyntaxHighlighter.tokens(fence.code, fence.lang, isDarkMode).forEach {
+                        addStyle(SpanStyle(color = it.color), it.start, it.end)
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+
+        Dialog(
+            onDismissRequest = { maximizedCodeFence = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+        ) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .background(boxBg)
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(headerBg)
+                        .padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    IconButton(onClick = { maximizedCodeFence = null }) {
+                        Icon(Icons.Default.Close, "Close", tint = textCol)
+                    }
+                    Text(
+                        fence.title.ifBlank { fence.lang.ifBlank { "Code" } },
+                        modifier = Modifier.weight(1f),
+                        color = textCol.copy(alpha = 0.6f),
+                        fontSize = 13.sp,
+                        maxLines = 1
+                    )
+                    Row(
+                        Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                clipboard.setText(AnnotatedString(fence.code))
+                                Toast.makeText(context, "Code copied", Toast.LENGTH_SHORT).show()
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.ContentCopy, "Copy code", tint = textCol, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Copy", color = textCol, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    }
+                }
+                Text(
+                    text = coloredCode,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    lineHeight = 22.sp,
+                    color = textCol,
+                    softWrap = false,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .horizontalScroll(rememberScrollState())
+                        .padding(14.dp)
+                )
+            }
+        }
     }
 }
 

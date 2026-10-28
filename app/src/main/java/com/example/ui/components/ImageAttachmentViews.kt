@@ -74,17 +74,29 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-/** Rotated + cropped bitmap for [att], loaded off the main thread and re-loaded on edit. */
+private val imageBitmapCache = androidx.collection.LruCache<String, ImageBitmap>(40)
+
+/** Rotated + cropped bitmap for [att], cached in memory so typing never causes images to blink. */
 @Composable
 private fun rememberBaseImage(att: AttachmentInfo, maxSide: Int, debounceMs: Long = 0L): ImageBitmap? {
+    val cacheKey = "${att.uri}_${att.rotation}_${att.cropLeft}_${att.cropTop}_${att.cropRight}_${att.cropBottom}_$maxSide"
+    val cached = imageBitmapCache.get(cacheKey)
     val state = produceState<ImageBitmap?>(
-        initialValue = null,
-        att.uri, att.rotation, att.cropLeft, att.cropTop, att.cropRight, att.cropBottom, maxSide
+        initialValue = cached,
+        cacheKey
     ) {
-        if (debounceMs > 0) delay(debounceMs)
-        value = withContext(Dispatchers.IO) { AttachmentRenderer.baseBitmap(att, maxSide)?.asImageBitmap() }
+        if (cached == null) {
+            if (debounceMs > 0) delay(debounceMs)
+            val bmp = withContext(Dispatchers.IO) { AttachmentRenderer.baseBitmap(att, maxSide)?.asImageBitmap() }
+            if (bmp != null) {
+                imageBitmapCache.put(cacheKey, bmp)
+            }
+            value = bmp
+        } else {
+            value = cached
+        }
     }
-    return state.value
+    return state.value ?: cached
 }
 
 /**

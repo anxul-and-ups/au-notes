@@ -39,7 +39,8 @@ class LiveVoiceSession(
     private val tools: JSONArray?,
     private val executeTool: suspend (name: String, args: JSONObject) -> String,
     private val onTurn: (userText: String, assistantText: String) -> Unit,
-    private val onFatal: (String) -> Unit
+    private val onFatal: (String) -> Unit,
+    private val context: android.content.Context? = null
 ) : GeminiLiveClient.Listener {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -80,6 +81,12 @@ class LiveVoiceSession(
         try { track?.release() } catch (_: Exception) {}
         record = null; track = null
         client?.close(); client = null
+        context?.let { ctx ->
+            try {
+                val am = ctx.getSystemService(android.content.Context.AUDIO_SERVICE) as? AudioManager
+                am?.mode = AudioManager.MODE_NORMAL
+            } catch (_: Exception) {}
+        }
         scope.cancel()
     }
 
@@ -201,7 +208,7 @@ class LiveVoiceSession(
         val rate = 24000
         val min = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val t = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder().setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
@@ -209,6 +216,13 @@ class LiveVoiceSession(
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         track = t
+        context?.let { ctx ->
+            try {
+                val am = ctx.getSystemService(android.content.Context.AUDIO_SERVICE) as? AudioManager
+                am?.mode = AudioManager.MODE_NORMAL
+                am?.isSpeakerphoneOn = true
+            } catch (_: Exception) {}
+        }
         t.play()
     }
 

@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for fixing the Voice Command Mode Orb animation in AU Notes. Diagnoses WebView asset loading and WebGL rendering issues, implements both WebSettings fixes for orb.html/three.min.js and a high-performance native Jetpack Compose 3D Particle/Glow Orb, and refines the CommandModeScreen layout so the orb is unobstructed and audio-reactive.",
+  "updatedAt":  "2026-10-27T14:33:36.475454278Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
