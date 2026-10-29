@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -77,6 +78,19 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
+import java.util.Calendar
+import com.example.data.repository.MilkAccountingRepository
 import androidx.compose.ui.zIndex
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.CircularProgressIndicator
@@ -262,11 +276,44 @@ private fun encodeImageToBase64(context: android.content.Context, uri: Uri, maxD
 }
 
 @Composable
+fun GeminiSparkleStar(modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val cx = w / 2f
+        val cy = h / 2f
+
+        val path = Path().apply {
+            moveTo(cx, 0f)
+            quadraticBezierTo(cx, cy, w, cy)
+            quadraticBezierTo(cx, cy, cx, h)
+            quadraticBezierTo(cx, cy, 0f, cy)
+            quadraticBezierTo(cx, cy, cx, 0f)
+            close()
+        }
+
+        val brush = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF38BDF8),
+                Color(0xFF3B82F6),
+                Color(0xFFEC4899),
+                Color(0xFFF59E0B)
+            ),
+            start = androidx.compose.ui.geometry.Offset(0f, 0f),
+            end = androidx.compose.ui.geometry.Offset(w, h)
+        )
+
+        drawPath(path = path, brush = brush)
+    }
+}
+
+@Composable
 fun AiChatScreen(
     isOpen: Boolean,
     isDarkMode: Boolean,
     preferences: AppPreferences,
     repository: NoteRepository,
+    milkRepository: MilkAccountingRepository? = null,
     currentNoteTitle: String? = null,
     currentNoteContent: String? = null,
     autoStartVoiceMode: Boolean = false,
@@ -331,9 +378,15 @@ fun AiChatScreen(
     // Attachment state
     var attachedFileName by remember { mutableStateOf<String?>(null) }
     var attachedContent by remember { mutableStateOf<String?>(null) }
+    var attachedImageUri by remember { mutableStateOf<Uri?>(null) }
     // Rendered PDF page images (base64 PNG) — set instead of attachedContent for PDFs,
     // since PdfRenderer gives page bitmaps, not extractable text.
     var attachedPdfImages by remember { mutableStateOf<List<String>?>(null) }
+
+    // Work Mode toggle & Active Job for cancellable response
+    var isWorkMode by remember { mutableStateOf(false) }
+    var modeMenuExpanded by remember { mutableStateOf(false) }
+    var activeJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     // The last document sent in this chat stays available for follow-up questions
     var sessionAttachmentText by remember { mutableStateOf<String?>(null) }
@@ -382,13 +435,12 @@ fun AiChatScreen(
                         Toast.makeText(context, "Attached $fileName (${images.size} page(s))", Toast.LENGTH_SHORT).show()
                     }
                 } else if (mimeType.startsWith("image/") || Regex("\\.(jpg|jpeg|png|webp|bmp)$", RegexOption.IGNORE_CASE).containsMatchIn(fileName)) {
-                    // Item 20/21: image attachment — sent to the model for OCR /
-                    // text-extraction / visual understanding, reusing the same
-                    // image-input pipeline as PDFs above.
+                    attachedImageUri = uri
                     val encoded = encodeImageToBase64(context, uri)
                     if (encoded == null) {
                         Toast.makeText(context, "Couldn't read that image", Toast.LENGTH_SHORT).show()
                         attachedFileName = null
+                        attachedImageUri = null
                     } else {
                         attachedPdfImages = listOf(encoded)
                         Toast.makeText(context, "Attached $fileName", Toast.LENGTH_SHORT).show()
@@ -509,6 +561,8 @@ fun AiChatScreen(
         "remember_fact" -> "Saving to memory"
         "forget_fact" -> "Updating memory"
         "export_note" -> "Exporting note"
+        "get_milk_summary" -> "Calculating Milk Accounting Summary"
+        "save_milk_entry" -> "Saving Milk Hisab Entry"
         else -> "Running $name"
     }
     fun toolFailed(result: String) = result.startsWith("NOT DONE") || result.startsWith("FAILED") || result.startsWith("Tool failed") || result.contains("not found", true)
@@ -692,6 +746,88 @@ fun AiChatScreen(
                 if (currentNoteTitle.isNullOrBlank() && currentNoteContent.isNullOrBlank()) "No note is open on screen."
                 else "Title: ${currentNoteTitle.orEmpty()}\n\n${currentNoteContent.orEmpty().take(15000)}"
             )
+            "get_milk_summary" -> {
+                if (milkRepository == null) {
+                    ToolOutcome("Milk Accounting database is not available.")
+                } else {
+                    val cal = Calendar.getInstance()
+                    val year = args.optInt("year", cal.get(Calendar.YEAR))
+                    val month = args.optInt("month", cal.get(Calendar.MONTH) + 1)
+                    val records = try {
+                        milkRepository.getRecordsForMonth(year, month).first()
+                    } catch (e: Exception) {
+                        emptyList()
+                    }
+                    var totalQty = 0.0
+                    var totalAmt = 0.0
+                    var maxQty = 0.0
+                    var maxQtyDay = 0
+                    var maxAmt = 0.0
+                    var maxAmtDay = 0
+                    val zeroDays = mutableListOf<Int>()
+                    val testCal = Calendar.getInstance().apply { set(year, month - 1, 1) }
+                    val daysInMonth = testCal.getActualMaximum(Calendar.DAY_OF_MONTH)
+                    for (day in 1..daysInMonth) {
+                        val rec = records.find { it.dayOfMonth == day }
+                        val dayQty = (rec?.morningQty ?: 0.0) + (rec?.eveningQty ?: 0.0)
+                        val dayAmt = (rec?.morningAmount ?: 0.0) + (rec?.eveningAmount ?: 0.0)
+                        totalQty += dayQty
+                        totalAmt += dayAmt
+                        if (dayQty > maxQty) {
+                            maxQty = dayQty
+                            maxQtyDay = day
+                        }
+                        if (dayAmt > maxAmt) {
+                            maxAmt = dayAmt
+                            maxAmtDay = day
+                        }
+                        if (dayQty == 0.0) {
+                            zeroDays.add(day)
+                        }
+                    }
+                    val monthName = java.text.DateFormatSymbols().months.getOrNull(month - 1) ?: "$month"
+                    val summary = "Milk Dairy Summary for $monthName $year:\n" +
+                        "- Total Milk: ${String.format(java.util.Locale.US, "%.2f", totalQty)} KG\n" +
+                        "- Total Amount: ₹${String.format(java.util.Locale.US, "%.2f", totalAmt)}\n" +
+                        "- Peak Delivery Day: ${if (maxQtyDay > 0) "Day $maxQtyDay with ${String.format(java.util.Locale.US, "%.2f", maxQty)} KG" else "None"}\n" +
+                        "- Highest Earnings Day: ${if (maxAmtDay > 0) "Day $maxAmtDay with ₹${String.format(java.util.Locale.US, "%.2f", maxAmt)}" else "None"}\n" +
+                        "- Days Without Milk Delivery: ${if (zeroDays.isEmpty()) "None (Milk delivered every day)" else zeroDays.joinToString(", ") { "Day $it" }}\n" +
+                        "- Total Recorded Entries in Database: ${records.size}"
+                    ToolOutcome(summary)
+                }
+            }
+            "save_milk_entry" -> {
+                if (milkRepository == null) {
+                    ToolOutcome("Milk Accounting database is not available.")
+                } else {
+                    val cal = Calendar.getInstance()
+                    val year = args.optInt("year", cal.get(Calendar.YEAR))
+                    val month = args.optInt("month", cal.get(Calendar.MONTH) + 1)
+                    val day = args.optInt("day", cal.get(Calendar.DAY_OF_MONTH))
+                    val morningQty = args.optDouble("morning_qty", 0.0)
+                    val morningRate = args.optDouble("morning_rate", 0.0)
+                    val morningAmt = args.optDouble("morning_amount", if (morningRate > 0) morningQty * morningRate else 0.0)
+                    val eveningQty = args.optDouble("evening_qty", 0.0)
+                    val eveningRate = args.optDouble("evening_rate", 0.0)
+                    val eveningAmt = args.optDouble("evening_amount", if (eveningRate > 0) eveningQty * eveningRate else 0.0)
+                    val notes = args.optString("notes", "")
+
+                    val dateStr = String.format(java.util.Locale.US, "%04d-%02d-%02d", year, month, day)
+                    val entity = com.example.data.model.MilkRecordEntity(
+                        date = dateStr,
+                        year = year,
+                        month = month,
+                        dayOfMonth = day,
+                        morningQty = if (morningQty > 0) morningQty else null,
+                        morningAmount = if (morningAmt > 0) morningAmt else null,
+                        eveningQty = if (eveningQty > 0) eveningQty else null,
+                        eveningAmount = if (eveningAmt > 0) eveningAmt else null,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    milkRepository.saveRecord(entity)
+                    ToolOutcome("Successfully saved milk entry for Day $day/$month/$year: Morning ${morningQty}KG (₹$morningAmt), Evening ${eveningQty}KG (₹$eveningAmt).")
+                }
+            }
             else -> ToolOutcome("Unknown tool '$name'.")
         }
     }
@@ -884,6 +1020,7 @@ fun AiChatScreen(
         attachedFileName = null
         attachedContent = null
         attachedPdfImages = null
+        attachedImageUri = null
 
         messages.add(ChatMessage(sender = "user", text = userMsg, attachedFileName = currentAttachmentName))
         isLoading = true
@@ -891,37 +1028,39 @@ fun AiChatScreen(
         val botMsgId = java.util.UUID.randomUUID().toString()
         messages.add(ChatMessage(id = botMsgId, sender = "bot", text = ""))
 
-        coroutineScope.launch {
-            val (key, baseUrl, chosenModel) = when (activeProvider) {
-                "Gemini" -> Triple(preferences.getEffectiveApiKey(), "", preferences.selectedModel.value)
-                else -> {
-                    val entry = providerEntries[activeProvider]
-                    Triple(entry?.apiKey.orEmpty(), entry?.baseUrl.orEmpty(), entry?.model.orEmpty())
+        val job = coroutineScope.launch {
+            try {
+                val (key, baseUrl, chosenModel) = when (activeProvider) {
+                    "Gemini" -> Triple(preferences.getEffectiveApiKey(), "", preferences.selectedModel.value)
+                    else -> {
+                        val entry = providerEntries[activeProvider]
+                        Triple(entry?.apiKey.orEmpty(), entry?.baseUrl.orEmpty(), entry?.model.orEmpty())
+                    }
                 }
-            }
 
-            val turns = messages.filter { it.id != botMsgId }.dropLast(1)
-                .map { ConversationTurn(it.sender, it.text) }.toMutableList()
+                val turns = messages.filter { it.id != botMsgId }.dropLast(1)
+                    .map { ConversationTurn(it.sender, it.text) }.toMutableList()
 
-            val openNoteContext = buildString {
-                if (!currentNoteTitle.isNullOrBlank()) append("Title: \"$currentNoteTitle\"\n")
-                if (!currentNoteContent.isNullOrBlank()) append("Content:\n$currentNoteContent\n")
-            }.ifBlank { null }
+                val openNoteContext = buildString {
+                    if (!currentNoteTitle.isNullOrBlank()) append("Title: \"$currentNoteTitle\"\n")
+                    if (!currentNoteContent.isNullOrBlank()) append("Content:\n$currentNoteContent\n")
+                }.ifBlank { null }
 
-            val enabled = AgentTools.ALL.filter {
-                it.id !in disabledTools &&
-                    (it.id != "edit_current_note" || onModifyCurrentNote != null || onApplyAgentNoteToEditor != null)
-            }
-            val notesIndex = try {
-                repository.allActiveNotes.first().filter { agentVisible(it) }.take(40)
-                    .joinToString("\n") { "${it.id} | ${it.title} | ${it.folder}" }
-            } catch (e: Exception) { "" }
-            val sessionText = sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" }
-            val memoryFacts = if (preferences.memoryEnabled.value) preferences.agentMemory.value else emptyList()
-            val system = AgentTools.buildSystemPrompt(
-                userName, enabled, openNoteContext, notesIndex, sessionText,
-                memory = memoryFacts
-            )
+                val enabled = AgentTools.ALL.filter {
+                    it.id !in disabledTools &&
+                        (it.id != "edit_current_note" || onModifyCurrentNote != null || onApplyAgentNoteToEditor != null)
+                }
+                val notesIndex = try {
+                    repository.allActiveNotes.first().filter { agentVisible(it) }.take(40)
+                        .joinToString("\n") { "${it.id} | ${it.title} | ${it.folder}" }
+                } catch (e: Exception) { "" }
+                val sessionText = sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" }
+                val memoryFacts = if (preferences.memoryEnabled.value) preferences.agentMemory.value else emptyList()
+                val system = AgentTools.buildSystemPrompt(
+                    userName, enabled, openNoteContext, notesIndex, sessionText,
+                    memory = memoryFacts,
+                    workMode = isWorkMode
+                )
 
             var prompt = buildString {
                 if (!docText.isNullOrBlank()) {
@@ -988,13 +1127,34 @@ fun AiChatScreen(
             sessionManager.saveSession(ChatSession(currentSessionId, firstUser, System.currentTimeMillis(), messages.toList()))
             savedSessions.clear()
             savedSessions.addAll(sessionManager.loadAllSessions())
-            if (voiceManager.isVoiceModeActive && finalText.isNotBlank()) voiceManager.speak(finalText)
+                if (voiceManager.isVoiceModeActive && finalText.isNotBlank()) voiceManager.speak(finalText)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                val idx = messages.indexOfFirst { it.id == botMsgId }
+                if (idx != -1 && messages[idx].text.isBlank()) {
+                    messages[idx] = messages[idx].copy(text = "[Response stopped by user]")
+                }
+            } catch (e: Exception) {
+                val idx = messages.indexOfFirst { it.id == botMsgId }
+                if (idx != -1 && messages[idx].text.isBlank()) {
+                    messages[idx] = messages[idx].copy(text = "⚠️ Error: ${e.message}")
+                }
+            } finally {
+                isLoading = false
+                activeJob = null
+            }
         }
+        activeJob = job
     }
 
     fun startNewChat() {
+        activeJob?.cancel()
+        isLoading = false
         sessionAttachmentText = null
         sessionAttachmentImages = null
+        attachedFileName = null
+        attachedContent = null
+        attachedPdfImages = null
+        attachedImageUri = null
         if (messages.size > 1) {
             val firstUserMsg = messages.firstOrNull { it.sender == "user" }?.text?.take(30) ?: "Session"
             sessionManager.saveSession(
@@ -1062,9 +1222,13 @@ fun AiChatScreen(
                     )
                     .background(
                         if (isDarkMode) {
-                            Brush.verticalGradient(listOf(Color(0xF514030B), Color(0xFB1E0512), Color(0xFF0C0106)))
+                            Brush.verticalGradient(listOf(Color(0xFF0F172A), Color(0xFF090D16), Color(0xFF030712)))
                         } else {
-                            Brush.verticalGradient(listOf(Color(0xF8FFFFFF), Color(0xF4FFF0F4)))
+                            Brush.verticalGradient(
+                                0.0f to Color(0xFFFFFFFF),
+                                0.65f to Color(0xFFF6FAFF),
+                                1.0f to Color(0xFFDBEBFF)
+                            )
                         }
                     )
             ) {
@@ -1100,110 +1264,125 @@ fun AiChatScreen(
                         )
                     }
 
-                    // Top Header Bar
+                    // Top Header Bar (Gemini styled, no profile avatar)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.weight(1f),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        // Left: Hamburger menu
+                        IconButton(
+                            onClick = { isAgentSidebarOpen = true },
+                            modifier = Modifier.size(40.dp)
                         ) {
-                            // Hamburger menu to open Sidebar
-                            NeuIconButton(
-                                icon = Icons.Default.Menu,
+                            Icon(
+                                Icons.Default.Menu,
                                 contentDescription = "Open Sidebar",
-                                isDarkMode = isDarkMode,
-                                size = 36.dp,
-                                iconSize = 20.dp,
-                                tint = if (isDarkMode) Color.White else Color.Black,
-                                onClick = { isAgentSidebarOpen = true }
+                                tint = if (isDarkMode) Color.White else Color(0xFF1E293B),
+                                modifier = Modifier.size(24.dp)
                             )
+                        }
 
-                            Image(
-                                painter = painterResource(R.drawable.au_bot_icon_1790271144581),
-                                contentDescription = "AU Agent",
+                        // Center: Smooth Mode dropdown toggle ("Chat Mode" vs "Work Mode")
+                        Box {
+                            Row(
                                 modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(CircleShape)
-                            )
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "AU Agent - $activeModelDisplayName",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = if (isDarkMode) Color.White else Color(0xFF111111)
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(if (isDarkMode) Color(0x33FFFFFF) else Color(0x0F000000))
+                                    .clickable { modeMenuExpanded = true }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Crossfade(targetState = isWorkMode, label = "mode_crossfade") { work ->
+                                    Text(
+                                        text = if (work) "Work Mode" else "Chat Mode",
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isDarkMode) Color.White else Color(0xFF1E293B)
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Select Mode",
+                                    tint = if (isDarkMode) Color.White.copy(0.7f) else Color(0xFF64748B),
+                                    modifier = Modifier.size(18.dp)
                                 )
-                                Text(
-                                    text = "● Online • $activeProvider",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFF4CAF50)
+                            }
+
+                            DropdownMenu(
+                                expanded = modeMenuExpanded,
+                                onDismissRequest = { modeMenuExpanded = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text("Chat Mode", fontWeight = if (!isWorkMode) FontWeight.Bold else FontWeight.Normal)
+                                            Text("Fast, interactive everyday note assistant", fontSize = 11.sp, color = Color.Gray)
+                                        }
+                                    },
+                                    onClick = {
+                                        isWorkMode = false
+                                        modeMenuExpanded = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text("Work Mode", fontWeight = if (isWorkMode) FontWeight.Bold else FontWeight.Normal)
+                                            Text("Deep comprehensive breakdowns, analytics & full explanations", fontSize = 11.sp, color = Color.Gray)
+                                        }
+                                    },
+                                    onClick = {
+                                        isWorkMode = true
+                                        modeMenuExpanded = false
+                                    }
                                 )
                             }
                         }
 
+                        // Right: New chat pencil icon, Live/Voice, Compact toggle & Close button (explicitly NO profile avatar)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            // Voice Assistant Button (Gemini Live Style)
-                            NeuIconButton(
-                                icon = if (voiceManager.isVoiceModeActive) Icons.Default.VolumeUp else Icons.Default.RecordVoiceOver,
-                                contentDescription = "Voice Assistant",
-                                isDarkMode = isDarkMode,
-                                size = 34.dp,
-                                iconSize = 18.dp,
-                                tint = if (voiceManager.isVoiceModeActive) Color(0xFF4CAF50) else CrimsonPrimary,
-                                onClick = { toggleVoiceMode() }
-                            )
+                            IconButton(
+                                onClick = { startNewChat() },
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Edit,
+                                    contentDescription = "New Chat",
+                                    tint = if (isDarkMode) Color.White else Color(0xFF1E293B),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
 
-                            // + New Chat Button
-                            NeuIconButton(
-                                icon = Icons.Default.Add,
-                                contentDescription = "New Chat",
-                                isDarkMode = isDarkMode,
-                                size = 34.dp,
-                                iconSize = 18.dp,
-                                tint = CrimsonPrimary,
-                                onClick = { startNewChat() }
-                            )
+                            IconButton(
+                                onClick = { toggleVoiceMode() },
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                Icon(
+                                    if (voiceManager.isVoiceModeActive) Icons.Default.VolumeUp else Icons.Default.RecordVoiceOver,
+                                    contentDescription = "Voice Assistant",
+                                    tint = if (voiceManager.isVoiceModeActive) Color(0xFF4CAF50) else CrimsonPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
 
-                            // Expand/Collapse Compact Toggle
-                            NeuIconButton(
-                                icon = if (isCompactMode) Icons.Default.Fullscreen else Icons.Default.FullscreenExit,
-                                contentDescription = if (isCompactMode) "Maximize" else "Minimize to floating window",
-                                isDarkMode = isDarkMode,
-                                size = 34.dp,
-                                iconSize = 18.dp,
-                                tint = if (isDarkMode) Color.White else Color.Black,
-                                onClick = {
-                                    if (isCompactMode) {
-                                        isCompactMode = false
-                                        offsetX = 0f
-                                        offsetY = 0f
-                                    } else {
-                                        isCompactMode = true
-                                    }
-                                }
-                            )
-
-                            NeuIconButton(
-                                icon = Icons.Default.Close,
-                                contentDescription = "Close AU Agent",
-                                isDarkMode = isDarkMode,
-                                size = 34.dp,
-                                iconSize = 18.dp,
-                                tint = CrimsonPrimary,
-                                onClick = onClose
-                            )
+                            IconButton(
+                                onClick = onClose,
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Close",
+                                    tint = if (isDarkMode) Color.White.copy(0.7f) else Color(0xFF64748B),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                         }
                     }
 
@@ -1230,15 +1409,51 @@ fun AiChatScreen(
                         }
                     }
 
-                    // Full-screen Chat Messages List
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 14.dp, vertical = 4.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                            items(messages) { msg ->
+                    // If no active chat yet, show Gemini empty state ("The mic is yours, ANSHUL")
+                    if (messages.size <= 1) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                GeminiSparkleStar(modifier = Modifier.size(56.dp))
+                                Spacer(Modifier.height(10.dp))
+                                Text(
+                                    text = "The mic is yours,",
+                                    fontSize = 28.sp,
+                                    fontWeight = FontWeight.Normal,
+                                    color = if (isDarkMode) Color(0xFFE2E8F0) else Color(0xFF1E293B)
+                                )
+                                Text(
+                                    text = userName.ifBlank { "ANSHUL" }.uppercase(),
+                                    fontSize = 28.sp,
+                                    fontWeight = FontWeight.Normal,
+                                    color = if (isDarkMode) Color(0xFFCBD5E1) else Color(0xFF1E293B)
+                                )
+                            }
+                        }
+                    } else {
+                        // Full-screen Chat Messages List with iOS style pop-up animation
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 14.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(messages, key = { it.id }) { msg ->
+                                androidx.compose.animation.AnimatedVisibility(
+                                    visible = true,
+                                    enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) +
+                                        scaleIn(initialScale = 0.93f, animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)) +
+                                        slideInVertically(spring(stiffness = Spring.StiffnessMediumLow)) { it / 4 }
+                                ) {
                                 if (msg.sender == "bot") {
                                     Box(
                                         modifier = Modifier
@@ -1380,6 +1595,7 @@ fun AiChatScreen(
                                     }
                                 }
                             }
+                        }
 
                             if (isLoading || agentSteps.isNotEmpty()) {
                                 item {
@@ -1419,108 +1635,119 @@ fun AiChatScreen(
                                 }
                             }
                         }
+                    }
 
-                        // Bottom Unified Input Bar with integrated attachment feature
-                        Row(
+                        // Bottom Floating Gemini Input Capsule (with thumbnail attachment preview and stop button)
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.Bottom,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
                         ) {
-                            // Unified Chat Capsule with integrated attachment & mic
-                            GlassCard(
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(22.dp),
-                                isDarkMode = isDarkMode,
-                                isInset = true,
-                                elevation = 1.dp
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    // Attached file chip inside input capsule
-                                    attachedFileName?.let { fname ->
-                                        Row(
-                                            modifier = Modifier
-                                                .padding(start = 6.dp, top = 4.dp, bottom = 4.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(CrimsonPrimary.copy(alpha = 0.15f))
-                                                .padding(horizontal = 8.dp, vertical = 3.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                // Attached file preview chip above input capsule
+                                if (attachedFileName != null) {
+                                    Row(
+                                        modifier = Modifier
+                                            .padding(bottom = 8.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(if (isDarkMode) Color(0xFF1E293B) else Color.White)
+                                            .border(1.dp, if (isDarkMode) Color(0x33FFFFFF) else Color(0x1F000000), RoundedCornerShape(14.dp))
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        if (attachedImageUri != null) {
+                                            AsyncImage(
+                                                model = attachedImageUri,
+                                                contentDescription = "Image preview",
+                                                modifier = Modifier
+                                                    .size(38.dp)
+                                                    .clip(RoundedCornerShape(8.dp)),
+                                                contentScale = ContentScale.Crop
+                                            )
+                                        } else {
                                             Icon(
                                                 Icons.Default.AttachFile,
                                                 contentDescription = null,
                                                 tint = CrimsonPrimary,
-                                                modifier = Modifier.size(12.dp)
+                                                modifier = Modifier.size(20.dp)
                                             )
+                                        }
+                                        Column(modifier = Modifier.widthIn(max = 200.dp)) {
                                             Text(
-                                                text = fname,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = CrimsonPrimary,
+                                                text = attachedFileName ?: "Attachment",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Medium,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.widthIn(max = 180.dp)
+                                                color = if (isDarkMode) Color.White else Color.Black
                                             )
+                                            Text(
+                                                text = if (attachedImageUri != null) "Image" else "Document",
+                                                fontSize = 10.sp,
+                                                color = Color.Gray
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                attachedFileName = null
+                                                attachedContent = null
+                                                attachedPdfImages = null
+                                                attachedImageUri = null
+                                            },
+                                            modifier = Modifier.size(22.dp)
+                                        ) {
                                             Icon(
                                                 Icons.Default.Close,
-                                                contentDescription = "Remove attachment",
-                                                tint = CrimsonPrimary,
-                                                modifier = Modifier
-                                                    .size(14.dp)
-                                                    .clickable {
-                                                        attachedFileName = null
-                                                        attachedContent = null
-                                                        attachedPdfImages = null
-                                                    }
+                                                contentDescription = "Remove",
+                                                tint = Color.Gray,
+                                                modifier = Modifier.size(16.dp)
                                             )
                                         }
                                     }
+                                }
 
+                                // Floating Capsule Input Pill
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(32.dp),
+                                    color = if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.95f) else Color.White,
+                                    shadowElevation = 6.dp,
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        1.dp,
+                                        if (isDarkMode) Color(0x33FFFFFF) else Color(0x14000000)
+                                    )
+                                ) {
                                     Row(
-                                        modifier = Modifier.fillMaxWidth(),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 8.dp, vertical = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        // Attachment button integrated inside input bar
+                                        // + button on the left (Gemini UI style)
                                         IconButton(
                                             onClick = {
                                                 attachmentPicker.launch(arrayOf("text/*", "application/pdf", "application/json", "image/*", "*/*"))
                                             },
-                                            modifier = Modifier.size(36.dp)
+                                            modifier = Modifier.size(40.dp)
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Default.AttachFile,
-                                                contentDescription = "Attach File",
-                                                tint = if (attachedFileName != null) CrimsonPrimary else (if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray),
-                                                modifier = Modifier.size(20.dp)
+                                                imageVector = Icons.Default.Add,
+                                                contentDescription = "Add attachment",
+                                                tint = if (isDarkMode) Color.White else Color(0xFF374151),
+                                                modifier = Modifier.size(24.dp)
                                             )
                                         }
 
-                                        IconButton(
-                                            onClick = { showToolsSheet = true },
-                                            modifier = Modifier.size(36.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Build,
-                                                contentDescription = "Agent tools",
-                                                tint = if (disabledTools.isEmpty()) (if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray) else CrimsonPrimary,
-                                                modifier = Modifier.size(19.dp)
-                                            )
-                                        }
-
+                                        // Text field with placeholder "Ask A-U agent"
                                         TextField(
                                             value = inputText,
                                             onValueChange = { inputText = it },
                                             placeholder = {
                                                 Text(
-                                                    "Message AU Agent...",
-                                                    fontSize = 13.sp,
-                                                    color = if (isDarkMode) Color.White.copy(0.4f) else Color.Gray
+                                                    "Ask A-U agent",
+                                                    fontSize = 15.sp,
+                                                    color = if (isDarkMode) Color.White.copy(0.45f) else Color(0xFF6B7280)
                                                 )
                                             },
                                             maxLines = 5,
@@ -1534,7 +1761,7 @@ fun AiChatScreen(
                                             ),
                                             modifier = Modifier
                                                 .weight(1f)
-                                                .heightIn(min = 36.dp, max = 110.dp)
+                                                .heightIn(min = 40.dp, max = 120.dp)
                                                 .verticalScroll(rememberScrollState())
                                                 .bringIntoViewRequester(chatInputBringIntoViewRequester)
                                                 .onFocusEvent {
@@ -1544,53 +1771,90 @@ fun AiChatScreen(
                                                 }
                                         )
 
-                                        IconButton(
-                                            onClick = {
-                                                try {
-                                                    val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                                        putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                                        putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Speak to AU Agent…")
+                                        // Right controls: Spinning circle with Stop Square when loading, else Send or Mic/Waveform
+                                        if (isLoading) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable {
+                                                        activeJob?.cancel()
+                                                        voiceManager.stopSpeaking()
+                                                        isLoading = false
+                                                        Toast.makeText(context, "Response stopped", Toast.LENGTH_SHORT).show()
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(32.dp),
+                                                    color = CrimsonPrimary,
+                                                    strokeWidth = 2.5.dp
+                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(11.dp)
+                                                        .clip(RoundedCornerShape(2.dp))
+                                                        .background(CrimsonPrimary)
+                                                )
+                                            }
+                                        } else if (inputText.isNotBlank() || attachedFileName != null) {
+                                            IconButton(
+                                                onClick = { handleSend(inputText) },
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Brush.linearGradient(listOf(CrimsonPrimary, Color(0xFFE11D48))))
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Send,
+                                                    contentDescription = "Send",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        } else {
+                                            IconButton(
+                                                onClick = {
+                                                    try {
+                                                        val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                                            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                                            putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Speak to A-U agent…")
+                                                        }
+                                                        voiceInputLauncher.launch(intent)
+                                                    } catch (e: Exception) {
+                                                        Toast.makeText(context, "Voice input not available", Toast.LENGTH_SHORT).show()
                                                     }
-                                                    voiceInputLauncher.launch(intent)
-                                                } catch (e: Exception) {
-                                                    Toast.makeText(context, "Voice input isn't available on this device", Toast.LENGTH_SHORT).show()
-                                                }
-                                            },
-                                            modifier = Modifier.size(36.dp)
+                                                },
+                                                modifier = Modifier.size(40.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Mic,
+                                                    contentDescription = "Voice input",
+                                                    tint = if (isDarkMode) Color.White else Color(0xFF374151),
+                                                    modifier = Modifier.size(22.dp)
+                                                )
+                                            }
+
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(38.dp)
+                                                    .clip(CircleShape)
+                                                    .background(if (isDarkMode) Color(0xFF334155) else Color(0xFFE0F2FE))
+                                                .clickable { toggleVoiceMode() },
+                                            contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Default.Mic,
-                                                contentDescription = "Voice input",
-                                                tint = CrimsonPrimary,
+                                                Icons.Default.GraphicEq,
+                                                contentDescription = "Live voice",
+                                                tint = if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0284C7),
                                                 modifier = Modifier.size(20.dp)
                                             )
                                         }
                                     }
                                 }
                             }
-
-                            // Send button
-                            GlassCard(
-                                shape = CircleShape,
-                                isDarkMode = isDarkMode,
-                                elevation = 3.dp,
-                                onClick = { handleSend(inputText) }
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(42.dp)
-                                        .background(Brush.linearGradient(listOf(CrimsonPrimary, Color(0xFFE11D48)))),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        Icons.Default.Send,
-                                        contentDescription = "Send",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
                         }
+                    }
                     }
                 }
             }

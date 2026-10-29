@@ -130,7 +130,6 @@ fun AccountantScreen(
     var editingDay by remember { mutableStateOf<Int?>(null) }
 
     // Modals
-    var showAiSummaryModal by remember { mutableStateOf(false) }
     var showExportPdfModal by remember { mutableStateOf(false) }
     var exportResult by remember { mutableStateOf<SavedExport?>(null) }
     var isExporting by remember { mutableStateOf(false) }
@@ -195,19 +194,6 @@ fun AccountantScreen(
                         color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
                     )
                 }
-
-                // AI Summary Button
-                NeuIconButton(
-                    icon = Icons.Default.AutoAwesome,
-                    contentDescription = "AI Hisab Summary",
-                    isDarkMode = isDarkMode,
-                    size = 38.dp,
-                    iconSize = 18.dp,
-                    tint = Color(0xFFFF9800),
-                    onClick = { showAiSummaryModal = true }
-                )
-
-                Spacer(modifier = Modifier.width(8.dp))
 
                 // PDF Export Button
                 NeuIconButton(
@@ -374,7 +360,7 @@ fun AccountantScreen(
                     HorizontalDivider(color = if (isDarkMode) Color(0x1FFFFFFF) else Color(0x1F000000))
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Subah vs Shaam Split Breakdown
+                    // Morning vs Evening Split Breakdown
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
@@ -382,13 +368,13 @@ fun AccountantScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Default.WbSunny,
-                                contentDescription = "Subah",
+                                contentDescription = "Morning",
                                 tint = Color(0xFFFFB300),
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "Subah: ${MilkHisabCalculator.formatQty(summary.monthlyMorningQty)} KG (₹${MilkHisabCalculator.formatAmount(summary.monthlyMorningAmount)})",
+                                text = "Morning: ${MilkHisabCalculator.formatQty(summary.monthlyMorningQty)} KG (₹${MilkHisabCalculator.formatAmount(summary.monthlyMorningAmount)})",
                                 fontSize = 11.sp,
                                 color = if (isDarkMode) Color.White.copy(alpha = 0.8f) else Color.Black
                             )
@@ -397,13 +383,13 @@ fun AccountantScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Default.Nightlight,
-                                contentDescription = "Shaam",
+                                contentDescription = "Evening",
                                 tint = Color(0xFF7E57C2),
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "Shaam: ${MilkHisabCalculator.formatQty(summary.monthlyEveningQty)} KG (₹${MilkHisabCalculator.formatAmount(summary.monthlyEveningAmount)})",
+                                text = "Evening: ${MilkHisabCalculator.formatQty(summary.monthlyEveningQty)} KG (₹${MilkHisabCalculator.formatAmount(summary.monthlyEveningAmount)})",
                                 fontSize = 11.sp,
                                 color = if (isDarkMode) Color.White.copy(alpha = 0.8f) else Color.Black
                             )
@@ -563,15 +549,6 @@ fun AccountantScreen(
         )
     }
 
-    // AI Hinglish Hisab Summary Modal
-    if (showAiSummaryModal) {
-        AiSummaryDialog(
-            summary = summary,
-            isDarkMode = isDarkMode,
-            onDismiss = { showAiSummaryModal = false }
-        )
-    }
-
     // Export PDF Modal
     if (showExportPdfModal) {
         ExportPdfDialog(
@@ -585,7 +562,7 @@ fun AccountantScreen(
                 showExportPdfModal = false
                 exportResult = null
             },
-            onExport = {
+            onExport = { periodFilter ->
                 isExporting = true
                 coroutineScope.launch {
                     val result = withContext(Dispatchers.IO) {
@@ -593,7 +570,8 @@ fun AccountantScreen(
                             context = context,
                             year = selectedYear,
                             month = selectedMonth,
-                            recordsMap = recordsMap
+                            recordsMap = recordsMap,
+                            periodFilter = periodFilter
                         )
                     }
                     isExporting = false
@@ -782,13 +760,13 @@ private fun DayRowCard(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Subah: ",
+                            text = "Morning: ",
                             fontSize = 11.5.sp,
                             fontWeight = FontWeight.Medium,
                             color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
                         )
                         Text(
-                            text = if (record?.morningQty != null) "${MilkHisabCalculator.formatQty(record.morningQty)} KG" else "---",
+                            text = if (record?.morningQty != null) "${MilkHisabCalculator.formatQty(record.morningQty)} KG" else "0 KG",
                             fontSize = 11.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (isDarkMode) Color.White else Color.Black
@@ -796,7 +774,7 @@ private fun DayRowCard(
                     }
 
                     Text(
-                        text = if (record?.morningAmount != null) "₹${MilkHisabCalculator.formatAmount(record.morningAmount)}" else "---",
+                        text = if (record?.morningAmount != null) "₹${MilkHisabCalculator.formatAmount(record.morningAmount)}" else "₹0",
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = if (record?.morningAmount != null) CrimsonPrimary else Color.Gray
@@ -805,7 +783,7 @@ private fun DayRowCard(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Evening (Shaam)
+                // Evening
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -819,13 +797,13 @@ private fun DayRowCard(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Shaam: ",
+                            text = "Evening: ",
                             fontSize = 11.5.sp,
                             fontWeight = FontWeight.Medium,
                             color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
                         )
                         Text(
-                            text = if (record?.eveningQty != null) "${MilkHisabCalculator.formatQty(record.eveningQty)} KG" else "---",
+                            text = if (record?.eveningQty != null) "${MilkHisabCalculator.formatQty(record.eveningQty)} KG" else "0 KG",
                             fontSize = 11.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (isDarkMode) Color.White else Color.Black
@@ -833,7 +811,7 @@ private fun DayRowCard(
                     }
 
                     Text(
-                        text = if (record?.eveningAmount != null) "₹${MilkHisabCalculator.formatAmount(record.eveningAmount)}" else "---",
+                        text = if (record?.eveningAmount != null) "₹${MilkHisabCalculator.formatAmount(record.eveningAmount)}" else "₹0",
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = if (record?.eveningAmount != null) CrimsonPrimary else Color.Gray
@@ -935,9 +913,9 @@ private fun DayEditDialog(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Section 1: Subah (Morning)
+                // Section 1: Morning
                 Text(
-                    text = "☀️ SUBAH (MORNING)",
+                    text = "☀️ MORNING",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFFFFB300),
@@ -989,9 +967,9 @@ private fun DayEditDialog(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Section 2: Shaam (Evening)
+                // Section 2: Evening
                 Text(
-                    text = "🌙 SHAAM (EVENING)",
+                    text = "🌙 EVENING",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF9575CD),
@@ -1152,110 +1130,6 @@ private fun DayEditDialog(
 }
 
 @Composable
-private fun AiSummaryDialog(
-    summary: com.example.data.model.MonthlyHisabSummary,
-    isDarkMode: Boolean,
-    onDismiss: () -> Unit
-) {
-    Dialog(onDismissRequest = onDismiss) {
-        GlassCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(10.dp),
-            isDarkMode = isDarkMode,
-            strong = true,
-            elevation = 12.dp
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = Color(0xFFFF9800),
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "AI Hisab Summary",
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = CrimsonPrimary
-                        )
-                    }
-
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", tint = if (isDarkMode) Color.White else Color.Black)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "${summary.monthName} ${summary.year} ka Doodh Hisab Analysis",
-                    fontSize = 12.sp,
-                    color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
-                )
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Hinglish structured explanation
-                val explanation = buildString {
-                    append("🥛 **Kripya dhyaan dein:** Yeh hisaab poori tarah se device ke verified records aur pure arithmetic se banaya gaya hai.\n\n")
-                    append("📊 **Mahine Ka Kul Hisaab (${summary.monthName} ${summary.year}):**\n")
-                    append("• **Kul Doodh Ki Matra:** ${MilkHisabCalculator.formatQty(summary.grandTotalQty)} KG\n")
-                    append("• **Kul Bani Rashi:** ₹ ${MilkHisabCalculator.formatAmount(summary.grandTotalAmount)}\n\n")
-
-                    append("⏰ **Subah Aur Shaam Ka Batwara:**\n")
-                    append("• **Subah (Morning):** ${MilkHisabCalculator.formatQty(summary.monthlyMorningQty)} KG  (₹ ${MilkHisabCalculator.formatAmount(summary.monthlyMorningAmount)})\n")
-                    append("• **Shaam (Evening):** ${MilkHisabCalculator.formatQty(summary.monthlyEveningQty)} KG  (₹ ${MilkHisabCalculator.formatAmount(summary.monthlyEveningAmount)})\n\n")
-
-                    append("🗓️ **10-Din Ka Period Breakdown:**\n")
-                    append("1. **Period 1 (${summary.period1.startDay}–${summary.period1.endDay} ${summary.monthName}):**\n")
-                    append("   Total: ${MilkHisabCalculator.formatQty(summary.period1.totalQty)} KG • Rashi: ₹ ${MilkHisabCalculator.formatAmount(summary.period1.totalAmount)}\n")
-                    append("2. **Period 2 (${summary.period2.startDay}–${summary.period2.endDay} ${summary.monthName}):**\n")
-                    append("   Total: ${MilkHisabCalculator.formatQty(summary.period2.totalQty)} KG • Rashi: ₹ ${MilkHisabCalculator.formatAmount(summary.period2.totalAmount)}\n")
-                    append("3. **Period 3 (${summary.period3.startDay}–${summary.period3.endDay} ${summary.monthName}):**\n")
-                    append("   Total: ${MilkHisabCalculator.formatQty(summary.period3.totalQty)} KG • Rashi: ₹ ${MilkHisabCalculator.formatAmount(summary.period3.totalAmount)}\n\n")
-
-                    if (summary.grandTotalQty > 0.0) {
-                        val avgRate = if (summary.grandTotalQty > 0) summary.grandTotalAmount / summary.grandTotalQty else 0.0
-                        append("💡 **Ausat (Average Rate):** Lagbhag ₹ ${"%.2f".format(Locale.ENGLISH, avgRate)} prati KG doodh ka rate mila hai.\n")
-                    } else {
-                        append("ℹ️ Is mahine mein abhi tak koi doodh entry darj nahi hui hai. Dates par tap karke entries save karein.\n")
-                    }
-                }
-
-                Text(
-                    text = explanation,
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp,
-                    color = if (isDarkMode) Color.White.copy(alpha = 0.9f) else Color(0xFF222222)
-                )
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                Button(
-                    onClick = onDismiss,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary)
-                ) {
-                    Text("Theek Hai", fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun ExportPdfDialog(
     year: Int,
     month: Int,
@@ -1264,10 +1138,12 @@ private fun ExportPdfDialog(
     isExporting: Boolean,
     exportResult: SavedExport?,
     onDismiss: () -> Unit,
-    onExport: () -> Unit,
+    onExport: (periodFilter: Int) -> Unit,
     onOpenPdf: (Uri) -> Unit,
     onSharePdf: (Uri) -> Unit
 ) {
+    var selectedPeriod by remember { mutableIntStateOf(0) }
+
     Dialog(onDismissRequest = onDismiss) {
         GlassCard(
             modifier = Modifier
@@ -1296,7 +1172,7 @@ private fun ExportPdfDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Export Monthly PDF",
+                            text = "Export Dairy Bill PDF",
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
                             color = CrimsonPrimary
@@ -1311,19 +1187,68 @@ private fun ExportPdfDialog(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Text(
-                    text = "File Name: Milk_Hisab_${summary.monthName}_$year.pdf",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    text = "Select Export Period:",
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Bold,
                     color = if (isDarkMode) Color.White else Color.Black
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Includes complete daily table (Days 1–${summary.totalDays}), Period 1, 2, 3 totals, and monthly earnings.",
-                    fontSize = 11.5.sp,
-                    color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val options = listOf(
+                    0 to "Full Month (Days 1–${summary.totalDays})",
+                    1 to "Period 1 (Days 1–10)",
+                    2 to "Period 2 (Days 11–20)",
+                    3 to "Period 3 (Days 21–${summary.totalDays})"
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    options.forEach { (filterVal, label) ->
+                        val isSelected = selectedPeriod == filterVal
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (isSelected) CrimsonPrimary.copy(alpha = 0.15f)
+                                    else if (isDarkMode) Color.White.copy(alpha = 0.05f) else Color.Black.copy(alpha = 0.04f)
+                                )
+                                .border(
+                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                    color = if (isSelected) CrimsonPrimary else (if (isDarkMode) Color.White.copy(alpha = 0.12f) else Color.LightGray.copy(alpha = 0.5f)),
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                                .clickable { selectedPeriod = filterVal }
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clip(CircleShape)
+                                    .border(2.dp, if (isSelected) CrimsonPrimary else Color.Gray, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isSelected) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(CrimsonPrimary)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = label,
+                                fontSize = 12.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) CrimsonPrimary else (if (isDarkMode) Color.White else Color.Black)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
 
                 if (isExporting) {
                     Column(
@@ -1390,7 +1315,7 @@ private fun ExportPdfDialog(
                     }
                 } else {
                     Button(
-                        onClick = onExport,
+                        onClick = { onExport(selectedPeriod) },
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary)
                     ) {

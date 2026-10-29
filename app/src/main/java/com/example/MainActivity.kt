@@ -719,6 +719,7 @@ fun AuNotesApp(
             isDarkMode = isDarkMode,
             preferences = preferences,
             repository = repository,
+            milkRepository = milkRepository,
             currentNoteTitle = (currentScreen as? Screen.ReadNote)?.note?.title
                 ?: (currentScreen as? Screen.EditNote)?.note?.title,
             currentNoteContent = (currentScreen as? Screen.ReadNote)?.note?.content

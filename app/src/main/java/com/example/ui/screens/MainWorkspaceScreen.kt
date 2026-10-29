@@ -1621,24 +1621,19 @@ fun TelegramActionItem(
 
 private fun extractCleanSnippet(rawContent: String): String {
     val stripped = com.example.ui.util.ImageMarkers.strip(rawContent)
+        .replace(Regex("(?m)^```.*?$"), "")
+        .replace(Regex("`+"), "")
     val lines = stripped.lines()
     for (line in lines) {
         val trimmed = line.trim()
-        if (trimmed.isNotBlank() && !trimmed.startsWith("```") && trimmed != "---" && trimmed != "***") {
+        if (trimmed.isNotBlank() && trimmed != "---" && trimmed != "***") {
             val clean = trimmed
                 .removePrefix("#").removePrefix("#").removePrefix("#").removePrefix("#")
                 .removePrefix("- [ ] ").removePrefix("- [x] ").removePrefix("- [!] ")
                 .removePrefix("- ").removePrefix("* ").removePrefix("> ")
                 .replace(Regex("\\*\\*(.*?)\\*\\*"), "$1")
-                .replace(Regex("`+(.*?)`+"), "$1")
                 .trim()
             if (clean.isNotBlank()) return clean
-        }
-    }
-    for (line in lines) {
-        val trimmed = line.trim()
-        if (trimmed.isNotBlank() && !trimmed.startsWith("```")) {
-            return trimmed
         }
     }
     return ""

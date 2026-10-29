@@ -61,7 +61,11 @@ object AgentTools {
         AgentToolDef("forget_fact", "Memory", "Forget something",
             "Delete a remembered fact (match by a few words of it).", "fact"),
         AgentToolDef("read_temp_mail", "Mail", "Read temp mail inbox",
-            "Read the newest messages in the user's Temp Mail inbox (sender, subject, OTP/verification code, preview). Use it when the user asks about a mail/OTP, then tell them clearly what arrived.", "(none)")
+            "Read the newest messages in the user's Temp Mail inbox (sender, subject, OTP/verification code, preview). Use it when the user asks about a mail/OTP, then tell them clearly what arrived.", "(none)"),
+        AgentToolDef("get_milk_summary", "Accounting", "Get milk summary",
+            "Get milk accounting dairy summary for a given month and year (or current month if not specified). Returns total quantity, total earnings, morning/evening split, and peak delivery day.", "month (1-12, optional), year (optional)"),
+        AgentToolDef("save_milk_entry", "Accounting", "Save milk hisab entry",
+            "Save or update dairy milk delivery hisab for a specific day in the database. Can record morning quantity/amount and evening quantity/amount. If the month or year of the hisab is unknown, you must ask the user first.", "day (1-31), month (1-12), year (e.g. 2026), morning_qty (optional), morning_amount (optional), evening_qty (optional), evening_amount (optional)")
     )
 
     fun byId(id: String): AgentToolDef? = ALL.firstOrNull { it.id == id }
@@ -74,7 +78,8 @@ object AgentTools {
         sessionNotes: String,
         memory: List<String> = emptyList(),
         nativeTools: Boolean = false,
-        spoken: Boolean = false
+        spoken: Boolean = false,
+        workMode: Boolean = false
     ): String = buildString {
         val who = userName.ifBlank { "the user" }
         append("You are AU Agent, the built-in assistant of the AU Notes app (made by student developer Anshul). ")
@@ -82,7 +87,22 @@ object AgentTools {
         if (spoken) append("This is a LIVE VOICE conversation: speak naturally and briefly like a friendly person, no markdown, no lists, never spell out symbols.\n")
         append("The user's name is ").append(if (userName.isBlank()) "unknown (do not invent one)" else userName)
         append(". Address them by name only occasionally, never as 'sir'.\n")
-        append("Reply in the same language/style as the user (English, Hindi, or Hinglish in Roman script). Keep replies short unless the user asks for depth.\n\n")
+        append("Reply in the same language/style as the user (English, Hindi, or Hinglish in Roman script).\n\n")
+
+        if (workMode) {
+            append("## WORK MODE (DEEP EXPLANATION & BREAKDOWN)\n")
+            append("Work Mode is ACTIVE. When the user asks for an explanation, breakdown, analysis, or help with any topic (e.g. Python, code architectures, concepts): DO NOT give brief or summarized answers. Provide an exhaustive, deeply comprehensive breakdown with clear sub-headings, step-by-step reasoning, real-world examples, diagrams, syntax blocks, and complete depth. Never leave the explanation half-finished.\n\n")
+        } else {
+            append("Keep replies natural and concise unless the user asks for depth, full breakdown, or detailed explanations.\n\n")
+        }
+
+        append("## Milk Dairy Hisab & Accounting Integration\n")
+        append("You are connected to the app's Milk Dairy Hisab (Accountant database):\n")
+        append("- When the user asks for milk delivery hisab, summary, or earnings: call `get_milk_summary`.\n")
+        append("- When the user provides or uploads a notebook photo / image of a milk hisab diary, or pastes lines of milk delivery:\n")
+        append("  1. Extract each day's morning quantity (KG), morning amount (₹), evening quantity (KG), and evening amount (₹).\n")
+        append("  2. CRITICAL: If the user has NOT specified which month or year this hisab belongs to, ASK THE USER politely: 'Ye hisab kis month aur year ka hai (jaise October 2026)? Please batayein taaki main ise aapke Dairy Hisab me save kar sakun.'\n")
+        append("  3. Once the month and year are known, call `save_milk_entry` for the records so they are stored safely into the app's Room database.\n\n")
 
         append("## Understanding context (most important)\n")
         append("- Stay on the topic being discussed. Words like 'ye', 'isko', 'wahi', 'that note', 'ise' refer to the latest relevant thing in THIS conversation (last answer you wrote, last note created/opened/found).\n")
