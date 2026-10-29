@@ -205,6 +205,9 @@ import com.example.ui.util.AttachmentRenderer
 import com.example.ui.util.ImageMarkers
 import com.example.ui.components.AttachmentFrame
 import com.example.ui.components.ImageEditorDialog
+import com.example.ui.components.imageMaxPan
+import com.example.ui.components.withInnerPan
+import com.example.ui.components.withInnerZoom
 import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.layout.onSizeChanged
 import com.example.ui.util.DeviceAudioFile
@@ -1548,19 +1551,20 @@ fun NoteEditorScreen(
                                             .clip(RoundedCornerShape(10.dp))
                                             .pointerInput(att.id, att.locked) {
                                                 if (att.locked) return@pointerInput
+                                                // Pinch = RESIZE the frame (widthFraction only, so the layout footprint
+                                                // shrinks/grows with the picture). Drag = move the picture INSIDE the
+                                                // frame, in fractions of the frame's real size. The inner zoom is left
+                                                // to the zoom buttons / image editor, so one gesture never shrinks the
+                                                // image twice.
                                                 detectTransformGestures { _, pan, zoomChange, _ ->
+                                                    // read the CURRENT frame size on every event (a pinch changes it)
+                                                    val frameWidthPx = this@pointerInput.size.width.toFloat().coerceAtLeast(1f)
+                                                    val frameHeightPx = this@pointerInput.size.height.toFloat().coerceAtLeast(1f)
                                                     attachments = attachments.map {
                                                         if (it.id == att.id) {
-                                                            val newZoom = if (zoomChange != 1f) (it.zoom * zoomChange).coerceIn(0.5f, 4f) else it.zoom
                                                             val newWidth = if (zoomChange != 1f) (it.widthFraction * zoomChange).coerceIn(0.2f, 1f) else it.widthFraction
-                                                            val newPosX = if (pan.x != 0f) (it.posX + pan.x / 300f).coerceIn(-1f, 1f) else it.posX
-                                                            val newPosY = if (pan.y != 0f) (it.posY + pan.y / 300f).coerceIn(-1f, 1f) else it.posY
-                                                            it.copy(
-                                                                widthFraction = newWidth,
-                                                                zoom = newZoom,
-                                                                posX = newPosX,
-                                                                posY = newPosY
-                                                            )
+                                                            it.copy(widthFraction = newWidth)
+                                                                .withInnerPan(pan.x / frameWidthPx, pan.y / frameHeightPx)
                                                         } else it
                                                     }
                                                 }
@@ -1889,23 +1893,23 @@ fun NoteEditorScreen(
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(if (activeEditAtt.posX <= -0.5f) CrimsonPrimary else (if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000)))
+                                        .background(if ((imageMaxPan(activeEditAtt.zoom) > 0f && activeEditAtt.posX <= -imageMaxPan(activeEditAtt.zoom) / 2f)) CrimsonPrimary else (if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000)))
                                         .clickable {
                                             if (!activeEditAtt.locked) {
                                                 pushUndo()
-                                                attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(posX = -1f) else it }
+                                                attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(posX = -imageMaxPan(it.zoom)) else it }
                                             }
                                         }
                                         .padding(horizontal = 9.dp, vertical = 5.dp)
                                 ) {
-                                    Text("Left", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (activeEditAtt.posX <= -0.5f) Color.White else (if (isDarkMode) Color.White else Color.Black))
+                                    Text("Left", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if ((imageMaxPan(activeEditAtt.zoom) > 0f && activeEditAtt.posX <= -imageMaxPan(activeEditAtt.zoom) / 2f)) Color.White else (if (isDarkMode) Color.White else Color.Black))
                                 }
 
                                 // Align Center
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(if (kotlin.math.abs(activeEditAtt.posX) < 0.3f) CrimsonPrimary else (if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000)))
+                                        .background(if (kotlin.math.abs(activeEditAtt.posX) < (imageMaxPan(activeEditAtt.zoom) / 2f).coerceAtLeast(0.01f)) CrimsonPrimary else (if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000)))
                                         .clickable {
                                             if (!activeEditAtt.locked) {
                                                 pushUndo()
@@ -1914,23 +1918,23 @@ fun NoteEditorScreen(
                                         }
                                         .padding(horizontal = 9.dp, vertical = 5.dp)
                                 ) {
-                                    Text("Center", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (kotlin.math.abs(activeEditAtt.posX) < 0.3f) Color.White else (if (isDarkMode) Color.White else Color.Black))
+                                    Text("Center", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (kotlin.math.abs(activeEditAtt.posX) < (imageMaxPan(activeEditAtt.zoom) / 2f).coerceAtLeast(0.01f)) Color.White else (if (isDarkMode) Color.White else Color.Black))
                                 }
 
                                 // Align Right
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(if (activeEditAtt.posX >= 0.5f) CrimsonPrimary else (if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000)))
+                                        .background(if ((imageMaxPan(activeEditAtt.zoom) > 0f && activeEditAtt.posX >= imageMaxPan(activeEditAtt.zoom) / 2f)) CrimsonPrimary else (if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000)))
                                         .clickable {
                                             if (!activeEditAtt.locked) {
                                                 pushUndo()
-                                                attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(posX = 1f) else it }
+                                                attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(posX = imageMaxPan(it.zoom)) else it }
                                             }
                                         }
                                         .padding(horizontal = 9.dp, vertical = 5.dp)
                                 ) {
-                                    Text("Right", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (activeEditAtt.posX >= 0.5f) Color.White else (if (isDarkMode) Color.White else Color.Black))
+                                    Text("Right", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if ((imageMaxPan(activeEditAtt.zoom) > 0f && activeEditAtt.posX >= imageMaxPan(activeEditAtt.zoom) / 2f)) Color.White else (if (isDarkMode) Color.White else Color.Black))
                                 }
 
                                 // Rotate 90
@@ -1951,7 +1955,7 @@ fun NoteEditorScreen(
                                     onClick = {
                                         if (!activeEditAtt.locked) {
                                             pushUndo()
-                                            attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(zoom = (it.zoom - 0.2f).coerceAtLeast(0.5f)) else it }
+                                            attachments = attachments.map { if (it.id == activeEditAtt.id) it.withInnerZoom(it.zoom - 0.2f) else it }
                                         }
                                     },
                                     modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
@@ -1964,7 +1968,7 @@ fun NoteEditorScreen(
                                     onClick = {
                                         if (!activeEditAtt.locked) {
                                             pushUndo()
-                                            attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(zoom = (it.zoom + 0.2f).coerceAtMost(4f)) else it }
+                                            attachments = attachments.map { if (it.id == activeEditAtt.id) it.withInnerZoom(it.zoom + 0.2f) else it }
                                         }
                                     },
                                     modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))

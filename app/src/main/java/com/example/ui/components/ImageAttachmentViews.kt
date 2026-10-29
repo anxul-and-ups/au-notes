@@ -76,6 +76,36 @@ import kotlinx.coroutines.withContext
 
 private val imageBitmapCache = androidx.collection.LruCache<String, ImageBitmap>(40)
 
+// ---------------------------------------------------------------------------------------------
+// Responsibilities of the three attachment values (shared by the inline editor and the dialog):
+//   widthFraction     -> LAYOUT FOOTPRINT: width of the frame as a fraction of the note width.
+//   zoom              -> zoom of the picture INSIDE its frame. Never below 1, because a picture that
+//                        is smaller than its frame leaves an empty rectangle around it.
+//   posX / posY       -> move of the picture INSIDE its frame, as a fraction of the frame width/height
+//                        (same unit the renderer/export uses). Limited so the picture always covers
+//                        the whole frame.
+// ---------------------------------------------------------------------------------------------
+const val MIN_IMAGE_ZOOM = 1f
+const val MAX_IMAGE_ZOOM = 5f
+
+/** Largest |posX| / |posY| that still keeps a picture zoomed by [zoom] covering its whole frame. */
+fun imageMaxPan(zoom: Float): Float = (zoom.coerceIn(MIN_IMAGE_ZOOM, MAX_IMAGE_ZOOM) - 1f) / 2f
+
+fun clampImagePan(value: Float, zoom: Float): Float {
+    val m = imageMaxPan(zoom)
+    return value.coerceIn(-m, m)
+}
+
+/** Sets the inner zoom (clamped) and re-clamps the pan so the picture still covers its frame. */
+fun AttachmentInfo.withInnerZoom(newZoom: Float): AttachmentInfo {
+    val z = newZoom.coerceIn(MIN_IMAGE_ZOOM, MAX_IMAGE_ZOOM)
+    return copy(zoom = z, posX = clampImagePan(posX, z), posY = clampImagePan(posY, z))
+}
+
+/** Moves the picture inside its frame by [dx]/[dy] (fractions of frame width/height), clamped. */
+fun AttachmentInfo.withInnerPan(dx: Float, dy: Float): AttachmentInfo =
+    copy(posX = clampImagePan(posX + dx, zoom), posY = clampImagePan(posY + dy, zoom))
+
 /** Rotated + cropped bitmap for [att], cached in memory so typing never causes images to blink. */
 @Composable
 private fun rememberBaseImage(att: AttachmentInfo, maxSide: Int, debounceMs: Long = 0L): ImageBitmap? {
@@ -115,9 +145,21 @@ fun AttachmentFrame(
     val base = rememberBaseImage(att, maxSide, debounceMs)
     var frameW by remember { mutableFloatStateOf(1f) }
     var frameH by remember { mutableFloatStateOf(1f) }
+    // The base bitmap is already rotated + cropped, so its own proportions ARE the visible frame's
+    // proportions. Using them makes it impossible for the picture to be stretched or letter-boxed;
+    // frameAspect(att) is only used until the bitmap has loaded.
+    val frameAspect = if (base != null && base.width > 0 && base.height > 0) {
+        base.width.toFloat() / base.height.toFloat()
+    } else {
+        AttachmentRenderer.frameAspect(att)
+    }
+    // Old notes may hold zoom < 1 or a pan from the former Left/Right buttons; render them valid.
+    val shownZoom = att.zoom.coerceIn(MIN_IMAGE_ZOOM, MAX_IMAGE_ZOOM)
+    val shownPosX = clampImagePan(att.posX, shownZoom)
+    val shownPosY = clampImagePan(att.posY, shownZoom)
     Box(
         modifier = modifier
-            .aspectRatio(AttachmentRenderer.frameAspect(att))
+            .aspectRatio(frameAspect)
             .clip(RoundedCornerShape(cornerRadius.dp))
             .background(Color(0x14808080))
             .onSizeChanged { frameW = it.width.toFloat(); frameH = it.height.toFloat() }
@@ -130,10 +172,10 @@ fun AttachmentFrame(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        scaleX = att.zoom
-                        scaleY = att.zoom
-                        translationX = att.posX * frameW
-                        translationY = att.posY * frameH
+                        scaleX = shownZoom
+                        scaleY = shownZoom
+                        translationX = shownPosX * frameW
+                        translationY = shownPosY * frameH
                     }
             )
         }
@@ -154,7 +196,7 @@ fun ImageEditorDialog(
     onApply: (AttachmentInfo) -> Unit,
     onDelete: () -> Unit
 ) {
-    var draft by remember { mutableStateOf(initial) }
+    var draft by remember { mutableStateOf(initial.withInnerZoom(initial.zoom)) }
     val locked = draft.locked
     val textColor = if (isDarkMode) Color.White else Color(0xFF111111)
     val sub = if (isDarkMode) Color.White.copy(0.6f) else Color(0xFF666666)
@@ -220,11 +262,11 @@ fun ImageEditorDialog(
                                 .pointerInput(locked) {
                                     if (!locked) {
                                         detectTransformGestures { _, pan, zoomChange, _ ->
-                                            draft = draft.copy(
-                                                zoom = (draft.zoom * zoomChange).coerceIn(0.5f, 5f),
-                                                posX = (draft.posX + pan.x / pw).coerceIn(-1.5f, 1.5f),
-                                                posY = (draft.posY + pan.y / ph).coerceIn(-1.5f, 1.5f)
-                                            )
+                                            // pinch = zoom inside the frame, drag = move inside the frame
+                                            // (the frame's own size is the "Size" slider, never the pinch)
+                                            draft = draft
+                                                .withInnerZoom(draft.zoom * zoomChange)
+                                                .withInnerPan(pan.x / pw, pan.y / ph)
                                         }
                                     }
                                 }
@@ -252,10 +294,10 @@ fun ImageEditorDialog(
                                 cropLeft = 0f, cropTop = 0f, cropRight = 0f, cropBottom = 0f)
                         }
                         ToolButton(Icons.Default.ZoomOut, "Zoom out", !locked, textColor) {
-                            draft = draft.copy(zoom = (draft.zoom - 0.1f).coerceAtLeast(0.5f))
+                            draft = draft.withInnerZoom(draft.zoom - 0.1f)
                         }
                         ToolButton(Icons.Default.ZoomIn, "Zoom in", !locked, textColor) {
-                            draft = draft.copy(zoom = (draft.zoom + 0.1f).coerceAtMost(5f))
+                            draft = draft.withInnerZoom(draft.zoom + 0.1f)
                         }
                         ToolButton(Icons.Default.Refresh, "Reset", !locked, CrimsonPrimary) {
                             draft = draft.copy(
@@ -267,7 +309,7 @@ fun ImageEditorDialog(
 
                     Spacer(Modifier.height(8.dp))
                     Text("Zoom  ${"%.0f".format(draft.zoom * 100)}%", fontSize = 12.sp, color = sub)
-                    EditSlider(draft.zoom, 0.5f..5f, !locked) { draft = draft.copy(zoom = it) }
+                    EditSlider(draft.zoom, MIN_IMAGE_ZOOM..MAX_IMAGE_ZOOM, !locked) { draft = draft.withInnerZoom(it) }
 
                     // Full Page: the image gets its own A4 page (fits inside, keeps its aspect ratio; also in the PDF)
                     Row(
