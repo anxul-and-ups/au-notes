@@ -262,11 +262,22 @@ fun ImageEditorDialog(
                                 .pointerInput(locked) {
                                     if (!locked) {
                                         detectTransformGestures { _, pan, zoomChange, _ ->
-                                            // pinch = zoom inside the frame, drag = move inside the frame
-                                            // (the frame's own size is the "Size" slider, never the pinch)
-                                            draft = draft
-                                                .withInnerZoom(draft.zoom * zoomChange)
-                                                .withInnerPan(pan.x / pw, pan.y / ph)
+                                            // Pinch changes inner zoom; a one-finger drag pans the
+                                            // image inside the frame. Do not re-apply zoom/clamping
+                                            // on every pure-drag event, otherwise a pan can be reset
+                                            // while the gesture is in progress.
+                                            val zoomChanged = kotlin.math.abs(zoomChange - 1f) > 0.001f
+                                            val zoomed = if (zoomChanged) {
+                                                draft.withInnerZoom(draft.zoom * zoomChange)
+                                            } else {
+                                                draft
+                                            }
+                                            // Normalize X and Y independently against the actual
+                                            // measured preview size. X must use frame width, not height.
+                                            draft = zoomed.withInnerPan(
+                                                dx = if (pw > 0f) pan.x / pw else 0f,
+                                                dy = if (ph > 0f) pan.y / ph else 0f
+                                            )
                                         }
                                     }
                                 }
