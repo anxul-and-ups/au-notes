@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -88,6 +89,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -694,7 +696,7 @@ private fun DocumentViewer(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             IconButton(
-                                onClick = { zoomScale = (zoomScale - 0.15f).coerceAtLeast(0.5f) },
+                                onClick = { zoomScale = (zoomScale - 0.2f).coerceAtLeast(if (isTextOrCode) 0.5f else 1.0f) },
                                 modifier = Modifier.size(26.dp)
                             ) {
                                 Icon(Icons.Default.ZoomOut, "Zoom out", tint = fg, modifier = Modifier.size(15.dp))
@@ -709,7 +711,7 @@ private fun DocumentViewer(
                                     .padding(horizontal = 4.dp)
                             )
                             IconButton(
-                                onClick = { zoomScale = (zoomScale + 0.15f).coerceAtMost(3.0f) },
+                                onClick = { zoomScale = (zoomScale + 0.2f).coerceAtMost(5.0f) },
                                 modifier = Modifier.size(26.dp)
                             ) {
                                 Icon(Icons.Default.ZoomIn, "Zoom in", tint = fg, modifier = Modifier.size(15.dp))
@@ -804,11 +806,44 @@ private fun DocumentViewer(
                 }
             }
 
-            // Main Document Content Area with Zoom & Search Highlight
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+            // Main Document Content Area with Pinch-Zoom & Search Highlight
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .pointerInput(isTextOrCode) {
+                        if (isTextOrCode) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val pressed = event.changes.filter { it.pressed }
+                                    if (pressed.size >= 2) {
+                                        val p1 = pressed[0]
+                                        val p2 = pressed[1]
+                                        val prevDist = (p1.previousPosition - p2.previousPosition).getDistance()
+                                        val curDist = (p1.position - p2.position).getDistance()
+                                        if (prevDist > 10f && curDist > 10f) {
+                                            val factor = curDist / prevDist
+                                            zoomScale = (zoomScale * factor).coerceIn(0.6f, 3.5f)
+                                            pressed.forEach { it.consume() }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+            ) {
                 when {
-                    kind == MyDocuments.Kind.PDF -> PdfPages(file, zoomScale)
-                    kind == MyDocuments.Kind.IMAGE -> ZoomableImage(file)
+                    kind == MyDocuments.Kind.PDF -> PdfPages(
+                        file = file,
+                        zoomScale = zoomScale,
+                        onZoomChange = { zoomScale = it }
+                    )
+                    kind == MyDocuments.Kind.IMAGE -> ZoomableImage(
+                        file = file,
+                        zoomScale = zoomScale,
+                        onZoomChange = { zoomScale = it }
+                    )
                     kind == MyDocuments.Kind.HTML -> HtmlFileView(file, isDarkMode)
                     isTextOrCode -> {
                         AdvancedArtifactTextFileView(
@@ -1276,33 +1311,121 @@ private fun highlightMatches(text: String, query: String): AnnotatedString {
 }
 
 @Composable
-private fun PdfPages(file: File, zoomScale: Float = 1.0f) {
+private fun PdfPages(
+    file: File,
+    zoomScale: Float = 1.0f,
+    onZoomChange: (Float) -> Unit = {}
+) {
     var count by remember(file) { mutableStateOf(-1) }
-    LaunchedEffect(file) { count = withContext(Dispatchers.IO) { pdfPageCount(file) } }
+    var panX by remember(file) { mutableFloatStateOf(0f) }
+    var panY by remember(file) { mutableFloatStateOf(0f) }
+    var containerWidth by remember { mutableFloatStateOf(1f) }
+    var containerHeight by remember { mutableFloatStateOf(1f) }
+
+    LaunchedEffect(file) {
+        count = withContext(Dispatchers.IO) { pdfPageCount(file) }
+    }
+    LaunchedEffect(zoomScale) {
+        if (zoomScale <= 1.01f) {
+            panX = 0f
+            panY = 0f
+        } else {
+            val maxX = ((zoomScale - 1f) * containerWidth / 2f).coerceAtLeast(0f)
+            val maxY = ((zoomScale - 1f) * containerHeight / 2f).coerceAtLeast(0f)
+            panX = panX.coerceIn(-maxX, maxX)
+            panY = panY.coerceIn(-maxY, maxY)
+        }
+    }
+
     when {
         count < 0 -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = CrimsonPrimary) }
         count == 0 -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("This PDF could not be opened.", color = Color.Gray) }
-        else -> LazyColumn(
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(count) { index ->
-                var bmp by remember(file, index) { mutableStateOf<Bitmap?>(null) }
-                LaunchedEffect(file, index) { bmp = withContext(Dispatchers.IO) { renderPdfPage(file, index, 1400) } }
-                val b = bmp
-                if (b != null) {
-                    Image(
-                        b.asImageBitmap(), "Page ${index + 1}",
-                        contentScale = ContentScale.FillWidth,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .graphicsLayer { scaleX = zoomScale; scaleY = zoomScale }
-                            .background(Color.White)
+        else -> Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(0.dp))
+                .onSizeChanged { sz ->
+                    containerWidth = sz.width.toFloat().coerceAtLeast(1f)
+                    containerHeight = sz.height.toFloat().coerceAtLeast(1f)
+                }
+                .pointerInput(file) {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            val nextScale = if (zoomScale > 1.2f) 1.0f else 2.25f
+                            onZoomChange(nextScale)
+                            if (nextScale <= 1.01f) {
+                                panX = 0f
+                                panY = 0f
+                            }
+                        }
                     )
-                } else {
-                    Box(Modifier.fillMaxWidth().aspectRatio(0.7f).background(Color.Gray.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(Modifier.size(22.dp), color = CrimsonPrimary, strokeWidth = 2.dp)
+                }
+                .pointerInput(file) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.filter { it.pressed }
+                            if (pressed.size >= 2) {
+                                val p1 = pressed[0]
+                                val p2 = pressed[1]
+                                val prevDist = (p1.previousPosition - p2.previousPosition).getDistance()
+                                val curDist = (p1.position - p2.position).getDistance()
+                                val prevCenter = (p1.previousPosition + p2.previousPosition) / 2f
+                                val curCenter = (p1.position + p2.position) / 2f
+                                val panDelta = curCenter - prevCenter
+                                if (prevDist > 8f && curDist > 8f) {
+                                    val newScale = (zoomScale * (curDist / prevDist)).coerceIn(1.0f, 5.0f)
+                                    onZoomChange(newScale)
+                                    val maxX = ((newScale - 1f) * containerWidth / 2f).coerceAtLeast(0f)
+                                    val maxY = ((newScale - 1f) * containerHeight / 2f).coerceAtLeast(0f)
+                                    panX = (panX + panDelta.x).coerceIn(-maxX, maxX)
+                                    panY = (panY + panDelta.y).coerceIn(-maxY, maxY)
+                                    pressed.forEach { it.consume() }
+                                }
+                            } else if (pressed.size == 1 && zoomScale > 1.02f) {
+                                val c = pressed[0]
+                                val delta = c.position - c.previousPosition
+                                if (delta.getDistance() > 0.5f) {
+                                    val maxX = ((zoomScale - 1f) * containerWidth / 2f).coerceAtLeast(0f)
+                                    val maxY = ((zoomScale - 1f) * containerHeight / 2f).coerceAtLeast(0f)
+                                    panX = (panX + delta.x).coerceIn(-maxX, maxX)
+                                    panY = (panY + delta.y).coerceIn(-maxY, maxY)
+                                    c.consume()
+                                }
+                            }
+                        }
+                    }
+                }
+        ) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = zoomScale
+                        scaleY = zoomScale
+                        translationX = panX
+                        translationY = panY
+                    },
+                userScrollEnabled = zoomScale <= 1.05f,
+                contentPadding = PaddingValues(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(count) { index ->
+                    var bmp by remember(file, index) { mutableStateOf<Bitmap?>(null) }
+                    LaunchedEffect(file, index) { bmp = withContext(Dispatchers.IO) { renderPdfPage(file, index, 1400) } }
+                    val b = bmp
+                    if (b != null) {
+                        Image(
+                            b.asImageBitmap(), "Page ${index + 1}",
+                            contentScale = ContentScale.FillWidth,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.White)
+                        )
+                    } else {
+                        Box(Modifier.fillMaxWidth().aspectRatio(0.7f).background(Color.Gray.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(Modifier.size(22.dp), color = CrimsonPrimary, strokeWidth = 2.dp)
+                        }
                     }
                 }
             }
@@ -1311,12 +1434,31 @@ private fun PdfPages(file: File, zoomScale: Float = 1.0f) {
 }
 
 @Composable
-private fun ZoomableImage(file: File) {
+private fun ZoomableImage(
+    file: File,
+    zoomScale: Float = 1.0f,
+    onZoomChange: (Float) -> Unit = {}
+) {
     var bmp by remember(file) { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(file) { bmp = withContext(Dispatchers.IO) { decodeSampled(file, 2400) } }
-    var scale by remember { mutableStateOf(1f) }
-    var ox by remember { mutableStateOf(0f) }
-    var oy by remember { mutableStateOf(0f) }
+    var ox by remember(file) { mutableFloatStateOf(0f) }
+    var oy by remember(file) { mutableFloatStateOf(0f) }
+    var boxW by remember { mutableFloatStateOf(1f) }
+    var boxH by remember { mutableFloatStateOf(1f) }
+
+    val scale = zoomScale.coerceIn(1.0f, 5.0f)
+    LaunchedEffect(scale) {
+        if (scale <= 1.01f) {
+            ox = 0f
+            oy = 0f
+        } else {
+            val maxX = ((scale - 1f) * boxW / 2f).coerceAtLeast(0f)
+            val maxY = ((scale - 1f) * boxH / 2f).coerceAtLeast(0f)
+            ox = ox.coerceIn(-maxX, maxX)
+            oy = oy.coerceIn(-maxY, maxY)
+        }
+    }
+
     val b = bmp
     if (b == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = CrimsonPrimary) }
@@ -1325,10 +1467,35 @@ private fun ZoomableImage(file: File) {
             b.asImageBitmap(), file.name, contentScale = ContentScale.Fit,
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(Unit) {
+                .onSizeChanged { sz ->
+                    boxW = sz.width.toFloat().coerceAtLeast(1f)
+                    boxH = sz.height.toFloat().coerceAtLeast(1f)
+                }
+                .pointerInput(file) {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            val next = if (scale > 1.2f) 1.0f else 2.5f
+                            onZoomChange(next)
+                            if (next <= 1.01f) {
+                                ox = 0f
+                                oy = 0f
+                            }
+                        }
+                    )
+                }
+                .pointerInput(file) {
                     detectTransformGestures { _, pan, zoom, _ ->
-                        scale = (scale * zoom).coerceIn(1f, 6f)
-                        if (scale > 1f) { ox += pan.x; oy += pan.y } else { ox = 0f; oy = 0f }
+                        val nextScale = (scale * zoom).coerceIn(1f, 5f)
+                        onZoomChange(nextScale)
+                        if (nextScale > 1.01f) {
+                            val maxX = ((nextScale - 1f) * boxW / 2f).coerceAtLeast(0f)
+                            val maxY = ((nextScale - 1f) * boxH / 2f).coerceAtLeast(0f)
+                            ox = (ox + pan.x).coerceIn(-maxX, maxX)
+                            oy = (oy + pan.y).coerceIn(-maxY, maxY)
+                        } else {
+                            ox = 0f
+                            oy = 0f
+                        }
                     }
                 }
                 .graphicsLayer { scaleX = scale; scaleY = scale; translationX = ox; translationY = oy }

@@ -310,32 +310,6 @@ fun ThemeSettingsScreen(
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
-
-            // ---- Panel lock ----
-            Text("PRIVACY", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary, letterSpacing = 1.sp)
-            Spacer(Modifier.height(8.dp))
-            GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Lock this panel with PIN", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = textColor)
-                        Text("Theme Settings will ask for your PIN before opening", fontSize = 11.sp, color = subColor)
-                    }
-                    Switch(
-                        checked = panelLocked,
-                        onCheckedChange = {
-                            if (it && !preferences.hasCustomPin.value) {
-                                Toast.makeText(context, "Create a PIN first in Settings → Security Area", Toast.LENGTH_LONG).show()
-                            } else preferences.setThemePanelLocked(it)
-                        },
-                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = CrimsonPrimary)
-                    )
-                }
-            }
             Spacer(Modifier.height(30.dp))
         }
     }

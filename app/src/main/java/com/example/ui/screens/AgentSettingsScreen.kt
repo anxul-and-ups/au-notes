@@ -39,9 +39,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -105,6 +110,11 @@ fun AgentSettingsScreen(
     val orbIntensity by preferences.orbIntensity.collectAsState()
     val memoryEnabled by preferences.memoryEnabled.collectAsState()
     val memory by preferences.agentMemory.collectAsState()
+    val agentUserName by preferences.agentUserName.collectAsState()
+    val noteReaderVoiceMode by preferences.noteReaderVoiceMode.collectAsState()
+
+    var showEditNameDialog by remember { mutableStateOf(false) }
+    var nameDraft by remember(agentUserName) { mutableStateOf(agentUserName) }
 
     // a private engine just for the voice adjuster (so "Test voice" speaks with the real settings)
     val voiceEngine = remember { VoiceAssistantManager(context) { } }
@@ -154,6 +164,107 @@ fun AgentSettingsScreen(
             }
 
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+
+                SectionTitle("PERSONALIZATION")
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    isDarkMode = isDarkMode,
+                    elevation = 2.dp,
+                    onClick = {
+                        nameDraft = agentUserName
+                        showEditNameDialog = true
+                    }
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("What should agent call you?", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg)
+                            Text("Used in chat greetings & voice conversations", fontSize = 11.5.sp, color = sub)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = agentUserName.ifBlank { "Set name" },
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = CrimsonPrimary
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Icon(Icons.Default.Edit, contentDescription = "Edit Name", tint = CrimsonPrimary, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+
+                SectionTitle("NOTE READER (READ MODE SPEAK)")
+                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
+                    Column(Modifier.padding(14.dp)) {
+                        // 1. Native Voice
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { preferences.setNoteReaderVoiceMode("native") }
+                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = noteReaderVoiceMode == "native",
+                                onClick = { preferences.setNoteReaderVoiceMode("native") },
+                                colors = RadioButtonDefaults.colors(selectedColor = CrimsonPrimary)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("Native Voice", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg)
+                                Text(
+                                    "Unlimited offline playback • Does not use any API quota",
+                                    fontSize = 11.5.sp,
+                                    color = fg.copy(alpha = 0.45f)
+                                )
+                            }
+                        }
+
+                        // 2. AI Voice (Default)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { preferences.setNoteReaderVoiceMode("ai") }
+                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = noteReaderVoiceMode == "ai",
+                                onClick = { preferences.setNoteReaderVoiceMode("ai") },
+                                colors = RadioButtonDefaults.colors(selectedColor = CrimsonPrimary)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("AI Voice", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        "DEFAULT",
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = CrimsonPrimary,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(CrimsonPrimary.copy(alpha = 0.14f))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                                Text(
+                                    "Uses your Gemini API quota / rate limit for natural AI speech (auto-falls back to Native Voice when offline)",
+                                    fontSize = 11.5.sp,
+                                    color = fg.copy(alpha = 0.45f)
+                                )
+                            }
+                        }
+                    }
+                }
 
                 SectionTitle("REALISTIC LIVE VOICE (GEMINI)")
                 GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
@@ -210,7 +321,7 @@ fun AgentSettingsScreen(
                             Column(Modifier.weight(1f)) {
                                 Text("Voice", fontSize = 12.sp, color = sub)
                                 Text(
-                                    if (voiceName.isBlank()) "Automatic (female voice if available)" else voiceName,
+                                    if (voiceName.isBlank()) "Automatic (male voice - Puck style)" else voiceName,
                                     fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg, maxLines = 1
                                 )
                             }
@@ -323,7 +434,7 @@ fun AgentSettingsScreen(
                     LazyColumn(Modifier.heightIn(max = 380.dp)) {
                         item {
                             Text(
-                                "Automatic (female voice if available)", fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                                "Automatic (male voice - Puck style)", fontSize = 14.sp, fontWeight = FontWeight.Bold,
                                 modifier = Modifier.fillMaxWidth().clickable { preferences.setVoiceName(""); showVoicePicker = false }.padding(vertical = 10.dp)
                             )
                         }
@@ -343,6 +454,50 @@ fun AgentSettingsScreen(
                 }
             },
             confirmButton = { TextButton(onClick = { showVoicePicker = false }) { Text("Close") } }
+        )
+    }
+
+    if (showEditNameDialog) {
+        AlertDialog(
+            onDismissRequest = { showEditNameDialog = false },
+            title = { Text("What should agent call you?", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "Enter the name you'd like AU Agent to use when greeting and talking to you:",
+                        fontSize = 12.5.sp,
+                        color = sub
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = nameDraft,
+                        onValueChange = { nameDraft = it },
+                        placeholder = { Text("e.g. Boss, Yadav Ji, Anshul...") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = CrimsonPrimary,
+                            focusedLabelColor = CrimsonPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        preferences.setAgentUserName(nameDraft.trim())
+                        preferences.setAgentNamePrompted()
+                        showEditNameDialog = false
+                    }
+                ) {
+                    Text("Save", color = CrimsonPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditNameDialog = false }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }

@@ -77,7 +77,8 @@ class AppPreferences(context: Context) {
 
     private val defaultFolders = listOf("All Notes", "Favorites", "APIs Keys", "Code", "Media", "Personal")
     private val _folderOrder = MutableStateFlow(
-        prefs.getString("folder_order", null)?.split(",")?.filter { it.isNotBlank() } ?: defaultFolders
+        (prefs.getString("folder_order", null)?.split(",")?.filter { it.isNotBlank() } ?: defaultFolders)
+            .filter { !it.equals("Stylish Names", ignoreCase = true) }
     )
     val folderOrder: StateFlow<List<String>> = _folderOrder.asStateFlow()
 
@@ -97,7 +98,8 @@ class AppPreferences(context: Context) {
     // Kept separate from the 6 built-in system folders (All Notes, Favorites,
     // APIs Keys, Code, Media, Personal), which stay hardcoded in the UI.
     private val _customFolders = MutableStateFlow(
-        prefs.getString("custom_folders", null)?.split("||")?.filter { it.isNotBlank() } ?: emptyList()
+        (prefs.getString("custom_folders", null)?.split("||")?.filter { it.isNotBlank() } ?: emptyList())
+            .filter { !it.equals("Stylish Names", ignoreCase = true) }
     )
     val customFolders: StateFlow<List<String>> = _customFolders.asStateFlow()
 
@@ -415,9 +417,18 @@ class AppPreferences(context: Context) {
     val liveVoiceEnabled: StateFlow<Boolean> = _liveVoiceEnabled.asStateFlow()
     fun setLiveVoiceEnabled(v: Boolean) { _liveVoiceEnabled.value = v; prefs.edit().putBoolean("agent_live_voice", v).apply() }
 
-    private val _liveVoiceName = stringFlow("agent_live_voice_name", "Aoede")
+    private val _liveVoiceName = stringFlow("agent_live_voice_name", "Puck")
     val liveVoiceName: StateFlow<String> = _liveVoiceName.asStateFlow()
     fun setLiveVoiceName(v: String) { _liveVoiceName.value = v; prefs.edit().putString("agent_live_voice_name", v).apply() }
+
+    // Note Reader voice mode: "ai" (default, natural AI voice using API quota) or "native" (unlimited offline native TTS)
+    private val _noteReaderVoiceMode = stringFlow("note_reader_voice_mode", "ai")
+    val noteReaderVoiceMode: StateFlow<String> = _noteReaderVoiceMode.asStateFlow()
+    fun setNoteReaderVoiceMode(mode: String) {
+        val clean = if (mode == "native") "native" else "ai"
+        _noteReaderVoiceMode.value = clean
+        prefs.edit().putString("note_reader_voice_mode", clean).apply()
+    }
 
     private val _liveModel = stringFlow("agent_live_model", "models/gemini-3.1-flash-live-preview")
     val liveModel: StateFlow<String> = _liveModel.asStateFlow()
@@ -551,6 +562,34 @@ class AppPreferences(context: Context) {
     fun setThemePanelLocked(value: Boolean) {
         prefs.edit().putBoolean("theme_panel_locked", value).apply()
         _themePanelLocked.value = value
+    }
+
+    // Image Generation Model & API Key (Item G1)
+    private val _imageGenModel = MutableStateFlow(
+        prefs.getString("image_gen_model", "gemini-2.0-flash-preview-image-generation")
+            ?: "gemini-2.0-flash-preview-image-generation"
+    )
+    val imageGenModel: StateFlow<String> = _imageGenModel.asStateFlow()
+
+    private val _imageGenApiKey = MutableStateFlow(prefs.getString("image_gen_api_key", "") ?: "")
+    val imageGenApiKey: StateFlow<String> = _imageGenApiKey.asStateFlow()
+
+    fun setImageGenModel(model: String) {
+        val m = model.trim().ifBlank { "gemini-2.0-flash-preview-image-generation" }
+        _imageGenModel.value = m
+        prefs.edit().putString("image_gen_model", m).apply()
+    }
+
+    fun setImageGenApiKey(key: String) {
+        val k = key.trim()
+        _imageGenApiKey.value = k
+        prefs.edit().putString("image_gen_api_key", k).apply()
+    }
+
+    fun getEffectiveImageGenApiKey(): String {
+        val dedicated = _imageGenApiKey.value.trim()
+        if (dedicated.isNotBlank()) return dedicated
+        return getEffectiveApiKey()
     }
 
     fun getEffectiveApiKey(): String {

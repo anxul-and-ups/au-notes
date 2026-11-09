@@ -23,8 +23,28 @@ class NoteRepository(private val noteDao: NoteDao) {
     suspend fun getNoteByIdOnce(id: Long): NoteEntity? =
         noteDao.getNoteByIdOnce(id)
 
-    suspend fun saveNote(note: NoteEntity): Long =
-        noteDao.insertNote(note)
+    private suspend fun ensureUniqueTitle(rawTitle: String, currentId: Long): String {
+        val baseTitle = if (rawTitle.isBlank()) "Untitled Note" else rawTitle.trim()
+        val existingLower = try {
+            noteDao.getActiveTitlesExcept(currentId).map { it.trim().lowercase() }.toSet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+        if (baseTitle.lowercase() !in existingLower) return baseTitle
+        val strippedBase = baseTitle.replace(Regex("\\s*\\(\\d+\\)$"), "").trim().ifBlank { baseTitle }
+        var n = 2
+        var candidate = "$strippedBase ($n)"
+        while (candidate.lowercase() in existingLower) {
+            n++
+            candidate = "$strippedBase ($n)"
+        }
+        return candidate
+    }
+
+    suspend fun saveNote(note: NoteEntity): Long {
+        val uniqueTitle = ensureUniqueTitle(note.title, note.id)
+        return noteDao.insertNote(note.copy(title = uniqueTitle))
+    }
 
     suspend fun saveNote(
         id: Long = 0,
@@ -54,9 +74,10 @@ class NoteRepository(private val noteDao: NoteDao) {
             else -> "All Notes"
         }
 
+        val uniqueTitle = ensureUniqueTitle(title, id)
         val note = NoteEntity(
             id = id,
-            title = if (title.isBlank()) "Untitled Note" else title.trim(),
+            title = uniqueTitle,
             content = content,
             category = detectedCat,
             folder = targetFolder,

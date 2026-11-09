@@ -410,7 +410,7 @@ private const val SAMPLE_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hello from AU Notes</title>
+  <title>HTML Document</title>
   <style>
     body { font-family: sans-serif; margin: 24px; background: #fff7f9; }
     h1 { color: #ff2d55; }
@@ -432,6 +432,31 @@ private const val SAMPLE_HTML = """<!DOCTYPE html>
   </div>
 </body>
 </html>"""
+
+/** Cleans any accidental markdown fences or legacy exported wrapper when importing an HTML file. */
+private fun cleanImportedHtml(raw: String): String {
+    val trimmed = unwrapFence(raw.trim())
+    // If an earlier export wrapped raw HTML inside <h1 style="color:#FF2D55">...</h1><div><span style="">ESCAPED_HTML</span></div>, unwrap it:
+    val legacyPrefix = "<h1 style=\"color:#FF2D55\">"
+    if (trimmed.contains(legacyPrefix) && trimmed.contains("&lt;!DOCTYPE", ignoreCase = true) || trimmed.contains("&lt;html", ignoreCase = true)) {
+        val divStart = trimmed.indexOf("</h1><div>")
+        val bodyEnd = trimmed.lastIndexOf("</div></body></html>")
+        if (divStart >= 0 && bodyEnd > divStart) {
+            val inner = trimmed.substring(divStart + "</h1><div>".length, bodyEnd)
+                .replace(Regex("<span style=\"[^\"]*\">"), "")
+                .replace("</span>", "")
+                .replace("<br/>", "\n")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+            if (inner.contains("<html", ignoreCase = true) || inner.contains("<!doctype", ignoreCase = true)) {
+                return inner.trim()
+            }
+        }
+    }
+    return trimmed
+}
 
 private fun injectDarkScheme(html: String): String {
     val tag = "<meta name=\"color-scheme\" content=\"dark\"><style>html{color-scheme:dark}</style>"
@@ -487,7 +512,7 @@ fun HtmlViewerScreen(
                         context.contentResolver.openInputStream(uri)?.use { input ->
                             val bytes = input.readBytes()
                             if (bytes.size > 5 * 1024 * 1024) throw IllegalStateException("File is larger than 5 MB")
-                            String(bytes, Charsets.UTF_8)
+                            cleanImportedHtml(String(bytes, Charsets.UTF_8))
                         } ?: throw IllegalStateException("Could not open the file")
                     }
                     setText(content)

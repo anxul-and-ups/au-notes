@@ -40,7 +40,8 @@ class LiveVoiceSession(
     private val executeTool: suspend (name: String, args: JSONObject) -> String,
     private val onTurn: (userText: String, assistantText: String) -> Unit,
     private val onFatal: (String) -> Unit,
-    private val context: android.content.Context? = null
+    private val context: android.content.Context? = null,
+    private val initialImagesBase64: List<String> = emptyList()
 ) : GeminiLiveClient.Listener {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -95,6 +96,16 @@ class LiveVoiceSession(
         startPlayback()
         startMic()
         startScreenFrames()
+        if (initialImagesBase64.isNotEmpty()) {
+            scope.launch {
+                initialImagesBase64.take(4).forEach { b64 ->
+                    try {
+                        val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                        client?.sendImage(bytes)
+                    } catch (_: Exception) {}
+                }
+            }
+        }
         scope.launch {
             while (isActive) { // the orb level = whichever side is currently louder, with a soft decay
                 inLevel *= 0.8f; outLevel *= 0.85f

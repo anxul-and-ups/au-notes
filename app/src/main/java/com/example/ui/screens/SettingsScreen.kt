@@ -241,7 +241,7 @@ fun SettingsScreen(
                                 color = if (isDarkMode) Color.White else Color.Black
                             )
                             Text(
-                                text = "PIN / Fingerprint Vault (Hidden Notes & Folders)",
+                                text = "PIN / Fingerprint Vault",
                                 fontSize = 11.sp,
                                 color = CrimsonPrimary
                             )

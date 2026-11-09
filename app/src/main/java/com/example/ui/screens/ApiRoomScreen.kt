@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -142,18 +143,7 @@ fun ApiRoomScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("API Room", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
                 }
-                // Item 27: lock toggle for the whole screen
-                IconButton(onClick = {
-                    val newLocked = !apiRoomLocked
-                    preferences.setApiRoomLocked(newLocked)
-                    Toast.makeText(context, if (newLocked) "API Room locked" else "API Room unlocked", Toast.LENGTH_SHORT).show()
-                }) {
-                    Icon(
-                        imageVector = if (apiRoomLocked) Icons.Default.Lock else Icons.Default.LockOpen,
-                        contentDescription = "Toggle lock",
-                        tint = CrimsonPrimary
-                    )
-                }
+                Spacer(modifier = Modifier.width(38.dp))
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -239,6 +229,88 @@ fun ApiRoomScreen(
                         isActive = activeProvider == entry.name,
                         onSetActive = { preferences.setActiveProvider(entry.name) }
                     )
+                }
+
+                item {
+                    val imgGenModel by preferences.imageGenModel.collectAsState()
+                    val imgGenKey by preferences.imageGenApiKey.collectAsState()
+                    var imgModelInput by remember(imgGenModel) { mutableStateOf(imgGenModel) }
+                    var imgKeyInput by remember(imgGenKey) { mutableStateOf(imgGenKey) }
+                    val presetImgModels = remember {
+                        listOf(
+                            "gemini-2.0-flash-preview-image-generation",
+                            "gemini-2.0-flash-exp-image-generation",
+                            "imagen-3.0-generate-002"
+                        )
+                    }
+                    GlassCard(modifier = Modifier.fillMaxWidth(), isDarkMode = isDarkMode) {
+                        Column(Modifier.padding(14.dp)) {
+                            Text(
+                                "Image Generation Model (AI Chat)",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = CrimsonPrimary
+                            )
+                            Text(
+                                "Used when you ask 'imagine ...' or 'iska image generate kar' in chat. Leave API key blank to use your active Gemini key.",
+                                fontSize = 11.sp,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                presetImgModels.forEach { preset ->
+                                    val isSelected = imgModelInput == preset
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isSelected) CrimsonPrimary else (if (isDarkMode) Color(0x22FFFFFF) else Color(0x14000000)))
+                                            .clickable {
+                                                imgModelInput = preset
+                                                preferences.setImageGenModel(preset)
+                                            }
+                                            .padding(horizontal = 6.dp, vertical = 6.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = preset.removePrefix("gemini-2.0-").removeSuffix("-generation"),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (isSelected) Color.White else (if (isDarkMode) Color.White else Color.Black),
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = imgModelInput,
+                                onValueChange = {
+                                    imgModelInput = it
+                                    preferences.setImageGenModel(it)
+                                },
+                                label = { Text("Image Generation Model ID", fontSize = 11.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary)
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            OutlinedTextField(
+                                value = imgKeyInput,
+                                onValueChange = {
+                                    imgKeyInput = it
+                                    preferences.setImageGenApiKey(it)
+                                },
+                                label = { Text("Optional Dedicated Image API Key", fontSize = 11.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary)
+                            )
+                        }
+                    }
                 }
 
                 item { Spacer(modifier = Modifier.height(30.dp)) }

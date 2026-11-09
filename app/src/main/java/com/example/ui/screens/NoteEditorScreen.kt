@@ -260,7 +260,10 @@ fun NoteEditorScreen(
     val aiService = remember { AiService() }
 
     var title by remember { mutableStateOf(initialNote?.title ?: "") }
-    var contentValue by remember { mutableStateOf(TextFieldValue(initialNote?.content ?: "")) }
+    var contentValue by remember {
+        val initContent = initialNote?.content ?: ""
+        mutableStateOf(TextFieldValue(text = initContent, selection = TextRange(initContent.length)))
+    }
     var selectedCategory by remember { mutableStateOf(initialNote?.category ?: "Normal") }
 
     var currentNoteId by remember { mutableStateOf(initialNote?.id ?: 0L) }
@@ -496,12 +499,17 @@ fun NoteEditorScreen(
         }
     }
 
-    // Debounced Auto-Save
+    // Debounced Auto-Save (skip initial composition pass when opening note)
+    var isFirstAutoSavePass by remember { mutableStateOf(true) }
     LaunchedEffect(
         title, contentValue.text, spans, tableData, attachments,
         isBold, isItalic, isUnderline, isStrikethrough, isCodeFormat,
         fontSize, selectedColorHex, alignment, listType, saveInChoice
     ) {
+        if (isFirstAutoSavePass) {
+            isFirstAutoSavePass = false
+            return@LaunchedEffect
+        }
         if (isNoteEmpty()) return@LaunchedEffect
         hasUnsavedChanges = true
         kotlinx.coroutines.delay(1200)
@@ -651,7 +659,10 @@ fun NoteEditorScreen(
         contentValue = TextFieldValue(newText, selection = TextRange(caret))
     }
 
-    // Two-finger image move: the picture follows the fingers, on release its line moves in the note.
+    // Image touch/gesture state: disables parent scroll so pinch-resize and 1-finger drag never fight scroll
+    var isTouchingImage by remember { mutableStateOf(false) }
+    val localView = androidx.compose.ui.platform.LocalView.current
+    val latestAttachmentsState = androidx.compose.runtime.rememberUpdatedState(attachments)
     var movingImageId by remember { mutableStateOf<String?>(null) }
     var movingDy by remember { mutableStateOf(0f) }
 
@@ -1232,16 +1243,8 @@ fun NoteEditorScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .verticalScroll(mainScrollState)
+                        .verticalScroll(mainScrollState, enabled = !isTouchingImage)
                         .padding(horizontal = 8.dp, vertical = 8.dp)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) {
-                            contentFocusRequester.requestFocus()
-                            contentValue = contentValue.copy(selection = TextRange(contentValue.text.length))
-                            keyboardController?.show()
-                        }
                 ) {
 
                     // Inline Attached Images (with Move, Resize, Crop, Rename support - PART F Item 5)
@@ -1251,18 +1254,85 @@ fun NoteEditorScreen(
                             legacyAttachments.forEachIndexed { index, att ->
                                 val isImage = att.mimeType.startsWith("image")
                                 GlassCard(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .offset {
+                                            IntOffset(
+                                                with(density) { att.posX.coerceAtLeast(0f).dp.roundToPx() },
+                                                with(density) { att.posY.dp.roundToPx() }
+                                            )
+                                        },
                                     shape = RoundedCornerShape(14.dp),
                                     isDarkMode = isDarkMode,
                                     elevation = 2.dp
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp)) {
                                         if (isImage) {
-                                            AttachmentFrame(
-                                                att = att,
-                                                modifier = Modifier.fillMaxWidth(att.widthFraction),
-                                                cornerRadius = 10
-                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth(att.widthFraction.coerceIn(0.22f, 1f))
+                                                    .pointerInput(att.uri, att.locked) {
+                                                        if (att.locked) return@pointerInput
+                                                        awaitPointerEventScope {
+                                                            while (true) {
+                                                                val downEvent = awaitPointerEvent()
+                                                                val anyPressed = downEvent.changes.any { it.pressed }
+                                                                if (!anyPressed) {
+                                                                    isTouchingImage = false
+                                                                    localView.parent?.requestDisallowInterceptTouchEvent(false)
+                                                                    continue
+                                                                }
+                                                                isTouchingImage = true
+                                                                localView.parent?.requestDisallowInterceptTouchEvent(true)
+                                                                val pressed = downEvent.changes.filter { it.pressed }
+                                                                if (pressed.size >= 2) {
+                                                                    val p1 = pressed[0]
+                                                                    val p2 = pressed[1]
+                                                                    val prevDist = (p1.previousPosition - p2.previousPosition).getDistance()
+                                                                    val curDist = (p1.position - p2.position).getDistance()
+                                                                    if (prevDist > 8f && curDist > 8f) {
+                                                                        val zoomFactor = (curDist / prevDist).coerceIn(0.85f, 1.18f)
+                                                                        attachments = latestAttachmentsState.value.map { item ->
+                                                                            if (item.uri == att.uri && item.id == att.id) {
+                                                                                val newW = (item.widthFraction * zoomFactor).coerceIn(0.22f, 1.0f)
+                                                                                val maxHorizontalDp = with(density) { (fieldWidthPx * (1f - newW)).toDp().value.coerceAtLeast(0f) }
+                                                                                item.copy(
+                                                                                    widthFraction = newW,
+                                                                                    posX = item.posX.coerceAtLeast(0f).coerceAtMost(maxHorizontalDp)
+                                                                                )
+                                                                            } else item
+                                                                        }
+                                                                        downEvent.changes.forEach { it.consume() }
+                                                                    }
+                                                                } else if (pressed.size == 1) {
+                                                                    val c = pressed[0]
+                                                                    val delta = c.position - c.previousPosition
+                                                                    if (delta.getDistance() > 0.5f) {
+                                                                        val dxDp = with(density) { delta.x.toDp().value }
+                                                                        val dyDp = with(density) { delta.y.toDp().value }
+                                                                        attachments = latestAttachmentsState.value.map { item ->
+                                                                            if (item.uri == att.uri && item.id == att.id) {
+                                                                                val maxHorizontalDp = with(density) { (fieldWidthPx * (1f - item.widthFraction)).toDp().value.coerceAtLeast(0f) }
+                                                                                val curX = if (item.posX < 0f) 0f else item.posX
+                                                                                item.copy(
+                                                                                    posX = (curX + dxDp).coerceIn(0f, maxHorizontalDp),
+                                                                                    posY = (item.posY + dyDp).coerceIn(-250f, 1200f)
+                                                                                )
+                                                                            } else item
+                                                                        }
+                                                                        c.consume()
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                            ) {
+                                                AttachmentFrame(
+                                                    att = att,
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    cornerRadius = 10
+                                                )
+                                            }
                                         }
 
                                         Spacer(modifier = Modifier.height(6.dp))
@@ -1322,44 +1392,8 @@ fun NoteEditorScreen(
                         .heightIn(min = 260.dp)
                         .onSizeChanged { fieldWidthPx = it.width.toFloat() }
                     ) {
-                    BasicTextField(
-                        value = contentValue,
-                        onValueChange = { rawVal ->
-                            val newVal = continueListOnEnter(contentValue, eraseMarkerAtomically(contentValue, rawVal))
-                            val oldText = contentValue.text
-                            val newText = newVal.text
-                            if (newText != oldText) {
-                                pushUndo()
-                                // Shift existing spans for whatever just changed (insert/delete/paste)
-                                spans = RichTextFormatter.adjustSpansForEdit(spans, oldText, newText)
-                                // Item 8: if text grew (a real insertion), wrap ONLY the newly typed
-                                // range with whichever formats are currently toggled on — existing
-                                // text before/after is never touched.
-                                if (newText.length > oldText.length) {
-                                    var editStart = 0
-                                    while (editStart < oldText.length && editStart < newText.length && oldText[editStart] == newText[editStart]) {
-                                        editStart++
-                                    }
-                                    val insertedEnd = editStart + (newText.length - oldText.length)
-                                    if (isBold) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "bold")
-                                    if (isItalic) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "italic")
-                                    if (isUnderline) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "underline")
-                                    if (isStrikethrough) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "strikethrough")
-                                    if (isCodeFormat) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "code")
-                                    activeColorHex?.let { hex ->
-                                        spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "color", hex)
-                                    }
-                                    activeFontSize?.let { sz ->
-                                        spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "fontsize", sz.toString())
-                                    }
-                                    if (activeHighlight) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "highlight", highlightValue())
-                                }
-                            }
-                            contentValue = newVal
-                            // Auto-scroll is coordinated by the debounced LaunchedEffect above.
-                            // Do not launch a second scroll request for every keystroke.
-                        },
-                        visualTransformation = VisualTransformation { text ->
+                    val editorVisualTransformation = remember(spans, isJsonMode, effectiveTextColor, fontSize, isDarkMode) {
+                        VisualTransformation { text ->
                             val raw = text.text
                             val baseStyled = if (isJsonMode) {
                                 buildJsonHighlightedText(raw)
@@ -1384,8 +1418,6 @@ fun NoteEditorScreen(
                                 }
                                 if (raw.contains("```")) {
                                     CodeFences.find(raw).forEach { f ->
-                                        // The opening fence line (where the header bar is overlaid) is hidden
-                                        // so it does not collide with the header bar
                                         val openStart = f.start.coerceIn(0, raw.length)
                                         val openEnd = f.openLineEnd.coerceIn(openStart, raw.length)
                                         if (openStart < openEnd) {
@@ -1395,7 +1427,6 @@ fun NoteEditorScreen(
                                                 openEnd
                                             )
                                         }
-                                        // Code content: Monospace font & Syntax highlighting
                                         val cStart = f.codeStart.coerceIn(0, raw.length)
                                         val cEnd = (f.end - 3).coerceIn(cStart, raw.length)
                                         if (cStart < cEnd) {
@@ -1417,7 +1448,6 @@ fun NoteEditorScreen(
                                                 }
                                             } catch (_: Exception) {}
                                         }
-                                        // Closing fence line is completely transparent so commas/backticks don't show
                                         val closeStart = (f.end - 3).coerceIn(0, raw.length)
                                         val closeEnd = f.end.coerceIn(closeStart, raw.length)
                                         if (closeStart < closeEnd) {
@@ -1434,7 +1464,51 @@ fun NoteEditorScreen(
                                 }
                             }
                             TransformedText(finalStyled, OffsetMapping.Identity)
+                        }
+                    }
+
+                    BasicTextField(
+                        value = contentValue,
+                        onValueChange = { rawVal ->
+                            var newVal = continueListOnEnter(contentValue, eraseMarkerAtomically(contentValue, rawVal))
+                            val oldText = contentValue.text
+                            val newText = newVal.text
+                            if (newText != oldText) {
+                                pushUndo()
+                                // Shift existing spans for whatever just changed (insert/delete/paste)
+                                spans = RichTextFormatter.adjustSpansForEdit(spans, oldText, newText)
+                                // Item 8: if text grew (a real insertion), wrap ONLY the newly typed
+                                // range with whichever formats are currently toggled on — existing
+                                // text before/after is never touched.
+                                if (newText.length > oldText.length) {
+                                    var editStart = 0
+                                    while (editStart < oldText.length && editStart < newText.length && oldText[editStart] == newText[editStart]) {
+                                        editStart++
+                                    }
+                                    val insertedEnd = editStart + (newText.length - oldText.length)
+                                    val insertedSlice = newText.substring(editStart, insertedEnd.coerceIn(editStart, newText.length))
+                                    // Fix #18b: When pressing Enter on line 2 or 3 (in the middle of a multi-line note),
+                                    // guarantee the cursor stays right at insertedEnd (on the new line) and never jumps to the end of the note!
+                                    if (insertedSlice.startsWith("\n") && editStart < oldText.length && newVal.selection.start != insertedEnd) {
+                                        newVal = newVal.copy(selection = TextRange(insertedEnd))
+                                    }
+                                    if (isBold) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "bold")
+                                    if (isItalic) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "italic")
+                                    if (isUnderline) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "underline")
+                                    if (isStrikethrough) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "strikethrough")
+                                    if (isCodeFormat) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "code")
+                                    activeColorHex?.let { hex ->
+                                        spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "color", hex)
+                                    }
+                                    activeFontSize?.let { sz ->
+                                        spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "fontsize", sz.toString())
+                                    }
+                                    if (activeHighlight) spans = RichTextFormatter.addSpan(spans, editStart, insertedEnd, "highlight", highlightValue())
+                                }
+                            }
+                            contentValue = newVal
                         },
+                        visualTransformation = editorVisualTransformation,
                         textStyle = TextStyle(
                             fontSize = fontSize.sp,
                             fontFamily = if (isCodeFormat || isJsonMode) FontFamily.Monospace else FontFamily.Default,
@@ -1527,7 +1601,8 @@ fun NoteEditorScreen(
                             .bringIntoViewRequester(contentBringIntoViewRequester)
                     )
 
-                    // Inline images: drawn over their "[img:id]" lines (those lines reserve the height).
+                    // Inline images: drawn over their "[img:id]" lines with smooth 2-finger pinch-to-resize
+                    // and 1-finger drag-to-move (persisting widthFraction, posX, and posY in AttachmentInfo).
                     val activeLayout = if (textLayout != null && textLayout!!.layoutInput.text.length == contentValue.text.length) textLayout else stableTextLayout
                     activeLayout?.let { layout ->
                         val full = contentValue.text
@@ -1536,10 +1611,20 @@ fun NoteEditorScreen(
                                 val att = attachments.firstOrNull { it.id == m.groupValues[1] } ?: return@forEach
                                 val line = layout.getLineForOffset(m.range.first.coerceIn(0, layout.layoutInput.text.length))
                                 val top = layout.getLineTop(line)
+                                val savedOffsetX = with(density) { att.posX.coerceAtLeast(0f).dp.toPx() }
+                                val savedOffsetY = with(density) { att.posY.dp.toPx() }
+                                val maxOffsetXPx = (fieldWidthPx * (1f - att.widthFraction.coerceIn(0.22f, 1f))).coerceAtLeast(0f)
+                                val clampedOffsetXPx = savedOffsetX.coerceIn(0f, maxOffsetXPx)
+
                                 Column(
                                     modifier = Modifier
-                                        .offset { IntOffset(0, (top + if (movingImageId == att.id) movingDy else 0f).roundToInt()) }
-                                        .width(with(density) { (fieldWidthPx * att.widthFraction).toDp() })
+                                        .offset {
+                                            IntOffset(
+                                                clampedOffsetXPx.roundToInt(),
+                                                (top + savedOffsetY + if (movingImageId == att.id) movingDy else 0f).roundToInt()
+                                            )
+                                        }
+                                        .width(with(density) { (fieldWidthPx * att.widthFraction.coerceIn(0.22f, 1f)).toDp() })
                                 ) {
                                     Box(
                                         modifier = Modifier
@@ -1551,33 +1636,107 @@ fun NoteEditorScreen(
                                             .clip(RoundedCornerShape(10.dp))
                                             .pointerInput(att.id, att.locked) {
                                                 if (att.locked) return@pointerInput
-                                                // Pinch = RESIZE the frame (widthFraction only, so the layout footprint
-                                                // shrinks/grows with the picture). Drag = move the picture INSIDE the
-                                                // frame, in fractions of the frame's real size. The inner zoom is left
-                                                // to the zoom buttons / image editor, so one gesture never shrinks the
-                                                // image twice.
-                                                detectTransformGestures { _, pan, zoomChange, _ ->
-                                                    // read the CURRENT frame size on every event (a pinch changes it)
-                                                    val frameWidthPx = this@pointerInput.size.width.toFloat().coerceAtLeast(1f)
-                                                    val frameHeightPx = this@pointerInput.size.height.toFloat().coerceAtLeast(1f)
-                                                    attachments = attachments.map {
-                                                        if (it.id == att.id) {
-                                                            val newWidth = if (zoomChange != 1f) (it.widthFraction * zoomChange).coerceIn(0.2f, 1f) else it.widthFraction
-                                                            it.copy(widthFraction = newWidth)
-                                                                .withInnerPan(pan.x / frameWidthPx, pan.y / frameHeightPx)
-                                                        } else it
+                                                awaitPointerEventScope {
+                                                    var totalGestureMovement = 0f
+                                                    while (true) {
+                                                        val event = awaitPointerEvent()
+                                                        val pressed = event.changes.filter { it.pressed }
+                                                        if (pressed.isEmpty()) {
+                                                            if (isTouchingImage) {
+                                                                isTouchingImage = false
+                                                                localView.parent?.requestDisallowInterceptTouchEvent(false)
+                                                                if (totalGestureMovement < 6f) {
+                                                                    keyboardController?.hide()
+                                                                    activeEditImageId = if (activeEditImageId == att.id) null else att.id
+                                                                }
+                                                                totalGestureMovement = 0f
+                                                            }
+                                                            continue
+                                                        }
+
+                                                        if (!isTouchingImage) {
+                                                            isTouchingImage = true
+                                                            localView.parent?.requestDisallowInterceptTouchEvent(true)
+                                                            activeEditImageId = att.id
+                                                            totalGestureMovement = 0f
+                                                        }
+
+                                                        if (pressed.size >= 2) {
+                                                            // 2-Finger Pinch-to-Resize (smooth, maintains aspect ratio, clamped 22%..100%)
+                                                            val p1 = pressed[0]
+                                                            val p2 = pressed[1]
+                                                            val prevDist = (p1.previousPosition - p2.previousPosition).getDistance()
+                                                            val curDist = (p1.position - p2.position).getDistance()
+                                                            val prevCenter = (p1.previousPosition + p2.previousPosition) / 2f
+                                                            val curCenter = (p1.position + p2.position) / 2f
+                                                            val panDelta = curCenter - prevCenter
+                                                            totalGestureMovement += kotlin.math.abs(curDist - prevDist) + panDelta.getDistance()
+
+                                                            if (prevDist > 8f && curDist > 8f) {
+                                                                val zoomFactor = (curDist / prevDist).coerceIn(0.85f, 1.18f)
+                                                                val dxDp = with(density) { panDelta.x.toDp().value }
+                                                                val dyDp = with(density) { panDelta.y.toDp().value }
+                                                                attachments = latestAttachmentsState.value.map { item ->
+                                                                    if (item.id == att.id) {
+                                                                        val newW = (item.widthFraction * zoomFactor).coerceIn(0.22f, 1.0f)
+                                                                        val maxHorizontalDp = with(density) { (fieldWidthPx * (1f - newW)).toDp().value.coerceAtLeast(0f) }
+                                                                        val curX = if (item.posX < 0f) 0f else item.posX
+                                                                        item.copy(
+                                                                            widthFraction = newW,
+                                                                            posX = (curX + dxDp).coerceIn(0f, maxHorizontalDp),
+                                                                            posY = (item.posY + dyDp).coerceIn(-300f, 1500f)
+                                                                        )
+                                                                    } else item
+                                                                }
+                                                                event.changes.forEach { it.consume() }
+                                                            }
+                                                        } else if (pressed.size == 1) {
+                                                            // 1-Finger Drag to Move Image smoothly within the note without scroll fight
+                                                            val c = pressed[0]
+                                                            val delta = c.position - c.previousPosition
+                                                            val dist = delta.getDistance()
+                                                            totalGestureMovement += dist
+                                                            if (dist > 0.5f) {
+                                                                val dxDp = with(density) { delta.x.toDp().value }
+                                                                val dyDp = with(density) { delta.y.toDp().value }
+                                                                attachments = latestAttachmentsState.value.map { item ->
+                                                                    if (item.id == att.id) {
+                                                                        val maxHorizontalDp = with(density) { (fieldWidthPx * (1f - item.widthFraction)).toDp().value.coerceAtLeast(0f) }
+                                                                        val curX = if (item.posX < 0f) 0f else item.posX
+                                                                        item.copy(
+                                                                            posX = (curX + dxDp).coerceIn(0f, maxHorizontalDp),
+                                                                            posY = (item.posY + dyDp).coerceIn(-300f, 1500f)
+                                                                        )
+                                                                    } else item
+                                                                }
+                                                                c.consume()
+                                                            }
+                                                        }
                                                     }
                                                 }
-                                            }
-                                            .clickable {
-                                                keyboardController?.hide()
-                                                activeEditImageId = if (activeEditImageId == att.id) null else att.id
                                             }
                                     ) {
                                         AttachmentFrame(
                                             att = att,
                                             modifier = Modifier.fillMaxWidth()
                                         )
+                                        if (activeEditImageId == att.id && !att.locked) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.BottomEnd)
+                                                    .padding(6.dp)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(Color(0xAA000000))
+                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            ) {
+                                                Text(
+                                                    text = "${(att.widthFraction * 100).roundToInt()}% • Pinch/Drag",
+                                                    fontSize = 9.5.sp,
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                        }
                                         if (att.locked) {
                                             Icon(
                                                 Icons.Default.Lock, "Locked",

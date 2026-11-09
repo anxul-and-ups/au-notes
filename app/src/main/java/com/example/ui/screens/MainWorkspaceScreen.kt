@@ -139,6 +139,13 @@ fun MainWorkspaceScreen(
     repository: NoteRepository,
     preferences: AppPreferences,
     initialFolder: String = "All Notes",
+    onFolderChanged: (String) -> Unit = {},
+    initialSearchQuery: String = "",
+    onSearchQueryChanged: (String) -> Unit = {},
+    initialIsDeepSearch: Boolean = false,
+    onDeepSearchChanged: (Boolean) -> Unit = {},
+    savedScrollPosition: Pair<Int, Int>? = null,
+    onSaveScrollPosition: (String, Int, Int) -> Unit = { _, _, _ -> },
     isDarkMode: Boolean,
     onToggleDarkMode: () -> Unit,
     onOpenSidebar: () -> Unit,
@@ -194,9 +201,19 @@ fun MainWorkspaceScreen(
     // (used to gate unlocking an already-locked note/folder from the menu)
     var pendingVerifyThenAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
-    var searchQuery by remember { mutableStateOf("") }
-    var isDeepSearch by remember { mutableStateOf(false) } // PART A Item 5: Deep Search toggle
+    var searchQuery by remember(initialSearchQuery) { mutableStateOf(initialSearchQuery) }
+    var isDeepSearch by remember(initialIsDeepSearch) { mutableStateOf(initialIsDeepSearch) } // PART A Item 5: Deep Search toggle
     var selectedFolder by remember(initialFolder) { mutableStateOf(initialFolder) }
+
+    androidx.compose.runtime.LaunchedEffect(selectedFolder) {
+        onFolderChanged(selectedFolder)
+    }
+    androidx.compose.runtime.LaunchedEffect(searchQuery) {
+        onSearchQueryChanged(searchQuery)
+    }
+    androidx.compose.runtime.LaunchedEffect(isDeepSearch) {
+        onDeepSearchChanged(isDeepSearch)
+    }
 
     // Telegram Long-Press Action Sheet state (PART A Item 2)
     var longPressedNote by remember { mutableStateOf<NoteEntity?>(null) }
@@ -215,6 +232,7 @@ fun MainWorkspaceScreen(
             pendingFolderToOpen = folderName
         } else {
             selectedFolder = folderName
+            onFolderChanged(folderName)
         }
     }
 
@@ -780,9 +798,27 @@ fun MainWorkspaceScreen(
                         }
                     }
                 } else {
+                    val notesListState = androidx.compose.runtime.key(selectedFolder) {
+                        androidx.compose.foundation.lazy.rememberLazyListState(
+                            initialFirstVisibleItemIndex = savedScrollPosition?.first ?: 0,
+                            initialFirstVisibleItemScrollOffset = savedScrollPosition?.second ?: 0
+                        )
+                    }
+                    androidx.compose.runtime.LaunchedEffect(
+                        selectedFolder,
+                        notesListState.firstVisibleItemIndex,
+                        notesListState.firstVisibleItemScrollOffset
+                    ) {
+                        onSaveScrollPosition(
+                            selectedFolder,
+                            notesListState.firstVisibleItemIndex,
+                            notesListState.firstVisibleItemScrollOffset
+                        )
+                    }
                     // Plain list: no per-folder replay animation (the old staggered "wave" made folder
                     // switching lag because every card was rebuilt and animated at once).
                     LazyColumn(
+                        state = notesListState,
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(bottom = 80.dp)
@@ -843,7 +879,12 @@ fun MainWorkspaceScreen(
                             .shadow(8.dp, CircleShape)
                             .clip(CircleShape)
                             .background(Color.Black)
-                            .clickable { onOpenAiChat() }
+                            .clickable {
+                                if (!com.example.data.ai.ApiConnectivityChecker.isOnline(context)) {
+                                    Toast.makeText(context, "You're currently offline", Toast.LENGTH_SHORT).show()
+                                }
+                                onOpenAiChat()
+                            }
                     ) {
                         Image(
                             painter = painterResource(R.drawable.au_bot_icon_1790271144581),

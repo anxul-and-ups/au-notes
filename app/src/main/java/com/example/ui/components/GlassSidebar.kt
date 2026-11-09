@@ -101,7 +101,6 @@ fun GlassSidebar(
     onOpenFileEditor: () -> Unit,
     onOpenHtmlViewer: () -> Unit = {},
     onOpenMyDocuments: () -> Unit = {},
-    onOpenNameGenerator: () -> Unit,
     onOpenCommandMode: () -> Unit,
     onOpenTempMail: () -> Unit = {},
     onOpenAccountant: () -> Unit = {},
@@ -274,18 +273,7 @@ fun GlassSidebar(
                         }
                     )
 
-                    // 3. Name Generator
-                    SidebarMenuItemPainter(
-                        icon = painterResource(R.drawable.ic_format_txt),
-                        title = "Name Generator",
-                        isDarkMode = isDarkMode,
-                        onClick = {
-                            onClose()
-                            onOpenNameGenerator()
-                        }
-                    )
-
-                    // 4. Voice Command Mode (AU Agent Live)
+                    // 3. Voice Command Mode (AU Agent Live)
                     SidebarMenuItem(
                         icon = Icons.Default.Mic,
                         title = "Voice Command Mode",

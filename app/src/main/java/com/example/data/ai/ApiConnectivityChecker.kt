@@ -26,6 +26,18 @@ object ApiConnectivityChecker {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
+    fun isOnline(context: android.content.Context): Boolean {
+        return try {
+            val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                ?: return false
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            true
+        }
+    }
+
     /** Pulls the provider's own error text out of a JSON error body when there is one. */
     private fun errorText(body: String): String = try {
         val o = JSONObject(body)

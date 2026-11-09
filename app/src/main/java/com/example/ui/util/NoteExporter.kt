@@ -149,7 +149,7 @@ object NoteExporter {
     private fun tableRows(note: NoteEntity): List<List<String>> =
         note.tableData.lines().filter { it.isNotBlank() }.map { row -> row.split("|").map { it.trim() }.filter { it.isNotEmpty() } }
 
-    private fun buildPlainText(note: NoteEntity): String {
+    fun buildPlainText(note: NoteEntity): String {
         // (marker lines like [img:abc123] are layout data, never exported as text)
         val sb = StringBuilder()
         sb.append(note.title).append("\n==================\n").append(ImageMarkers.strip(note.content))
@@ -196,6 +196,20 @@ object NoteExporter {
     private fun htmlEscape(s: String) = xmlEscape(s).replace("\n", "<br/>")
 
     private fun buildHtml(note: NoteEntity): String {
+        // If the note content is already a raw HTML document (or fenced ```html block), return it cleanly without wrapping!
+        val rawTrimmed = note.content.trim().let { t ->
+            if (t.startsWith("```")) {
+                val nl = t.indexOf('\n')
+                if (nl >= 0) t.substring(nl + 1).removeSuffix("```").trim() else t
+            } else t
+        }
+        if (rawTrimmed.startsWith("<!doctype", ignoreCase = true) ||
+            rawTrimmed.startsWith("<html", ignoreCase = true) ||
+            rawTrimmed.startsWith("<head", ignoreCase = true) ||
+            rawTrimmed.startsWith("<body", ignoreCase = true)
+        ) {
+            return rawTrimmed
+        }
         val spans = RichTextFormatter.deserializeSpans(note.styleSpansJson)
         val body = StringBuilder()
         val text = ImageMarkers.blank(note.content)
@@ -244,7 +258,7 @@ object NoteExporter {
         }
         return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
             "<title>${xmlEscape(note.title)}</title></head><body style=\"font-family:sans-serif;max-width:800px;margin:24px auto;padding:0 12px\">" +
-            "<h1 style=\"color:#FF2D55\">${xmlEscape(note.title)}</h1><div>$body</div>$tbl$imgs</body></html>"
+            "<div>$body</div>$tbl$imgs</body></html>"
     }
 
     // ---------------------------------------------------------------- images
@@ -357,7 +371,7 @@ object NoteExporter {
     }
 
     /** Markdown: # title, **bold**, *italic*, ~~strike~~, ==highlight==, `code`, code fences, tables, image names. */
-    private fun buildMarkdown(note: NoteEntity): String {
+    fun buildMarkdown(note: NoteEntity): String {
         val text = ImageMarkers.blank(note.content)
         val fences = com.example.ui.components.CodeFences.find(note.content)
         fun inFence(s: Int, e: Int) = fences.any { s >= it.start && e <= it.end }

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -22,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,9 +57,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * "PDF mode": shows the note exactly as the exported PDF will look (real pages, rendered from the
- * very same file that gets exported), and exports it as a normal PDF, ONE continuous page, or a
- * single page picture. Closing returns to the editor.
+ * Write Mode PDF Tool:
+ * - Shows ONLY 2 preview & export modes:
+ *   1. Single Page (poora note ek hi long page PDF me)
+ *   2. A4 (standard A4 pages me split)
+ * - Exports according to the selected mode and keeps/refreshes the live preview.
+ * - Positions the bottom 3 buttons elevated in a comfortable tap zone well above the bottom edge.
  */
 @Composable
 fun PdfToolSheet(
@@ -67,21 +72,15 @@ fun PdfToolSheet(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var singlePage by remember { mutableStateOf(false) }
+    var singlePage by remember { mutableStateOf(true) }
     var pages by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var failed by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
-    val hasWatermark = remember { NoteExporter.hasWatermarkAsset(context) }
-    var watermarkOn by remember { mutableStateOf(NoteExporter.watermarkEnabled) }
-    val optPrefs = remember { context.getSharedPreferences("au_pdf_options", android.content.Context.MODE_PRIVATE) }
-    var pageSize by remember { mutableStateOf(optPrefs.getString("size", "A4") ?: "A4") }
-    var marginPt by remember { mutableStateOf(optPrefs.getFloat("margin", 40f)) }
+    var lastExportedPath by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(singlePage, watermarkOn, pageSize, marginPt) {
-        optPrefs.edit().putString("size", pageSize).putFloat("margin", marginPt).apply()
-        NoteExporter.setPdfOptions(pageSize, marginPt)
-        NoteExporter.watermarkEnabled = watermarkOn
+    LaunchedEffect(singlePage) {
+        NoteExporter.setPdfOptions("A4", 40f)
         loading = true
         failed = false
         pages = withContext(Dispatchers.IO) {
@@ -96,13 +95,28 @@ fun PdfToolSheet(
         loading = false
     }
 
-    fun safeName(): String = note.title.ifBlank { "Untitled" }.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").trim().take(60).ifBlank { "note" }
+    fun safeName(): String = note.title.ifBlank { "Untitled" }
+        .replace(Regex("[^\\p{L}\\p{N} ._-]"), "_")
+        .trim()
+        .take(60)
+        .ifBlank { "note" }
 
     fun export(kind: String) {
         if (exporting) return
-        NoteExporter.setPdfOptions(pageSize, marginPt)
+        val targetSinglePage = when (kind) {
+            "single" -> true
+            "a4" -> false
+            else -> singlePage
+        }
+        if (kind == "single" && !singlePage) {
+            singlePage = true
+        } else if (kind == "a4" && singlePage) {
+            singlePage = false
+        }
+        NoteExporter.setPdfOptions("A4", 40f)
         exporting = true
         scope.launch(Dispatchers.IO) {
+            var previewBitmaps: List<Bitmap>? = null
             val saved = try {
                 when (kind) {
                     "png" -> {
@@ -111,17 +125,25 @@ fun PdfToolSheet(
                         NoteExporter.saveToDevice(context, f, name, "image/png")
                     }
                     else -> {
-                        val name = "${safeName()}${if (kind == "single") "_single_page" else ""}.pdf"
-                        val f = NoteExporter.buildPdf(context, note, name, kind == "single")
+                        val name = "${safeName()}${if (targetSinglePage) "_single_page" else "_A4"}.pdf"
+                        val f = NoteExporter.buildPdf(context, note, name, targetSinglePage)
+                        previewBitmaps = try { NoteExporter.renderPages(f) } catch (_: Exception) { null }
                         NoteExporter.saveToDevice(context, f, name, "application/pdf")
                     }
                 }
             } catch (e: Exception) { null }
             withContext(Dispatchers.Main) {
                 exporting = false
+                if (!previewBitmaps.isNullOrEmpty()) {
+                    pages = previewBitmaps
+                }
+                if (saved != null) {
+                    lastExportedPath = saved.displayPath
+                }
                 Toast.makeText(
                     context,
-                    if (saved != null) "Saved to ${saved.displayPath}" else "Export failed: could not write to device storage",
+                    if (saved != null) "Saved (${if (kind == "png") "Page Image" else if (targetSinglePage) "Single Page PDF" else "A4 PDF"}) to ${saved.displayPath}"
+                    else "Export failed: could not write to device storage",
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -130,26 +152,48 @@ fun PdfToolSheet(
 
     val bg = if (isDarkMode) Color(0xFF14161B) else Color(0xFFE9ECF2)
     val barText = if (isDarkMode) Color.White else Color(0xFF111111)
+    val cardSurface = if (isDarkMode) Color(0xFF1D2028) else Color.White
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = true, decorFitsSystemWindows = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            decorFitsSystemWindows = false
+        )
     ) {
-        Column(Modifier.fillMaxSize().background(bg).statusBarsPadding().navigationBarsPadding().padding(bottom = 4.dp)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(bg)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
+        ) {
+            // Top Header
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close", tint = barText) }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, "Close", tint = barText)
+                }
                 Column(Modifier.weight(1f)) {
-                    Text("PDF mode", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = barText)
+                    Text("PDF Preview & Export", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = barText)
                     Text(
-                        if (loading) "Preparing pages…" else "${pages.size} page${if (pages.size == 1) "" else "s"} • exactly how the export will look",
-                        fontSize = 11.sp, color = barText.copy(alpha = 0.6f)
+                        if (loading) "Preparing ${if (singlePage) "Single Page" else "A4"} preview…"
+                        else "${pages.size} page${if (pages.size == 1) "" else "s"} • ${if (singlePage) "Single Page Mode" else "A4 Mode"}",
+                        fontSize = 11.sp,
+                        color = barText.copy(alpha = 0.6f)
                     )
                 }
                 Row(
-                    Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onDismiss).padding(horizontal = 10.dp, vertical = 6.dp),
+                    Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(onClick = onDismiss)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(Icons.Default.Edit, null, tint = CrimsonPrimary, modifier = Modifier.width(16.dp))
@@ -158,57 +202,86 @@ fun PdfToolSheet(
                 }
             }
 
-            // page layout switch
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(false to "A4 pages", true to "One long page").forEach { (single, label) ->
-                    val on = singlePage == single
+            // ONLY 2 Preview Options: 1. Single Page, 2. A4
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                listOf(
+                    true to "Single Page",
+                    false to "A4"
+                ).forEach { (isSingle, label) ->
+                    val selected = singlePage == isSingle
                     Box(
                         Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (on) CrimsonPrimary else barText.copy(alpha = 0.08f))
-                            .clickable { singlePage = single }
-                            .padding(horizontal = 14.dp, vertical = 7.dp)
-                    ) { Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (on) Color.White else barText) }
+                            .weight(1f)
+                            .height(42.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (selected) CrimsonPrimary else barText.copy(alpha = 0.08f))
+                            .border(
+                                width = 1.dp,
+                                color = if (selected) CrimsonPrimary else barText.copy(alpha = 0.14f),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .clickable { singlePage = isSingle },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (selected) Color.White else barText
+                        )
+                    }
                 }
             }
-            // page size + margins (what you see below is rendered with exactly these)
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Page", fontSize = 11.sp, color = barText.copy(alpha = 0.6f))
-                listOf("A4", "Letter", "A5").forEach { sz ->
-                    val on = pageSize == sz
-                    Box(
-                        Modifier.clip(RoundedCornerShape(8.dp)).background(if (on) CrimsonPrimary else barText.copy(alpha = 0.08f))
-                            .clickable { pageSize = sz }.padding(horizontal = 10.dp, vertical = 5.dp)
-                    ) { Text(sz, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (on) Color.White else barText) }
-                }
-                Spacer(Modifier.width(6.dp))
-                Text("Margins", fontSize = 11.sp, color = barText.copy(alpha = 0.6f))
-                listOf(24f to "Narrow", 40f to "Normal", 64f to "Wide").forEach { (m, label) ->
-                    val on = marginPt == m
-                    Box(
-                        Modifier.clip(RoundedCornerShape(8.dp)).background(if (on) CrimsonPrimary else barText.copy(alpha = 0.08f))
-                            .clickable { marginPt = m }.padding(horizontal = 8.dp, vertical = 5.dp)
-                    ) { Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (on) Color.White else barText) }
-                }
-            }
-            if (hasWatermark) {
+
+            if (lastExportedPath != null) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF2E7D32).copy(alpha = 0.16f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("AU NOTES watermark", fontSize = 12.sp, color = barText, modifier = Modifier.weight(1f))
-                    androidx.compose.material3.Switch(checked = watermarkOn, onCheckedChange = { watermarkOn = it })
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = Color(0xFF4CAF50),
+                        modifier = Modifier.width(16.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Exported: $lastExportedPath (Preview open below)",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = barText
+                    )
                 }
             }
-            Spacer(Modifier.height(8.dp))
 
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Spacer(Modifier.height(6.dp))
+
+            // PDF Pages Live Preview
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
                 when {
                     loading -> CircularProgressIndicator(color = CrimsonPrimary)
                     failed -> Text("Couldn't build the preview.", color = barText.copy(alpha = 0.7f))
                     else -> LazyColumn(
                         Modifier.fillMaxSize(),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            horizontal = 14.dp,
+                            vertical = 8.dp
+                        ),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         itemsIndexed(pages) { i, bmp ->
@@ -219,12 +292,16 @@ fun PdfToolSheet(
                                     contentScale = ContentScale.FillWidth,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .border(1.dp, Color(0x33000000), RoundedCornerShape(4.dp))
+                                        .border(1.dp, Color(0x33000000), RoundedCornerShape(6.dp))
                                         .background(Color.White)
                                 )
                                 Text(
-                                    "Page ${i + 1}", fontSize = 10.sp, color = barText.copy(alpha = 0.55f),
-                                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 3.dp)
+                                    if (singlePage) "Single Page Preview" else "A4 Page ${i + 1} of ${pages.size}",
+                                    fontSize = 10.5.sp,
+                                    color = barText.copy(alpha = 0.6f),
+                                    modifier = Modifier
+                                        .align(Alignment.CenterHorizontally)
+                                        .padding(top = 4.dp)
                                 )
                             }
                         }
@@ -232,30 +309,59 @@ fun PdfToolSheet(
                 }
             }
 
-            Row(
-                Modifier.fillMaxWidth().padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            // Elevated Bottom 3 Buttons — raised comfortably away from the bottom navigation edge
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                    .padding(bottom = 28.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(cardSurface)
+                    .border(1.dp, barText.copy(alpha = 0.1f), RoundedCornerShape(16.dp))
+                    .padding(10.dp)
             ) {
-                @Composable
-                fun ExportBtn(label: String, kind: String, weight: Float, filled: Boolean) {
-                    Box(
-                        Modifier
-                            .weight(weight)
-                            .height(46.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (filled) CrimsonPrimary else barText.copy(alpha = 0.1f))
-                            .clickable(enabled = !exporting && !loading) { export(kind) },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            if (exporting) "Saving…" else label, fontSize = 12.5.sp, fontWeight = FontWeight.Bold,
-                            color = if (filled) Color.White else barText
-                        )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    @Composable
+                    fun ExportBtn(label: String, kind: String, weight: Float, filled: Boolean) {
+                        Box(
+                            Modifier
+                                .weight(weight)
+                                .height(48.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (filled) CrimsonPrimary else barText.copy(alpha = 0.1f))
+                                .clickable(enabled = !exporting && !loading) { export(kind) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (exporting) "Saving…" else label,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (filled) Color.White else barText
+                            )
+                        }
                     }
+                    ExportBtn(
+                        label = if (singlePage) "Export Single PDF" else "Export A4 PDF",
+                        kind = if (singlePage) "single" else "a4",
+                        weight = 1.25f,
+                        filled = true
+                    )
+                    ExportBtn(
+                        label = if (singlePage) "A4 PDF" else "Single-page PDF",
+                        kind = if (singlePage) "a4" else "single",
+                        weight = 1f,
+                        filled = false
+                    )
+                    ExportBtn(
+                        label = "Page image",
+                        kind = "png",
+                        weight = 0.95f,
+                        filled = false
+                    )
                 }
-                ExportBtn("Export PDF", if (singlePage) "single" else "pdf", 1.2f, true)
-                ExportBtn("Single-page PDF", "single", 1f, false)
-                ExportBtn("Page image", "png", 1f, false)
             }
         }
     }

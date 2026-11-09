@@ -1,455 +1,533 @@
 package com.example.ui.util
 
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
-import com.example.data.model.AutoClassifier
 import com.example.data.model.NoteEntity
+import org.json.JSONArray
+import org.json.JSONObject
 
-sealed class AgentContentBlock {
-    data class Heading(val level: Int, val text: String) : AgentContentBlock()
-    data class Callout(val text: String, val icon: String = "💡", val isWarning: Boolean = false) : AgentContentBlock()
-    data class Table(val rawMarkdown: String, val rows: List<List<String>>) : AgentContentBlock()
-    data class Checklist(val items: List<AgentChecklistItem>) : AgentContentBlock()
-    data class Code(val language: String, val code: String) : AgentContentBlock()
-    data class Paragraph(val text: String) : AgentContentBlock()
-}
-
-data class AgentChecklistItem(
-    val checked: Boolean,
-    val text: String,
-    val isUrgent: Boolean = false
-)
-
+/**
+ * Autonomous Agent Parser & Rich Note Converter:
+ * Parses AI Markdown output (`#`, `##`, `###`, `**bold**`, `*italic*`, `==highlight==`,
+ * `[ ]` / `[x]` tasks, markdown tables, code blocks, slides, charts, diagrams, organised files,
+ * and Generated Images) into:
+ * 1) Structured UI segments for `AiChatScreen` rendering.
+ * 2) Native `NoteEntity` with `RichTextFormatter.TextSpan` JSON and `TableFormat` data for the Note Writer!
+ */
 object NoteAgentFormatter {
 
-    /**
-     * Parses an AI response into structured visual blocks for rendering in AU Bot chat.
-     */
-    fun parseMessageToBlocks(rawText: String): List<AgentContentBlock> {
-        val blocks = mutableListOf<AgentContentBlock>()
-        if (rawText.isBlank()) return blocks
-
-        // Split out code blocks first
-        val parts = rawText.split("```")
-        for (i in parts.indices) {
-            val part = parts[i]
-            if (i % 2 == 1) {
-                // Code block
-                val firstLineEnd = part.indexOf('\n')
-                val lang = if (firstLineEnd != -1) part.substring(0, firstLineEnd).trim().ifBlank { "Code" } else "Code"
-                val code = if (firstLineEnd != -1) part.substring(firstLineEnd + 1) else part
-                blocks.add(AgentContentBlock.Code(lang, code.trimEnd()))
-            } else {
-                // Text parts: parse headings, tables, callouts, checklists, paragraphs
-                parseTextSection(part, blocks)
-            }
-        }
-        return blocks
+    sealed class ChatSegment {
+        data class Heading(val text: String, val level: Int) : ChatSegment()
+        data class RichParagraph(val text: String) : ChatSegment()
+        data class BulletItem(val text: String) : ChatSegment()
+        data class ChecklistGroup(val items: List<Pair<String, Boolean>>) : ChatSegment()
+        data class TableBlock(val headers: List<String>, val rows: List<List<String>>) : ChatSegment()
+        data class CodeBlock(val language: String, val code: String) : ChatSegment()
+        data class CalloutBox(val text: String) : ChatSegment()
+        data class SlideDeckBlock(val rawJson: String) : ChatSegment()
+        data class ChartBlock(val rawJson: String) : ChatSegment()
+        data class DiagramBlock(val rawContent: String) : ChatSegment()
+        data class OrganisedFileBlock(val rawJson: String) : ChatSegment()
+        data class GeneratedImageBlock(val base64Data: String, val prompt: String) : ChatSegment()
     }
 
-    private fun parseTextSection(text: String, out: MutableList<AgentContentBlock>) {
-        val lines = text.lines()
-        var idx = 0
-        val paragraphLines = mutableListOf<String>()
+    /**
+     * Splits an AI message into rich visual segments for the Chat Bubble UI.
+     */
+    fun parseIntoSegments(markdown: String): List<ChatSegment> {
+        val segments = mutableListOf<ChatSegment>()
+        val lines = markdown.lines()
+        var i = 0
 
-        fun flushParagraph() {
-            if (paragraphLines.isNotEmpty()) {
-                val fullPara = paragraphLines.joinToString("\n").trim()
-                if (fullPara.isNotBlank()) {
-                    out.add(AgentContentBlock.Paragraph(fullPara))
-                }
-                paragraphLines.clear()
-            }
-        }
-
-        while (idx < lines.size) {
-            val line = lines[idx]
+        while (i < lines.size) {
+            val line = lines[i]
             val trimmed = line.trim()
 
-            // 1. Heading (#, ##, ###)
-            val headingMatch = Regex("^(#{1,3})\\s+(.+)$").find(trimmed)
-            if (headingMatch != null) {
-                flushParagraph()
-                val level = headingMatch.groupValues[1].length
-                val title = headingMatch.groupValues[2].trim()
-                out.add(AgentContentBlock.Heading(level, title))
-                idx++
-                continue
-            }
-
-            // 2. Callout (> ...)
-            if (trimmed.startsWith(">")) {
-                flushParagraph()
-                val calloutLines = mutableListOf<String>()
-                while (idx < lines.size && lines[idx].trim().startsWith(">")) {
-                    calloutLines.add(lines[idx].trim().removePrefix(">").trim())
-                    idx++
+            // 0. Generated Image Marker: [generated_image:prompt|base64]
+            if (trimmed.startsWith("[generated_image:") && trimmed.endsWith("]")) {
+                val payload = trimmed.removePrefix("[generated_image:").removeSuffix("]")
+                val sep = payload.indexOf('|')
+                if (sep > 0) {
+                    val prompt = payload.substring(0, sep)
+                    val b64 = payload.substring(sep + 1)
+                    segments.add(ChatSegment.GeneratedImageBlock(b64, prompt))
                 }
-                val calloutContent = calloutLines.joinToString(" ")
-                val isWarning = calloutContent.contains("warning", ignoreCase = true) ||
-                        calloutContent.contains("note:", ignoreCase = true) ||
-                        calloutContent.contains("⚠️")
-                val icon = when {
-                    calloutContent.contains("⚠️") -> "⚠️"
-                    calloutContent.contains("💡") -> "💡"
-                    calloutContent.contains("📌") -> "📌"
-                    isWarning -> "⚠️"
-                    else -> "💡"
-                }
-                val cleanedText = calloutContent.replace("💡", "").replace("⚠️", "").replace("📌", "").trim()
-                out.add(AgentContentBlock.Callout(cleanedText, icon, isWarning))
-                continue
-            }
-
-            // 3. Table (| cell | cell |)
-            if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
-                flushParagraph()
-                val tableLines = mutableListOf<String>()
-                while (idx < lines.size && lines[idx].trim().startsWith("|")) {
-                    tableLines.add(lines[idx].trim())
-                    idx++
-                }
-                val rawTable = tableLines.joinToString("\n")
-                val rows = TableFormat.parse(rawTable)
-                if (rows.isNotEmpty()) {
-                    out.add(AgentContentBlock.Table(rawTable, rows))
-                } else {
-                    out.add(AgentContentBlock.Paragraph(rawTable))
-                }
-                continue
-            }
-
-            // 4. Checklists ([ ] or [x] or - [ ] or * [ ])
-            val checkRegex = Regex("^([\\-\\*\t ]*)(\\[([ x!X])\\])\\s*(.+)$")
-            if (checkRegex.matches(trimmed)) {
-                flushParagraph()
-                val items = mutableListOf<AgentChecklistItem>()
-                while (idx < lines.size && checkRegex.matches(lines[idx].trim())) {
-                    val m = checkRegex.find(lines[idx].trim())!!
-                    val mark = m.groupValues[3]
-                    val task = m.groupValues[4].trim()
-                    items.add(
-                        AgentChecklistItem(
-                            checked = mark.equals("x", ignoreCase = true),
-                            text = task,
-                            isUrgent = mark == "!"
-                        )
-                    )
-                    idx++
-                }
-                out.add(AgentContentBlock.Checklist(items))
-                continue
-            }
-
-            // Empty line => separator between paragraphs
-            if (trimmed.isBlank()) {
-                flushParagraph()
-                idx++
-                continue
-            }
-
-            // Regular paragraph line
-            paragraphLines.add(line)
-            idx++
-        }
-        flushParagraph()
-    }
-
-    /**
-     * Builds an AnnotatedString from markdown text with rich styling:
-     * - `==highlight==` or `<mark>highlight</mark>` -> yellow/amber highlighter background
-     * - `**bold**` -> bold font weight
-     * - `*italic*` -> italic font style
-     * - `` `code` `` -> monospace font with subtle dark background
-     * - `[color:#hex]...[/color]` -> customized color span
-     */
-    fun buildRichAnnotatedText(
-        text: String,
-        isDarkMode: Boolean,
-        defaultColor: Color
-    ): AnnotatedString {
-        return buildAnnotatedString {
-            val highlightColor = if (isDarkMode) Color(0x73FFD54F) else Color(0x66FFEB3B)
-            val codeBgColor = if (isDarkMode) Color(0x33FFFFFF) else Color(0x1F000000)
-
-            var i = 0
-            val len = text.length
-
-            while (i < len) {
-                // Highlight: ==text==
-                if (i + 1 < len && text[i] == '=' && text[i + 1] == '=') {
-                    val end = text.indexOf("==", i + 2)
-                    if (end != -1) {
-                        val inner = text.substring(i + 2, end)
-                        val startIdx = length
-                        append(inner)
-                        addStyle(
-                            SpanStyle(
-                                background = highlightColor,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (isDarkMode) Color.White else Color(0xFF1E293B)
-                            ),
-                            startIdx,
-                            length
-                        )
-                        i = end + 2
-                        continue
-                    }
-                }
-
-                // Bold: **text**
-                if (i + 1 < len && text[i] == '*' && text[i + 1] == '*') {
-                    val end = text.indexOf("**", i + 2)
-                    if (end != -1) {
-                        val inner = text.substring(i + 2, end)
-                        val startIdx = length
-                        append(inner)
-                        addStyle(SpanStyle(fontWeight = FontWeight.Bold), startIdx, length)
-                        i = end + 2
-                        continue
-                    }
-                }
-
-                // Italic: *text*
-                if (text[i] == '*' && (i == 0 || text[i - 1] != '*') && (i + 1 < len && text[i + 1] != '*')) {
-                    val end = text.indexOf("*", i + 1)
-                    if (end != -1 && (end + 1 >= len || text[end + 1] != '*')) {
-                        val inner = text.substring(i + 1, end)
-                        val startIdx = length
-                        append(inner)
-                        addStyle(SpanStyle(fontStyle = FontStyle.Italic), startIdx, length)
-                        i = end + 1
-                        continue
-                    }
-                }
-
-                // Inline code: `text`
-                if (text[i] == '`') {
-                    val end = text.indexOf("`", i + 1)
-                    if (end != -1) {
-                        val inner = text.substring(i + 1, end)
-                        val startIdx = length
-                        append(inner)
-                        addStyle(
-                            SpanStyle(
-                                fontFamily = FontFamily.Monospace,
-                                background = codeBgColor,
-                                fontSize = 12.sp,
-                                color = if (isDarkMode) Color(0xFFF472B6) else Color(0xFFD946EF)
-                            ),
-                            startIdx,
-                            length
-                        )
-                        i = end + 1
-                        continue
-                    }
-                }
-
-                append(text[i])
                 i++
+                continue
             }
+
+            // 1. Fenced Block: ```lang (including slides, chart, diagram/svg, organised_file, or code)
+            if (trimmed.startsWith("```")) {
+                val lang = trimmed.removePrefix("```").trim().lowercase().ifEmpty { "code" }
+                val codeLines = mutableListOf<String>()
+                i++
+                while (i < lines.size && !lines[i].trim().startsWith("```")) {
+                    codeLines.add(lines[i])
+                    i++
+                }
+                if (i < lines.size) i++ // skip closing ```
+                val blockBody = codeLines.joinToString("\n")
+                when (lang) {
+                    "slides", "slide_deck" -> segments.add(ChatSegment.SlideDeckBlock(blockBody))
+                    "chart", "graph" -> segments.add(ChatSegment.ChartBlock(blockBody))
+                    "diagram", "svg", "shape" -> segments.add(ChatSegment.DiagramBlock(blockBody))
+                    "organised_file", "organized_file" -> segments.add(ChatSegment.OrganisedFileBlock(blockBody))
+                    else -> {
+                        // Also auto-detect if a ```json block is actually a slides or chart block
+                        val tBody = blockBody.trim()
+                        if (lang == "json" && tBody.startsWith("{") && tBody.contains("\"slides\"")) {
+                            segments.add(ChatSegment.SlideDeckBlock(blockBody))
+                        } else if (lang == "json" && tBody.startsWith("{") && tBody.contains("\"type\"") && (tBody.contains("\"data\"") || tBody.contains("\"steps\""))) {
+                            segments.add(ChatSegment.ChartBlock(blockBody))
+                        } else if (tBody.startsWith("<svg", ignoreCase = true)) {
+                            segments.add(ChatSegment.DiagramBlock(blockBody))
+                        } else {
+                            segments.add(ChatSegment.CodeBlock(lang, blockBody))
+                        }
+                    }
+                }
+                continue
+            }
+
+            // Direct inline <svg ...>...</svg> block outside fences
+            if (trimmed.startsWith("<svg", ignoreCase = true)) {
+                val svgLines = mutableListOf<String>()
+                while (i < lines.size) {
+                    svgLines.add(lines[i])
+                    if (lines[i].contains("</svg>", ignoreCase = true)) {
+                        i++
+                        break
+                    }
+                    i++
+                }
+                segments.add(ChatSegment.DiagramBlock(svgLines.joinToString("\n")))
+                continue
+            }
+
+            // 2. Markdown Table: | col1 | col2 |
+            if (trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.count { it == '|' } >= 2) {
+                val tableLines = mutableListOf<String>()
+                while (i < lines.size && lines[i].trim().let { it.startsWith("|") && it.endsWith("|") }) {
+                    tableLines.add(lines[i].trim())
+                    i++
+                }
+                val parsedRows = tableLines
+                    .filter { row -> !row.replace("|", "").replace("-", "").replace(":", "").trim().isEmpty() }
+                    .map { row ->
+                        row.trim('|').split("|").map { cleanInlineMarkers(it.trim()) }
+                    }
+                if (parsedRows.isNotEmpty()) {
+                    val headers = parsedRows.first()
+                    val bodyRows = if (parsedRows.size > 1) parsedRows.drop(1) else emptyList()
+                    segments.add(ChatSegment.TableBlock(headers, bodyRows))
+                }
+                continue
+            }
+
+            // 3. Checklist Group: - [ ] or [ ] or - [x] or [x]
+            if (isChecklistLine(trimmed)) {
+                val items = mutableListOf<Pair<String, Boolean>>()
+                while (i < lines.size && isChecklistLine(lines[i].trim())) {
+                    val parsed = parseChecklistLine(lines[i].trim())
+                    items.add(parsed)
+                    i++
+                }
+                segments.add(ChatSegment.ChecklistGroup(items))
+                continue
+            }
+
+            // 4. Headings: #, ##, ###
+            if (trimmed.startsWith("#")) {
+                val level = trimmed.takeWhile { it == '#' }.length.coerceIn(1, 3)
+                val headingText = trimmed.dropWhile { it == '#' }.trim()
+                if (headingText.isNotEmpty()) {
+                    segments.add(ChatSegment.Heading(cleanInlineMarkers(headingText), level))
+                }
+                i++
+                continue
+            }
+
+            // 5. Callout / Blockquote: > text
+            if (trimmed.startsWith(">")) {
+                val quoteLines = mutableListOf<String>()
+                while (i < lines.size && lines[i].trim().startsWith(">")) {
+                    quoteLines.add(lines[i].trim().removePrefix(">").trim())
+                    i++
+                }
+                segments.add(ChatSegment.CalloutBox(quoteLines.joinToString("\n")))
+                continue
+            }
+
+            // 6. Bullet item: - or * or •
+            if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("• ")) {
+                val bulletText = trimmed.drop(2).trim()
+                segments.add(ChatSegment.BulletItem(bulletText))
+                i++
+                continue
+            }
+
+            // 7. Blank line
+            if (trimmed.isEmpty()) {
+                i++
+                continue
+            }
+
+            // 8. Normal / Rich Paragraph
+            segments.add(ChatSegment.RichParagraph(trimmed))
+            i++
         }
+
+        return segments
+    }
+
+    private fun isChecklistLine(trimmed: String): Boolean {
+        return trimmed.startsWith("- [ ]") ||
+            trimmed.startsWith("- [x]", ignoreCase = true) ||
+            trimmed.startsWith("* [ ]") ||
+            trimmed.startsWith("* [x]", ignoreCase = true) ||
+            trimmed.startsWith("[ ] ") ||
+            trimmed.startsWith("[x] ", ignoreCase = true)
+    }
+
+    private fun parseChecklistLine(trimmed: String): Pair<String, Boolean> {
+        val isChecked = trimmed.contains("[x]", ignoreCase = true)
+        val text = trimmed
+            .replace(Regex("^[-*]\\s*\\[[ xX]]\\s*"), "")
+            .replace(Regex("^\\[[ xX]]\\s*"), "")
+            .trim()
+        return text to isChecked
+    }
+
+    private fun cleanInlineMarkers(raw: String): String {
+        return raw
+            .replace("**", "")
+            .replace("==", "")
+            .replace("`", "")
     }
 
     /**
-     * Converts an AU Agent explanation message into a complete NoteEntity
-     * utilizing Note Writer tools:
-     * - Extracts Title from heading (# ...) or prompt
-     * - Extracts embedded Table to `tableData`
-     * - Emits native checkboxes (`[ ]`) for checklist items
-     * - Generates rich TextSpans for font size, highlights, colors, bold, and code
+     * Converts raw AI Markdown into a fully formatted `NoteEntity` with:
+     * - Extracted Title
+     * - Clean text body with `[ ]` / `[x]` interactive checkboxes
+     * - `styleSpansJson` (Bold, Italic, Code, FontSize for headings, Highlights for key definitions)
+     * - `tableData` serialized via `TableFormat`
      */
     fun convertToRichNote(
-        rawAiText: String,
-        defaultTitle: String = "AU Agent Note",
+        markdown: String,
+        defaultTitle: String = "AI Generated Note",
         forcedCategory: String? = null
     ): NoteEntity {
-        var title = defaultTitle
-        var extractedTableData = ""
+        val segments = parseIntoSegments(markdown)
+        var extractedTitle = defaultTitle
+        val sb = StringBuilder()
         val spans = mutableListOf<RichTextFormatter.TextSpan>()
-        val contentBuilder = StringBuilder()
+        var extractedTableData = ""
+        var hasCodeBlock = false
 
-        val blocks = parseMessageToBlocks(rawAiText)
-
-        // 1. Detect title from first heading if available
-        val firstHeading = blocks.filterIsInstance<AgentContentBlock.Heading>().firstOrNull()
-        if (firstHeading != null) {
-            title = firstHeading.text.replace(Regex("^#+\\s*"), "").trim()
-        }
-
-        // 2. Extract first table as note's tableData
-        val firstTable = blocks.filterIsInstance<AgentContentBlock.Table>().firstOrNull()
-        if (firstTable != null) {
-            extractedTableData = firstTable.rawMarkdown
-        }
-
-        // 3. Build note body and generate rich style spans
-        for (block in blocks) {
-            when (block) {
-                is AgentContentBlock.Heading -> {
-                    // Skip if this heading was used as note title
-                    if (block == firstHeading && title.equals(block.text, ignoreCase = true)) {
-                        continue
+        fun appendStyledSegment(
+            rawText: String,
+            isHeading: Boolean = false,
+            headingFontSize: Int = 16,
+            forceBold: Boolean = false,
+            forceHighlightHex: String? = null
+        ) {
+            val startOffset = sb.length
+            var idx = 0
+            while (idx < rawText.length) {
+                when {
+                    rawText.startsWith("==", idx) -> {
+                        val endIdx = rawText.indexOf("==", idx + 2)
+                        if (endIdx != -1) {
+                            val inner = rawText.substring(idx + 2, endIdx)
+                            val s = sb.length
+                            sb.append(inner)
+                            val e = sb.length
+                            spans.add(RichTextFormatter.TextSpan(s, e, "highlight", "#FFEB3B@45"))
+                            spans.add(RichTextFormatter.TextSpan(s, e, "bold"))
+                            idx = endIdx + 2
+                            continue
+                        }
                     }
-                    if (contentBuilder.isNotEmpty()) contentBuilder.append("\n\n")
-                    val startPos = contentBuilder.length
-                    contentBuilder.append(block.text)
-                    val endPos = contentBuilder.length
-
-                    val fontSizeValue = when (block.level) {
-                        1 -> "24"
-                        2 -> "20"
-                        else -> "18"
+                    rawText.startsWith("**", idx) -> {
+                        val endIdx = rawText.indexOf("**", idx + 2)
+                        if (endIdx != -1) {
+                            val inner = rawText.substring(idx + 2, endIdx)
+                            val s = sb.length
+                            sb.append(inner)
+                            val e = sb.length
+                            spans.add(RichTextFormatter.TextSpan(s, e, "bold"))
+                            idx = endIdx + 2
+                            continue
+                        }
                     }
-                    spans.add(RichTextFormatter.TextSpan(startPos, endPos, "fontsize", fontSizeValue))
-                    spans.add(RichTextFormatter.TextSpan(startPos, endPos, "bold"))
-                    spans.add(RichTextFormatter.TextSpan(startPos, endPos, "color", "#FF2D55"))
-                }
-
-                is AgentContentBlock.Callout -> {
-                    if (contentBuilder.isNotEmpty()) contentBuilder.append("\n\n")
-                    val startPos = contentBuilder.length
-                    contentBuilder.append("${block.icon} ${block.text}")
-                    val endPos = contentBuilder.length
-                    spans.add(RichTextFormatter.TextSpan(startPos, endPos, "italic"))
-                    spans.add(
-                        RichTextFormatter.TextSpan(
-                            startPos,
-                            endPos,
-                            "highlight",
-                            if (block.isWarning) "#FFCCBC" else "#FFF9C4"
-                        )
-                    )
-                }
-
-                is AgentContentBlock.Checklist -> {
-                    if (contentBuilder.isNotEmpty()) contentBuilder.append("\n\n")
-                    for (item in block.items) {
-                        val prefix = if (item.checked) "[x] " else if (item.isUrgent) "[!] " else "[ ] "
-                        contentBuilder.append(prefix).append(item.text).append("\n")
-                    }
-                    // Trim last newline if added
-                    if (contentBuilder.endsWith("\n")) {
-                        contentBuilder.deleteCharAt(contentBuilder.length - 1)
+                    rawText.startsWith("`", idx) -> {
+                        val endIdx = rawText.indexOf("`", idx + 1)
+                        if (endIdx != -1) {
+                            val inner = rawText.substring(idx + 1, endIdx)
+                            val s = sb.length
+                            sb.append(inner)
+                            val e = sb.length
+                            spans.add(RichTextFormatter.TextSpan(s, e, "code"))
+                            spans.add(RichTextFormatter.TextSpan(s, e, "color", "#00E676"))
+                            idx = endIdx + 1
+                            continue
+                        }
                     }
                 }
-
-                is AgentContentBlock.Table -> {
-                    // If this was not the primary table placed into tableData, embed it
-                    if (block != firstTable) {
-                        if (contentBuilder.isNotEmpty()) contentBuilder.append("\n\n")
-                        contentBuilder.append(block.rawMarkdown)
-                    }
+                sb.append(rawText[idx])
+                idx++
+            }
+            val endOffset = sb.length
+            if (endOffset > startOffset) {
+                if (isHeading) {
+                    spans.add(RichTextFormatter.TextSpan(startOffset, endOffset, "bold"))
+                    spans.add(RichTextFormatter.TextSpan(startOffset, endOffset, "fontsize", headingFontSize.toString()))
+                } else if (forceBold) {
+                    spans.add(RichTextFormatter.TextSpan(startOffset, endOffset, "bold"))
                 }
-
-                is AgentContentBlock.Code -> {
-                    if (contentBuilder.isNotEmpty()) contentBuilder.append("\n\n")
-                    val startPos = contentBuilder.length
-                    contentBuilder.append("```").append(block.language).append("\n")
-                    contentBuilder.append(block.code).append("\n```")
-                    val endPos = contentBuilder.length
-                    spans.add(RichTextFormatter.TextSpan(startPos, endPos, "code"))
-                }
-
-                is AgentContentBlock.Paragraph -> {
-                    if (contentBuilder.isNotEmpty()) contentBuilder.append("\n\n")
-                    // Parse highlights and bold inside paragraph while appending
-                    appendParagraphWithSpans(block.text, contentBuilder, spans)
+                if (forceHighlightHex != null) {
+                    spans.add(RichTextFormatter.TextSpan(startOffset, endOffset, "highlight", forceHighlightHex))
                 }
             }
         }
 
-        val finalContent = contentBuilder.toString().trim()
-        // A code box inside a note does not make the whole note a "Code" note (that used to file it in the Code
-        // folder and flatten its images / checkboxes / formatting).
-        val category = forcedCategory ?: AutoClassifier.detectCategory(title, finalContent)
+        for ((index, seg) in segments.withIndex()) {
+            when (seg) {
+                is ChatSegment.Heading -> {
+                    if (index == 0 && seg.level == 1 && defaultTitle == "AI Generated Note") {
+                        extractedTitle = seg.text.take(60)
+                    }
+                    if (sb.isNotEmpty()) sb.append("\n")
+                    val size = when (seg.level) {
+                        1 -> 22
+                        2 -> 19
+                        else -> 17
+                    }
+                    appendStyledSegment(seg.text, isHeading = true, headingFontSize = size)
+                    sb.append("\n")
+                }
+                is ChatSegment.RichParagraph -> {
+                    appendStyledSegment(seg.text)
+                    sb.append("\n")
+                }
+                is ChatSegment.BulletItem -> {
+                    sb.append("• ")
+                    appendStyledSegment(seg.text)
+                    sb.append("\n")
+                }
+                is ChatSegment.ChecklistGroup -> {
+                    seg.items.forEach { (itemText, checked) ->
+                        sb.append(if (checked) "[x] " else "[ ] ")
+                        appendStyledSegment(itemText)
+                        sb.append("\n")
+                    }
+                }
+                is ChatSegment.CalloutBox -> {
+                    appendStyledSegment("💡 ${seg.text}", forceBold = true, forceHighlightHex = "#00BCD4@35")
+                    sb.append("\n")
+                }
+                is ChatSegment.CodeBlock -> {
+                    hasCodeBlock = true
+                    if (sb.isNotEmpty() && !sb.endsWith("\n")) sb.append("\n")
+                    val lang = seg.language.ifBlank { "code" }
+                    val fenceTitle = lang.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                    sb.append("```").append(fenceTitle).append(",").append(lang).append("\n")
+                    sb.append(seg.code.trimEnd()).append("\n")
+                    sb.append("```\n")
+                }
+                is ChatSegment.TableBlock -> {
+                    val allRows = listOf(seg.headers) + seg.rows
+                    if (extractedTableData.isBlank()) {
+                        extractedTableData = TableFormat.serialize(allRows)
+                    } else {
+                        sb.append("\n")
+                        allRows.forEachIndexed { rIdx, row ->
+                            val lineText = row.joinToString("  |  ")
+                            appendStyledSegment(lineText, forceBold = (rIdx == 0))
+                            sb.append("\n")
+                        }
+                    }
+                }
+                is ChatSegment.SlideDeckBlock -> {
+                    val deck = com.example.ui.components.AgentVisualsParser.parseSlideDeck(seg.rawJson)
+                    if (deck != null) {
+                        appendStyledSegment("Slides: ${deck.deckTitle}", isHeading = true, headingFontSize = 20)
+                        sb.append("\n")
+                        deck.slides.forEachIndexed { idx, s ->
+                            appendStyledSegment("Slide ${idx + 1}: ${s.title}", forceBold = true)
+                            sb.append("\n")
+                            s.bullets.forEach { b ->
+                                sb.append("• ").append(b).append("\n")
+                            }
+                        }
+                    }
+                }
+                is ChatSegment.ChartBlock -> {
+                    val chart = com.example.ui.components.AgentVisualsParser.parseChart(seg.rawJson)
+                    if (chart != null) {
+                        appendStyledSegment("Graph: ${chart.title}", forceBold = true)
+                        sb.append("\n")
+                        chart.items.forEach { item ->
+                            sb.append("• ${item.label}: ${item.value}${chart.unit}\n")
+                        }
+                    }
+                }
+                is ChatSegment.DiagramBlock -> {
+                    appendStyledSegment("[Diagram / Shape Included]", forceBold = true)
+                    sb.append("\n")
+                }
+                is ChatSegment.OrganisedFileBlock -> {
+                    val f = com.example.ui.components.AgentVisualsParser.parseOrganisedFile(seg.rawJson)
+                    if (f != null) {
+                        sb.append(f.content).append("\n")
+                    }
+                }
+                is ChatSegment.GeneratedImageBlock -> {
+                    appendStyledSegment("[Generated Image: ${seg.prompt}]", forceBold = true)
+                    sb.append("\n")
+                }
+            }
+        }
+
+        val finalContent = sb.toString().trim()
+        val category = forcedCategory ?: if (hasCodeBlock && segments.size <= 2) "Code" else "Normal"
+        val folder = when (category) {
+            "Code" -> "Code"
+            "API" -> "APIs Keys"
+            "Personal" -> "Personal"
+            else -> "All Notes"
+        }
 
         return NoteEntity(
-            id = 0L,
-            title = title,
+            title = extractedTitle,
             content = finalContent,
             category = category,
+            folder = folder,
+            isCodeFormat = false,
             tableData = extractedTableData,
             styleSpansJson = RichTextFormatter.serializeSpans(spans),
-            fontSize = 16,
-            isCodeFormat = false
+            createdAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis()
         )
     }
 
-    private fun appendParagraphWithSpans(
-        rawParagraph: String,
-        builder: StringBuilder,
-        spans: MutableList<RichTextFormatter.TextSpan>
-    ) {
-        var i = 0
-        val len = rawParagraph.length
+    fun parseMessageToBlocks(text: String): List<AgentContentBlock> {
+        val segments = parseIntoSegments(text)
+        return segments.map { seg ->
+            when (seg) {
+                is ChatSegment.Heading -> AgentContentBlock.Heading(seg.text, seg.level)
+                is ChatSegment.CalloutBox -> AgentContentBlock.Callout(
+                    icon = if (seg.text.contains("⚠️")) "⚠️" else "💡",
+                    text = seg.text.removePrefix("⚠️").removePrefix("💡").trim(),
+                    isWarning = seg.text.contains("⚠️")
+                )
+                is ChatSegment.TableBlock -> {
+                    val allRows = if (seg.headers.isNotEmpty()) listOf(seg.headers) + seg.rows else seg.rows
+                    AgentContentBlock.Table(allRows)
+                }
+                is ChatSegment.ChecklistGroup -> AgentContentBlock.Checklist(
+                    seg.items.map { (t, c) -> AgentChecklistItem(t, c) }
+                )
+                is ChatSegment.CodeBlock -> AgentContentBlock.Code(seg.language, seg.code)
+                is ChatSegment.SlideDeckBlock -> AgentContentBlock.SlideDeckBlock(seg.rawJson)
+                is ChatSegment.ChartBlock -> AgentContentBlock.ChartBlock(seg.rawJson)
+                is ChatSegment.DiagramBlock -> AgentContentBlock.DiagramBlock(seg.rawContent)
+                is ChatSegment.OrganisedFileBlock -> AgentContentBlock.OrganisedFileBlock(seg.rawJson)
+                is ChatSegment.GeneratedImageBlock -> AgentContentBlock.GeneratedImageBlock(seg.prompt, seg.base64Data)
+                is ChatSegment.BulletItem -> AgentContentBlock.Paragraph("• ${seg.text}")
+                is ChatSegment.RichParagraph -> AgentContentBlock.Paragraph(seg.text)
+            }
+        }
+    }
 
-        while (i < len) {
-            // Highlights: ==highlight==
-            if (i + 1 < len && rawParagraph[i] == '=' && rawParagraph[i + 1] == '=') {
-                val end = rawParagraph.indexOf("==", i + 2)
-                if (end != -1) {
-                    val inner = rawParagraph.substring(i + 2, end)
-                    val startPos = builder.length
-                    builder.append(inner)
-                    val endPos = builder.length
-                    spans.add(RichTextFormatter.TextSpan(startPos, endPos, "highlight", "#FFEB3B"))
-                    spans.add(RichTextFormatter.TextSpan(startPos, endPos, "bold"))
-                    i = end + 2
-                    continue
+    fun buildRichAnnotatedText(
+        raw: String,
+        isDarkMode: Boolean,
+        defaultColor: Color
+    ): androidx.compose.ui.text.AnnotatedString {
+        return androidx.compose.ui.text.buildAnnotatedString {
+            var idx = 0
+            val len = raw.length
+            while (idx < len) {
+                when {
+                    raw.startsWith("==", idx) -> {
+                        val end = raw.indexOf("==", idx + 2)
+                        if (end != -1) {
+                            val content = raw.substring(idx + 2, end)
+                            pushStyle(
+                                androidx.compose.ui.text.SpanStyle(
+                                    background = if (isDarkMode) Color(0x66F59E0B) else Color(0x66FDE047),
+                                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                                    color = defaultColor
+                                )
+                            )
+                            append(content)
+                            pop()
+                            idx = end + 2
+                        } else {
+                            append("==")
+                            idx += 2
+                        }
+                    }
+                    raw.startsWith("**", idx) -> {
+                        val end = raw.indexOf("**", idx + 2)
+                        if (end != -1) {
+                            val content = raw.substring(idx + 2, end)
+                            pushStyle(
+                                androidx.compose.ui.text.SpanStyle(
+                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                    color = defaultColor
+                                )
+                            )
+                            append(content)
+                            pop()
+                            idx = end + 2
+                        } else {
+                            append("**")
+                            idx += 2
+                        }
+                    }
+                    raw.startsWith("`", idx) -> {
+                        val end = raw.indexOf("`", idx + 1)
+                        if (end != -1) {
+                            val content = raw.substring(idx + 1, end)
+                            pushStyle(
+                                androidx.compose.ui.text.SpanStyle(
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    background = if (isDarkMode) Color(0x33FFFFFF) else Color(0x14000000),
+                                    color = Color(0xFFFF2D55)
+                                )
+                            )
+                            append(" $content ")
+                            pop()
+                            idx = end + 1
+                        } else {
+                            append("`")
+                            idx += 1
+                        }
+                    }
+                    else -> {
+                        append(raw[idx])
+                        idx++
+                    }
                 }
             }
-
-            // Bold: **text**
-            if (i + 1 < len && rawParagraph[i] == '*' && rawParagraph[i + 1] == '*') {
-                val end = rawParagraph.indexOf("**", i + 2)
-                if (end != -1) {
-                    val inner = rawParagraph.substring(i + 2, end)
-                    val startPos = builder.length
-                    builder.append(inner)
-                    val endPos = builder.length
-                    spans.add(RichTextFormatter.TextSpan(startPos, endPos, "bold"))
-                    i = end + 2
-                    continue
-                }
-            }
-
-            // Italic: *text*
-            if (rawParagraph[i] == '*' && (i == 0 || rawParagraph[i - 1] != '*') && (i + 1 < len && rawParagraph[i + 1] != '*')) {
-                val end = rawParagraph.indexOf("*", i + 1)
-                if (end != -1 && (end + 1 >= len || rawParagraph[end + 1] != '*')) {
-                    val inner = rawParagraph.substring(i + 1, end)
-                    val startPos = builder.length
-                    builder.append(inner)
-                    val endPos = builder.length
-                    spans.add(RichTextFormatter.TextSpan(startPos, endPos, "italic"))
-                    i = end + 1
-                    continue
-                }
-            }
-
-            // Inline code: `text`
-            if (rawParagraph[i] == '`') {
-                val end = rawParagraph.indexOf("`", i + 1)
-                if (end != -1) {
-                    val inner = rawParagraph.substring(i + 1, end)
-                    val startPos = builder.length
-                    builder.append(inner)
-                    val endPos = builder.length
-                    spans.add(RichTextFormatter.TextSpan(startPos, endPos, "code"))
-                    i = end + 1
-                    continue
-                }
-            }
-
-            builder.append(rawParagraph[i])
-            i++
         }
     }
 }
+
+data class AgentChecklistItem(val text: String, val checked: Boolean)
+
+sealed class AgentContentBlock {
+    data class Heading(val text: String, val level: Int) : AgentContentBlock()
+    data class Callout(val icon: String, val text: String, val isWarning: Boolean) : AgentContentBlock()
+    data class Table(val rows: List<List<String>>) : AgentContentBlock()
+    data class Checklist(val items: List<AgentChecklistItem>) : AgentContentBlock()
+    data class Code(val language: String, val code: String) : AgentContentBlock()
+    data class Paragraph(val text: String) : AgentContentBlock()
+    data class SlideDeckBlock(val json: String) : AgentContentBlock()
+    data class ChartBlock(val json: String) : AgentContentBlock()
+    data class DiagramBlock(val svgOrJson: String) : AgentContentBlock()
+    data class OrganisedFileBlock(val json: String) : AgentContentBlock()
+    data class GeneratedImageBlock(val prompt: String, val base64: String) : AgentContentBlock()
+}
+

@@ -1,55 +1,74 @@
 package com.example.data.ai
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.example.ui.screens.ChatMessage
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.util.UUID
 
 data class ChatSession(
     val id: String = UUID.randomUUID().toString(),
     val title: String,
     val timestamp: Long = System.currentTimeMillis(),
-    val messages: List<ChatMessage>
+    val messages: List<ChatMessage>,
+    val attachmentName: String? = null,
+    val attachmentText: String? = null,
+    val attachmentImages: List<String> = emptyList(),
+    val attachmentUri: String? = null
 )
 
-/**
- * Manages persistent storage of AI chat sessions.
- * Saved chats survive app restarts and can be switched or deleted from the AU Agent sidebar.
- */
-class ChatSessionManager(private val context: Context) {
-    private val sessionsFile: File
-        get() = File(context.filesDir, "ai_chat_sessions.json")
+class ChatSessionManager(context: Context) {
+
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences("au_ai_chat_sessions", Context.MODE_PRIVATE)
 
     fun loadAllSessions(): List<ChatSession> {
+        val raw = prefs.getString("sessions_json", null) ?: return emptyList()
         return try {
-            val file = sessionsFile
-            if (!file.exists()) return emptyList()
-            val content = file.readText()
-            if (content.isBlank()) return emptyList()
-            val array = JSONArray(content)
+            val array = JSONArray(raw)
             val list = mutableListOf<ChatSession>()
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 val id = obj.optString("id", UUID.randomUUID().toString())
-                val title = obj.optString("title", "Chat Session")
-                val timestamp = obj.optLong("timestamp", System.currentTimeMillis())
-                val msgsArray = obj.optJSONArray("messages") ?: JSONArray()
+                val title = obj.optString("title", "Conversation")
+                val timestamp = obj.optLong("timestamp", obj.optLong("updatedAt", System.currentTimeMillis()))
+                val msgArray = obj.optJSONArray("messages") ?: JSONArray()
                 val messages = mutableListOf<ChatMessage>()
-                for (j in 0 until msgsArray.length()) {
-                    val m = msgsArray.getJSONObject(j)
+                for (j in 0 until msgArray.length()) {
+                    val mObj = msgArray.getJSONObject(j)
+                    val sender = mObj.optString("sender", mObj.optString("role", "user")).let {
+                        if (it == "model" || it == "assistant") "bot" else it
+                    }
+                    val text = mObj.optString("text", mObj.optString("content", ""))
                     messages.add(
                         ChatMessage(
-                            id = m.optString("id", UUID.randomUUID().toString()),
-                            sender = m.optString("sender", "bot"),
-                            text = m.optString("text", ""),
-                            attachedFileName = m.optString("attachedFileName", "").ifBlank { null },
-                            timestamp = m.optLong("timestamp", System.currentTimeMillis())
+                            id = mObj.optString("id", UUID.randomUUID().toString()),
+                            sender = sender,
+                            text = text,
+                            attachedFileName = mObj.optString("attachedFileName", "").ifBlank { null },
+                            timestamp = mObj.optLong("timestamp", timestamp)
                         )
                     )
                 }
-                list.add(ChatSession(id, title, timestamp, messages))
+                val imgArr = obj.optJSONArray("attachmentImages") ?: JSONArray()
+                val imgs = mutableListOf<String>()
+                for (k in 0 until imgArr.length()) {
+                    val b64 = imgArr.optString(k)
+                    if (b64.isNotBlank()) imgs.add(b64)
+                }
+                list.add(
+                    ChatSession(
+                        id = id,
+                        title = title,
+                        timestamp = timestamp,
+                        messages = messages,
+                        attachmentName = obj.optString("attachmentName", "").ifBlank { null },
+                        attachmentText = obj.optString("attachmentText", "").ifBlank { null },
+                        attachmentImages = imgs,
+                        attachmentUri = obj.optString("attachmentUri", "").ifBlank { null }
+                    )
+                )
             }
             list.sortedByDescending { it.timestamp }
         } catch (e: Exception) {
@@ -60,41 +79,52 @@ class ChatSessionManager(private val context: Context) {
     fun saveSession(session: ChatSession) {
         val existing = loadAllSessions().toMutableList()
         val index = existing.indexOfFirst { it.id == session.id }
-        if (index != -1) {
+        if (index >= 0) {
             existing[index] = session
         } else {
             existing.add(0, session)
         }
-        persist(existing)
+        persistSessions(existing.take(30))
     }
 
     fun deleteSession(sessionId: String) {
         val existing = loadAllSessions().filter { it.id != sessionId }
-        persist(existing)
+        persistSessions(existing)
     }
 
-    private fun persist(sessions: List<ChatSession>) {
-        try {
-            val array = JSONArray()
-            for (s in sessions) {
-                val obj = JSONObject()
-                obj.put("id", s.id)
-                obj.put("title", s.title)
-                obj.put("timestamp", s.timestamp)
-                val msgsArray = JSONArray()
-                for (m in s.messages) {
-                    val mObj = JSONObject()
-                    mObj.put("id", m.id)
-                    mObj.put("sender", m.sender)
-                    mObj.put("text", m.text)
-                    mObj.put("attachedFileName", m.attachedFileName ?: "")
-                    mObj.put("timestamp", m.timestamp)
-                    msgsArray.put(mObj)
-                }
-                obj.put("messages", msgsArray)
-                array.put(obj)
+    fun clearAllSessions() {
+        prefs.edit().remove("sessions_json").apply()
+    }
+
+    private fun persistSessions(sessions: List<ChatSession>) {
+        val array = JSONArray()
+        for (session in sessions) {
+            val obj = JSONObject()
+            obj.put("id", session.id)
+            obj.put("title", session.title)
+            obj.put("timestamp", session.timestamp)
+            session.attachmentName?.let { obj.put("attachmentName", it) }
+            session.attachmentText?.let { obj.put("attachmentText", it.take(40_000)) }
+            session.attachmentUri?.let { obj.put("attachmentUri", it) }
+            if (session.attachmentImages.isNotEmpty()) {
+                val imgArr = JSONArray()
+                session.attachmentImages.take(4).forEach { imgArr.put(it) }
+                obj.put("attachmentImages", imgArr)
             }
-            sessionsFile.writeText(array.toString())
-        } catch (_: Exception) {}
+
+            val msgArray = JSONArray()
+            for (m in session.messages) {
+                val mObj = JSONObject()
+                mObj.put("id", m.id)
+                mObj.put("sender", m.sender)
+                mObj.put("text", m.text)
+                m.attachedFileName?.let { mObj.put("attachedFileName", it) }
+                mObj.put("timestamp", m.timestamp)
+                msgArray.put(mObj)
+            }
+            obj.put("messages", msgArray)
+            array.put(obj)
+        }
+        prefs.edit().putString("sessions_json", array.toString()).apply()
     }
 }

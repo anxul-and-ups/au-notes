@@ -39,8 +39,10 @@ class GeminiLiveClient(
     companion object {
         const val MODEL_FLASH_LIVE = "models/gemini-3.1-flash-live-preview"
         const val MODEL_LIVE_38 = "models/gemini-3.8-live"
-        val VOICES = listOf("Aoede" to "Aoede (female)", "Kore" to "Kore (female)", "Leda" to "Leda (female)", "Zephyr" to "Zephyr (female)",
-            "Puck" to "Puck (male)", "Charon" to "Charon (male)", "Fenrir" to "Fenrir (male)", "Orus" to "Orus (male)")
+        val VOICES = listOf(
+            "Puck" to "Puck (male)", "Charon" to "Charon (male)", "Fenrir" to "Fenrir (male)", "Orus" to "Orus (male)",
+            "Aoede" to "Aoede (female)", "Kore" to "Kore (female)", "Leda" to "Leda (female)", "Zephyr" to "Zephyr (female)"
+        )
         private const val URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
         private val client = OkHttpClient.Builder()
             .readTimeout(0, TimeUnit.MILLISECONDS)

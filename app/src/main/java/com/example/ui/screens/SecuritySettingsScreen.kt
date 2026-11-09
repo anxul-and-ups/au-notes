@@ -78,6 +78,9 @@ fun SecuritySettingsScreen(
     val storedPin by preferences.lockPin.collectAsState()
     val question by preferences.securityQuestion.collectAsState()
     val autoLockMode by preferences.securityAutoLockMode.collectAsState()
+    val themePanelLocked by preferences.themePanelLocked.collectAsState()
+    val apiRoomLocked by preferences.apiRoomLocked.collectAsState()
+    val recycleBinLocked by preferences.recycleBinLocked.collectAsState()
     val verifyOnDelete by preferences.verifyPinOnDelete.collectAsState()
     var dialog by remember { mutableStateOf(SecDialog.NONE) }
 
@@ -127,6 +130,50 @@ fun SecuritySettingsScreen(
                 },
                 isDarkMode
             ) { dialog = SecDialog.AUTOLOCK }
+
+            Spacer(Modifier.height(20.dp))
+            SectionLabel("FEATURE LOCKS")
+            SettingRect(
+                Icons.Default.Lock,
+                "Themes",
+                if (themePanelLocked) "Locked — requires PIN to open Themes" else "Unlocked — open Themes without a PIN",
+                isDarkMode,
+                trailing = {
+                    Switch(
+                        checked = themePanelLocked,
+                        onCheckedChange = { preferences.setThemePanelLocked(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = CrimsonPrimary)
+                    )
+                }
+            ) { preferences.setThemePanelLocked(!themePanelLocked) }
+            Spacer(Modifier.height(10.dp))
+            SettingRect(
+                Icons.Default.Key,
+                "API Room",
+                if (apiRoomLocked) "Locked — requires PIN to open API Room" else "Unlocked — open API Room without a PIN",
+                isDarkMode,
+                trailing = {
+                    Switch(
+                        checked = apiRoomLocked,
+                        onCheckedChange = { preferences.setApiRoomLocked(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = CrimsonPrimary)
+                    )
+                }
+            ) { preferences.setApiRoomLocked(!apiRoomLocked) }
+            Spacer(Modifier.height(10.dp))
+            SettingRect(
+                Icons.Default.DeleteSweep,
+                "Recycle Bin",
+                if (recycleBinLocked) "Locked — requires PIN to open Recycle Bin" else "Unlocked — open Recycle Bin without a PIN",
+                isDarkMode,
+                trailing = {
+                    Switch(
+                        checked = recycleBinLocked,
+                        onCheckedChange = { preferences.setRecycleBinLocked(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = CrimsonPrimary)
+                    )
+                }
+            ) { preferences.setRecycleBinLocked(!recycleBinLocked) }
 
             Spacer(Modifier.height(20.dp))
             SectionLabel("DELETION")

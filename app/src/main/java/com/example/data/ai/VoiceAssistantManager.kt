@@ -89,7 +89,7 @@ class VoiceAssistantManager(
         tts = TextToSpeech(context.applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 isTtsReady = true
-                configureFemaleVoice()
+                configureMaleVoice()
                 applyVoiceSettings(userRate, userPitch, userVolume, userVoiceName)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
@@ -121,11 +121,11 @@ class VoiceAssistantManager(
         }
     }
 
-    private fun configureFemaleVoice() {
+    private fun configureMaleVoice() {
         val engine = tts ?: return
-        // Configure calm, professional, composed female assistant tone
-        engine.setPitch(1.02f) // Natural calm pitch
-        engine.setSpeechRate(0.96f) // Normal attentive working assistant pace
+        // Configure calm, professional, composed male assistant tone (Puck style)
+        engine.setPitch(0.95f) // Natural calm male pitch
+        engine.setSpeechRate(0.98f) // Normal attentive working assistant pace
 
         // Setup audio attributes so speech plays cleanly on loudspeaker/media stream
         try {
@@ -152,29 +152,35 @@ class VoiceAssistantManager(
 
             val voices = engine.voices
             if (!voices.isNullOrEmpty()) {
-                val femaleVoice = voices.find { v: Voice ->
+                val maleVoice = voices.find { v: Voice ->
                     !v.isNetworkConnectionRequired && (
-                        v.name.contains("hi-in-x-hie", ignoreCase = true) ||
-                        v.name.contains("hi-in", ignoreCase = true) ||
-                        v.name.contains("female", ignoreCase = true) ||
-                        v.name.contains("en-in-x-ahp", ignoreCase = true) ||
-                        v.features?.contains("gender=female") == true
+                        v.name.contains("male", ignoreCase = true) ||
+                        v.name.contains("hi-in-x-hid", ignoreCase = true) ||
+                        v.name.contains("hi-in-x-hic", ignoreCase = true) ||
+                        v.name.contains("en-in-x-end", ignoreCase = true) ||
+                        v.features?.contains("gender=male") == true
                     )
+                } ?: voices.find { v: Voice ->
+                    !v.isNetworkConnectionRequired && (v.locale.language.startsWith("hi") || v.locale.language.startsWith("en"))
                 } ?: voices.find { v: Voice ->
                     v.locale.language.startsWith("hi") || v.locale.language.startsWith("en")
                 }
-                if (femaleVoice != null) {
-                    engine.voice = femaleVoice
+                if (maleVoice != null) {
+                    engine.voice = maleVoice
                 }
             }
         } catch (_: Exception) {}
     }
 
-    fun startVoiceMode() {
+    fun startVoiceMode(skipGreeting: Boolean = false) {
         isVoiceModeActive = true
         _userTranscript.value = ""
-        // Greet user in calm, respectful assistant tone
-        speak("Main sun rahi hoon. Boliye, kya kaam karna hai?")
+        if (skipGreeting) {
+            startListening()
+        } else {
+            // Greet user in calm, respectful male assistant tone
+            speak("Main sun raha hoon. Boliye, kya kaam karna hai?")
+        }
     }
 
     fun stopVoiceMode() {

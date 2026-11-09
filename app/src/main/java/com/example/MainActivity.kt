@@ -12,7 +12,10 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Surface
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.isSystemInDarkTheme
 import com.example.ui.components.AppBackdropState
 import com.example.ui.components.LocalAppBackdrop
@@ -46,7 +49,6 @@ import com.example.ui.screens.ApiRoomScreen
 import com.example.ui.screens.CommandModeScreen
 import com.example.ui.screens.HtmlViewerScreen
 import com.example.ui.screens.MainWorkspaceScreen
-import com.example.ui.screens.NameGeneratorScreen
 import com.example.ui.screens.NoteEditorScreen
 import com.example.ui.screens.PdfViewerScreen
 import com.example.ui.screens.ReadNoteScreen
@@ -63,27 +65,76 @@ import kotlinx.coroutines.launch
 sealed class Screen {
     data object Splash : Screen()
     data class MainWorkspace(val initialFolder: String = "All Notes", val pickForHide: Boolean = false) : Screen()
-    data class ReadNote(val note: NoteEntity) : Screen()
-    data class EditNote(val note: NoteEntity?) : Screen()
+    data class ReadNote(
+        val note: NoteEntity,
+        val returnScreen: Screen = MainWorkspace("All Notes")
+    ) : Screen()
+    data class EditNote(
+        val note: NoteEntity?,
+        val returnScreen: Screen = MainWorkspace("All Notes")
+    ) : Screen()
     data object Settings : Screen()
     data object SecurityArea : Screen()
     data object SecuritySettings : Screen()
     data object ThemeSettings : Screen()
     data object AgentSettings : Screen()
     data object ApiRoom : Screen()
-    data object NameGenerator : Screen()
     data object HtmlViewer : Screen()
     data object MyDocuments : Screen()
     data object CommandMode : Screen()
     data object TempMail : Screen()
     data object Accountant : Screen()
-    data class TableEditor(val initialTableData: String, val onSaved: (String) -> Unit) : Screen()
+    data class TableEditor(
+        val initialTableData: String,
+        val onSaved: (String) -> Unit,
+        val returnScreen: Screen = EditNote(null)
+    ) : Screen()
     data object RecycleBin : Screen()
     data object StorageEditor : Screen()
     data class PdfViewer(val uri: android.net.Uri, val returnTo: Screen) : Screen()
 }
 
 class MainActivity : FragmentActivity() {
+    private val incomingShareUriState = mutableStateOf<android.net.Uri?>(null)
+
+    private fun extractSharedUri(intent: android.content.Intent?): android.net.Uri? {
+        if (intent == null) return null
+        val action = intent.action ?: return null
+        if (action != android.content.Intent.ACTION_SEND && action != android.content.Intent.ACTION_SEND_MULTIPLE) {
+            return null
+        }
+        val streamUri: android.net.Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, android.net.Uri::class.java)
+                ?: intent.getParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, android.net.Uri::class.java)?.firstOrNull()
+        } else {
+            @Suppress("DEPRECATION")
+            (intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM) as? android.net.Uri)
+                ?: (intent.getParcelableArrayListExtra<android.net.Uri>(android.content.Intent.EXTRA_STREAM)?.firstOrNull())
+        }
+        if (streamUri != null) return streamUri
+
+        val sharedText = intent.getStringExtra(android.content.Intent.EXTRA_TEXT)
+        if (!sharedText.isNullOrBlank()) {
+            return try {
+                val dir = java.io.File(cacheDir, "shared_incoming").apply { mkdirs() }
+                val f = java.io.File(dir, "shared_${System.currentTimeMillis()}.txt")
+                f.writeText(sharedText)
+                androidx.core.content.FileProvider.getUriForFile(this, "${packageName}.provider", f)
+            } catch (_: Exception) {
+                null
+            }
+        }
+        return null
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        extractSharedUri(intent)?.let { uri ->
+            incomingShareUriState.value = uri
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         // opening the app silences a ringing reminder
@@ -99,6 +150,12 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         com.example.ui.util.SirenAudioPlayer.init(applicationContext)
+
+        if (savedInstanceState == null) {
+            extractSharedUri(intent)?.let { uri ->
+                incomingShareUriState.value = uri
+            }
+        }
 
         val database = AppDatabase.getInstance(applicationContext)
         val repository = NoteRepository(database.noteDao())
@@ -137,6 +194,8 @@ class MainActivity : FragmentActivity() {
                 }
             }
 
+            val pendingShareUri by incomingShareUriState
+
             MyApplicationTheme(darkTheme = isDarkMode) {
                 CompositionLocalProvider(LocalAppBackdrop provides AppBackdropState(bgImage, bgDim)) {
                     Surface(modifier = Modifier.fillMaxSize()) {
@@ -146,6 +205,8 @@ class MainActivity : FragmentActivity() {
                             milkRepository = milkRepository,
                             preferences = preferences,
                             isDarkMode = isDarkMode,
+                            incomingShareUri = pendingShareUri,
+                            onConsumeIncomingShareUri = { incomingShareUriState.value = null },
                             onToggleDarkMode = {
                                 preferences.setThemeMode(if (isDarkMode) AppPreferences.THEME_DAY else AppPreferences.THEME_DARK)
                             }
@@ -164,9 +225,16 @@ fun AuNotesApp(
     milkRepository: MilkAccountingRepository,
     preferences: AppPreferences,
     isDarkMode: Boolean,
+    incomingShareUri: android.net.Uri? = null,
+    onConsumeIncomingShareUri: () -> Unit = {},
     onToggleDarkMode: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
+
+    var currentFolder by remember { mutableStateOf("All Notes") }
+    var workspaceSearchQuery by remember { mutableStateOf("") }
+    var workspaceIsDeepSearch by remember { mutableStateOf(false) }
+    val folderScrollPositions = remember { androidx.compose.runtime.mutableStateMapOf<String, Pair<Int, Int>>() }
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Splash) }
     var screenBeforeRecycleBin by remember { mutableStateOf<Screen>(Screen.MainWorkspace()) }
@@ -175,6 +243,7 @@ fun AuNotesApp(
     var isAiChatOpen by remember { mutableStateOf(false) }
     var startAiVoiceAssistantImmediately by remember { mutableStateOf(false) }
     var returnToAiChatFromApiRoom by remember { mutableStateOf(false) }
+    var agentSharedUri by remember { mutableStateOf<android.net.Uri?>(null) }
 
     // Security Vault unlocked state, hoisted here (rather than local to
     // SecurityAreaScreen) so "When app is closed" / "When screen is locked off"
@@ -233,6 +302,8 @@ fun AuNotesApp(
         }
     }
 
+    var latestEditedNote by remember { mutableStateOf<NoteEntity?>(null) }
+
     // Leaving the Security Area re-locks it for the Immediately / When-leaving modes.
     fun leaveSecurityArea() {
         if (securityAutoLockMode == AppPreferences.AUTO_LOCK_IMMEDIATE ||
@@ -242,17 +313,45 @@ fun AuNotesApp(
     }
 
     // Intercept Back Press
-    BackHandler(enabled = isAiChatOpen || isSidebarOpen || currentScreen !is Screen.MainWorkspace || (currentScreen as? Screen.MainWorkspace)?.pickForHide == true) {
+    BackHandler(enabled = isAiChatOpen || isSidebarOpen || currentScreen !is Screen.MainWorkspace || (currentScreen as? Screen.MainWorkspace)?.pickForHide == true || workspaceSearchQuery.isNotEmpty() || currentFolder != "All Notes") {
         val screenNow = currentScreen
         when {
-            isAiChatOpen -> isAiChatOpen = false
+            isAiChatOpen -> {
+                isAiChatOpen = false
+                startAiVoiceAssistantImmediately = false
+            }
             isSidebarOpen -> isSidebarOpen = false
+            screenNow is Screen.ReadNote -> {
+                val ret = screenNow.returnScreen
+                if (ret is Screen.MainWorkspace) {
+                    currentFolder = ret.initialFolder
+                }
+                currentScreen = ret
+            }
+            screenNow is Screen.EditNote -> {
+                val ret = screenNow.returnScreen
+                val latest = latestEditedNote
+                when (ret) {
+                    is Screen.ReadNote -> {
+                        val updatedNote = if (latest != null && (latest.id == ret.note.id || ret.note.id == 0L)) latest else ret.note
+                        currentScreen = ret.copy(note = updatedNote)
+                    }
+                    is Screen.MainWorkspace -> {
+                        currentFolder = ret.initialFolder
+                        currentScreen = ret
+                    }
+                    else -> currentScreen = ret
+                }
+            }
+            screenNow is Screen.TableEditor -> {
+                currentScreen = screenNow.returnScreen
+            }
             screenNow is Screen.RecycleBin -> currentScreen = screenBeforeRecycleBin
             screenNow is Screen.PdfViewer -> currentScreen = screenNow.returnTo
             screenNow is Screen.ApiRoom -> {
                 if (returnToAiChatFromApiRoom) {
                     returnToAiChatFromApiRoom = false
-                    currentScreen = Screen.MainWorkspace()
+                    currentScreen = Screen.MainWorkspace(currentFolder)
                     isAiChatOpen = true
                 } else {
                     currentScreen = Screen.Settings
@@ -264,7 +363,12 @@ fun AuNotesApp(
             screenNow is Screen.MainWorkspace && screenNow.pickForHide -> currentScreen = Screen.SecurityArea
             screenNow is Screen.SecurityArea -> leaveSecurityArea()
             screenNow is Screen.Splash -> { /* Let splash finish */ }
-            currentScreen !is Screen.MainWorkspace -> currentScreen = Screen.MainWorkspace()
+            currentScreen !is Screen.MainWorkspace -> currentScreen = Screen.MainWorkspace(currentFolder)
+            workspaceSearchQuery.isNotEmpty() -> workspaceSearchQuery = ""
+            currentFolder != "All Notes" -> {
+                currentFolder = "All Notes"
+                currentScreen = Screen.MainWorkspace("All Notes")
+            }
         }
     }
 
@@ -310,16 +414,32 @@ fun AuNotesApp(
                 SplashScreen(
                     isDarkMode = isDarkMode,
                     onSplashFinished = {
-                        currentScreen = Screen.MainWorkspace()
+                        currentScreen = Screen.MainWorkspace(currentFolder)
                     }
                 )
             }
 
             is Screen.MainWorkspace -> {
+                val effectiveFolder = screen.initialFolder.ifBlank { currentFolder }
                 MainWorkspaceScreen(
                     repository = repository,
                     preferences = preferences,
-                    initialFolder = screen.initialFolder,
+                    initialFolder = effectiveFolder,
+                    onFolderChanged = { newFolder ->
+                        currentFolder = newFolder
+                    },
+                    initialSearchQuery = workspaceSearchQuery,
+                    onSearchQueryChanged = { q ->
+                        workspaceSearchQuery = q
+                    },
+                    initialIsDeepSearch = workspaceIsDeepSearch,
+                    onDeepSearchChanged = { deep ->
+                        workspaceIsDeepSearch = deep
+                    },
+                    savedScrollPosition = folderScrollPositions[effectiveFolder],
+                    onSaveScrollPosition = { folderKey, index, offset ->
+                        folderScrollPositions[folderKey] = index to offset
+                    },
                     pickForHide = screen.pickForHide,
                     onPickForHideDone = { chosen ->
                         coroutineScope.launch {
@@ -335,29 +455,50 @@ fun AuNotesApp(
                     onOpenSettings = { currentScreen = Screen.Settings },
                     onOpenAiChat = { isAiChatOpen = true },
                     onOpenNote = { note ->
-                        currentScreen = Screen.ReadNote(note)
+                        currentScreen = Screen.ReadNote(
+                            note = note,
+                            returnScreen = Screen.MainWorkspace(currentFolder)
+                        )
                     },
                     onCreateNote = {
-                        currentScreen = Screen.EditNote(null)
+                        latestEditedNote = null
+                        currentScreen = Screen.EditNote(
+                            note = null,
+                            returnScreen = Screen.MainWorkspace(currentFolder)
+                        )
                     }
                 )
             }
 
             is Screen.ReadNote -> {
+                val navigateBackFromRead = {
+                    val ret = screen.returnScreen
+                    if (ret is Screen.MainWorkspace) {
+                        currentFolder = ret.initialFolder
+                    }
+                    currentScreen = ret
+                }
                 com.example.ui.components.OpenAnimated {
                 ReadNoteScreen(
                     note = screen.note,
                     preferences = preferences,
                     isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.MainWorkspace() },
+                    onBack = navigateBackFromRead,
                     onEditNote = { note ->
-                        currentScreen = Screen.EditNote(note)
+                        latestEditedNote = note
+                        currentScreen = Screen.EditNote(
+                            note = note,
+                            returnScreen = Screen.ReadNote(
+                                note = note,
+                                returnScreen = screen.returnScreen
+                            )
+                        )
                     },
                     onDeleteNote = { noteId ->
                         val doDelete = {
                             coroutineScope.launch {
                                 repository.moveToTrash(noteId)
-                                currentScreen = Screen.MainWorkspace()
+                                navigateBackFromRead()
                             }
                             Unit
                         }
@@ -366,7 +507,9 @@ fun AuNotesApp(
                     },
                     onToggleLock = { noteId, isUnlocked ->
                         coroutineScope.launch {
-                            repository.toggleLock(noteId, !isUnlocked)
+                            val currentlyLocked = !isUnlocked
+                            repository.toggleLock(noteId, currentlyLocked)
+                            currentScreen = screen.copy(note = screen.note.copy(isLocked = !currentlyLocked))
                         }
                     }
                 )
@@ -374,23 +517,44 @@ fun AuNotesApp(
             }
 
             is Screen.EditNote -> {
+                val navigateBackFromEdit = {
+                    val ret = screen.returnScreen
+                    val latest = latestEditedNote
+                    when (ret) {
+                        is Screen.ReadNote -> {
+                            val updatedNote = if (latest != null && (latest.id == ret.note.id || ret.note.id == 0L)) latest else ret.note
+                            currentScreen = ret.copy(note = updatedNote)
+                        }
+                        is Screen.MainWorkspace -> {
+                            currentFolder = ret.initialFolder
+                            currentScreen = ret
+                        }
+                        else -> currentScreen = ret
+                    }
+                }
                 com.example.ui.components.OpenAnimated {
                 NoteEditorScreen(
                     initialNote = screen.note,
                     isDarkMode = isDarkMode,
                     repository = repository,
                     preferences = preferences,
-                    onBack = { currentScreen = Screen.MainWorkspace() },
+                    onBack = navigateBackFromEdit,
                     onOpenTableEditor = { initialData, onResult ->
-                        currentScreen = Screen.TableEditor(initialData, onResult)
+                        currentScreen = Screen.TableEditor(
+                            initialTableData = initialData,
+                            onSaved = onResult,
+                            returnScreen = screen
+                        )
                     },
                     onSaveNote = { id, title, content, category, isBold, isItalic, isUnderline, isStrikethrough, isCodeFormat, fontSize, fontColorHex, alignment, listType, tableData, styleSpansJson, attachmentsJson, chosenFolder, onSaved ->
                         coroutineScope.launch {
                             val finalTitle = title.ifBlank { "Untitled Note" }
-                            val existing = screen.note
+                            val existing = latestEditedNote?.takeIf { it.id == id && id != 0L } ?: screen.note
+                            val defaultFolderFromWorkspace = if (currentFolder != "All Notes" && currentFolder != "Favorites") currentFolder else ""
                             // Only a NEW note is filed by its detected type; saving an existing note never moves it.
                             val targetFolder = when {
                                 existing != null && existing.id != 0L -> existing.folder
+                                defaultFolderFromWorkspace.isNotBlank() -> defaultFolderFromWorkspace
                                 category == "API" -> "APIs Keys"
                                 category == "Code" -> "Code"
                                 category == "Media" -> "Media"
@@ -431,6 +595,8 @@ fun AuNotesApp(
                                 updatedAt = System.currentTimeMillis()
                             )
                             val savedId = repository.saveNote(entity)
+                            val savedEntity = entity.copy(id = savedId)
+                            latestEditedNote = savedEntity
                             onSaved(savedId)
                         }
                     }
@@ -442,10 +608,10 @@ fun AuNotesApp(
                 TableEditorScreen(
                     initialTableData = screen.initialTableData,
                     isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.EditNote(null) },
+                    onBack = { currentScreen = screen.returnScreen },
                     onSaveTable = { savedData ->
                         screen.onSaved(savedData)
-                        currentScreen = Screen.EditNote(null)
+                        currentScreen = screen.returnScreen
                     }
                 )
             }
@@ -454,7 +620,7 @@ fun AuNotesApp(
                 SettingsScreen(
                     preferences = preferences,
                     isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.MainWorkspace() },
+                    onBack = { currentScreen = Screen.MainWorkspace(currentFolder) },
                     // Settings already verified the PIN: mark the vault open so the
                     // Security Area does not ask a second time.
                     onOpenSecurityArea = {
@@ -478,7 +644,7 @@ fun AuNotesApp(
                     onBack = {
                         if (returnToAiChatFromApiRoom) {
                             returnToAiChatFromApiRoom = false
-                            currentScreen = Screen.MainWorkspace()
+                            currentScreen = Screen.MainWorkspace(currentFolder)
                             isAiChatOpen = true
                         } else {
                             currentScreen = Screen.Settings
@@ -493,7 +659,7 @@ fun AuNotesApp(
                     preferences = preferences,
                     isDarkMode = isDarkMode,
                     onBack = { leaveSecurityArea() },
-                    onOpenNote = { note -> currentScreen = Screen.ReadNote(note) },
+                    onOpenNote = { note -> currentScreen = Screen.ReadNote(note, returnScreen = Screen.SecurityArea) },
                     onOpenSettings = { currentScreen = Screen.SecuritySettings },
                     onAddHiddenNotes = { currentScreen = Screen.MainWorkspace("All Notes", pickForHide = true) },
                     vaultUnlockedExternal = isSecurityVaultUnlocked,
@@ -529,31 +695,22 @@ fun AuNotesApp(
                 MyDocumentsScreen(
                     isDarkMode = isDarkMode,
                     repository = repository,
-                    onBack = { currentScreen = Screen.MainWorkspace() }
+                    onBack = { currentScreen = Screen.MainWorkspace(currentFolder) }
                 )
             }
 
             is Screen.HtmlViewer -> {
                 HtmlViewerScreen(
                     isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.MainWorkspace() },
+                    onBack = { currentScreen = Screen.MainWorkspace(currentFolder) },
                     repository = repository
-                )
-            }
-
-            is Screen.NameGenerator -> {
-                NameGeneratorScreen(
-                    repository = repository,
-                    preferences = preferences,
-                    isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.MainWorkspace() }
                 )
             }
 
             is Screen.TempMail -> {
                 TempMailScreen(
                     isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.MainWorkspace() },
+                    onBack = { currentScreen = Screen.MainWorkspace(currentFolder) },
                     onSaveAsNote = { title, content ->
                         coroutineScope.launch {
                             val id = repository.saveNote(
@@ -563,7 +720,7 @@ fun AuNotesApp(
                             )
                             val note = repository.getNoteByIdOnce(id)
                             if (note != null) {
-                                currentScreen = Screen.ReadNote(note)
+                                currentScreen = Screen.ReadNote(note, returnScreen = Screen.MainWorkspace(currentFolder))
                             }
                         }
                     }
@@ -575,10 +732,13 @@ fun AuNotesApp(
                     repository = repository,
                     preferences = preferences,
                     isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.MainWorkspace() },
-                    onCreateNewNote = { currentScreen = Screen.EditNote(null) },
-                    onOpenNote = { note -> currentScreen = Screen.ReadNote(note) },
-                    onOpenFolder = { folder -> currentScreen = Screen.MainWorkspace(folder) }
+                    onBack = { currentScreen = Screen.MainWorkspace(currentFolder) },
+                    onCreateNewNote = { currentScreen = Screen.EditNote(null, returnScreen = Screen.MainWorkspace(currentFolder)) },
+                    onOpenNote = { note -> currentScreen = Screen.ReadNote(note, returnScreen = Screen.MainWorkspace(currentFolder)) },
+                    onOpenFolder = { folder ->
+                        currentFolder = folder
+                        currentScreen = Screen.MainWorkspace(folder)
+                    }
                 )
             }
 
@@ -594,7 +754,7 @@ fun AuNotesApp(
             is Screen.StorageEditor -> {
                 StorageFileEditorScreen(
                     isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.MainWorkspace() },
+                    onBack = { currentScreen = Screen.MainWorkspace(currentFolder) },
                     onOpenPdf = { uri ->
                         currentScreen = Screen.PdfViewer(uri, returnTo = Screen.StorageEditor)
                     },
@@ -606,7 +766,7 @@ fun AuNotesApp(
                             category = category,
                             isCodeFormat = category == "Code"
                         )
-                        currentScreen = Screen.EditNote(virtualNote)
+                        currentScreen = Screen.EditNote(virtualNote, returnScreen = Screen.StorageEditor)
                     }
                 )
             }
@@ -615,7 +775,7 @@ fun AuNotesApp(
                 AccountantScreen(
                     repository = milkRepository,
                     isDarkMode = isDarkMode,
-                    onBack = { currentScreen = Screen.MainWorkspace() }
+                    onBack = { currentScreen = Screen.MainWorkspace(currentFolder) }
                 )
             }
 
@@ -637,7 +797,7 @@ fun AuNotesApp(
                     pendingDeleteNoteId = null
                     coroutineScope.launch {
                         repository.moveToTrash(noteId)
-                        currentScreen = Screen.MainWorkspace()
+                        currentScreen = Screen.MainWorkspace(currentFolder)
                     }
                 },
                 onDismiss = { pendingDeleteNoteId = null }
@@ -652,6 +812,7 @@ fun AuNotesApp(
             onClose = { isSidebarOpen = false },
             onNavigateHome = {
                 isSidebarOpen = false
+                currentFolder = "All Notes"
                 currentScreen = Screen.MainWorkspace("All Notes")
             },
             onNavigateFolder = { folder ->
@@ -660,6 +821,7 @@ fun AuNotesApp(
                     "Code Snippets" -> "Code"
                     else -> folder
                 }
+                currentFolder = targetFolder
                 currentScreen = Screen.MainWorkspace(targetFolder)
             },
             onOpenFileEditor = {
@@ -673,10 +835,6 @@ fun AuNotesApp(
             onOpenMyDocuments = {
                 isSidebarOpen = false
                 currentScreen = Screen.MyDocuments
-            },
-            onOpenNameGenerator = {
-                isSidebarOpen = false
-                currentScreen = Screen.NameGenerator
             },
             onOpenCommandMode = {
                 isSidebarOpen = false
@@ -697,7 +855,7 @@ fun AuNotesApp(
             },
             onOpenRecycleBin = {
                 isSidebarOpen = false
-                screenBeforeRecycleBin = Screen.MainWorkspace()
+                screenBeforeRecycleBin = Screen.MainWorkspace(currentFolder)
                 currentScreen = Screen.RecycleBin
             },
             onOpenFeaturesModal = {
@@ -707,7 +865,7 @@ fun AuNotesApp(
             onOpenNoteById = { noteId ->
                 coroutineScope.launch {
                     repository.getNoteByIdOnce(noteId)?.let { note ->
-                        currentScreen = Screen.ReadNote(note)
+                        currentScreen = Screen.ReadNote(note, returnScreen = Screen.MainWorkspace(currentFolder))
                     }
                 }
             }
@@ -720,12 +878,16 @@ fun AuNotesApp(
             preferences = preferences,
             repository = repository,
             milkRepository = milkRepository,
+            currentNoteId = (currentScreen as? Screen.ReadNote)?.note?.id
+                ?: (currentScreen as? Screen.EditNote)?.note?.id,
             currentNoteTitle = (currentScreen as? Screen.ReadNote)?.note?.title
                 ?: (currentScreen as? Screen.EditNote)?.note?.title,
             currentNoteContent = (currentScreen as? Screen.ReadNote)?.note?.content
                 ?: (currentScreen as? Screen.EditNote)?.note?.content,
             autoStartVoiceMode = startAiVoiceAssistantImmediately,
             onVoiceModeStarted = { startAiVoiceAssistantImmediately = false },
+            incomingSharedUri = agentSharedUri,
+            onIncomingSharedUriConsumed = { agentSharedUri = null },
             onClose = { isAiChatOpen = false },
             onModifyCurrentNote = { newContent ->
                 coroutineScope.launch {
@@ -738,11 +900,18 @@ fun AuNotesApp(
                         )
                         repository.saveNote(updated)
                         if (currentScreen is Screen.ReadNote) {
-                            currentScreen = Screen.ReadNote(updated)
+                            currentScreen = (currentScreen as Screen.ReadNote).copy(note = updated)
                         } else if (currentScreen is Screen.EditNote) {
-                            currentScreen = Screen.EditNote(updated)
+                            currentScreen = (currentScreen as Screen.EditNote).copy(note = updated)
                         }
                     }
+                }
+            },
+            onUpdateCurrentNoteEntity = { updatedNote ->
+                if (currentScreen is Screen.ReadNote) {
+                    currentScreen = (currentScreen as Screen.ReadNote).copy(note = updatedNote)
+                } else if (currentScreen is Screen.EditNote) {
+                    currentScreen = (currentScreen as Screen.EditNote).copy(note = updatedNote)
                 }
             },
             onCreateNoteFromAi = { title, content, category ->
@@ -752,16 +921,17 @@ fun AuNotesApp(
                     val saved = repository.getNoteByIdOnce(newId)
                     if (saved != null) {
                         isAiChatOpen = false
-                        currentScreen = Screen.ReadNote(saved)
+                        currentScreen = Screen.ReadNote(saved, returnScreen = Screen.MainWorkspace(currentFolder))
                     }
                 }
             },
             onOpenNoteFromAi = { note ->
                 isAiChatOpen = false
-                currentScreen = Screen.ReadNote(note)
+                currentScreen = Screen.ReadNote(note, returnScreen = Screen.MainWorkspace(currentFolder))
             },
             onOpenFolderFromAi = { folder ->
                 isAiChatOpen = false
+                currentFolder = folder
                 currentScreen = Screen.MainWorkspace(folder)
             },
             onOpenApiRoom = {
@@ -770,5 +940,108 @@ fun AuNotesApp(
                 currentScreen = Screen.ApiRoom
             }
         )
+
+        // Requirement 19: System Share Target 3-Option Modal ("Save to Documents", "Give to Agent", "Open in File Editor")
+        incomingShareUri?.let { sharedUri ->
+            val sharedName = remember(sharedUri) {
+                com.example.data.documents.MyDocuments.displayName(activity, sharedUri)
+            }
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = onConsumeIncomingShareUri,
+                title = {
+                    androidx.compose.material3.Text(
+                        text = "Share to AU Notes",
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                    )
+                },
+                text = {
+                    androidx.compose.foundation.layout.Column(
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)
+                    ) {
+                        androidx.compose.material3.Text(
+                            text = "Choose what to do with \"$sharedName\":",
+                            fontSize = 13.sp
+                        )
+                        androidx.compose.material3.Button(
+                            onClick = {
+                                onConsumeIncomingShareUri()
+                                coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                    val saved = com.example.data.documents.MyDocuments.importUri(activity, sharedUri)
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        if (saved != null) {
+                                            android.widget.Toast.makeText(activity, "Saved \"${saved.name}\" to My Documents", android.widget.Toast.LENGTH_SHORT).show()
+                                            currentScreen = Screen.MyDocuments
+                                        } else {
+                                            android.widget.Toast.makeText(activity, "Could not save shared file", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = com.example.ui.theme.CrimsonPrimary)
+                        ) {
+                            androidx.compose.material3.Text("1. Save to Documents", color = androidx.compose.ui.graphics.Color.White)
+                        }
+
+                        androidx.compose.material3.Button(
+                            onClick = {
+                                onConsumeIncomingShareUri()
+                                agentSharedUri = sharedUri
+                                isAiChatOpen = true
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFF2563EB))
+                        ) {
+                            androidx.compose.material3.Text("2. Give to Agent", color = androidx.compose.ui.graphics.Color.White)
+                        }
+
+                        androidx.compose.material3.Button(
+                            onClick = {
+                                onConsumeIncomingShareUri()
+                                val mime = activity.contentResolver.getType(sharedUri).orEmpty()
+                                if (mime == "application/pdf" || sharedName.endsWith(".pdf", ignoreCase = true)) {
+                                    currentScreen = Screen.PdfViewer(sharedUri, returnTo = Screen.StorageEditor)
+                                } else {
+                                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                        val imported = com.example.ui.util.FileManagerStore(activity).importIntoAppStorage(sharedUri)
+                                        val textContent = try {
+                                            imported?.readText()
+                                                ?: activity.contentResolver.openInputStream(sharedUri)?.bufferedReader()?.use { it.readText() }
+                                        } catch (_: Exception) {
+                                            null
+                                        }
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                            if (!textContent.isNullOrBlank()) {
+                                                val isCode = sharedName.substringAfterLast('.', "").lowercase() in listOf("py", "kt", "js", "ts", "html", "css", "json", "xml", "sh", "c", "cpp", "java")
+                                                val virtualNote = NoteEntity(
+                                                    id = 0L,
+                                                    title = sharedName,
+                                                    content = textContent,
+                                                    category = if (isCode) "Code" else "General",
+                                                    isCodeFormat = isCode
+                                                )
+                                                currentScreen = Screen.EditNote(virtualNote, returnScreen = Screen.StorageEditor)
+                                            } else {
+                                                currentScreen = Screen.StorageEditor
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFF0D9488))
+                        ) {
+                            androidx.compose.material3.Text("3. Open in File Editor", color = androidx.compose.ui.graphics.Color.White)
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = onConsumeIncomingShareUri) {
+                        androidx.compose.material3.Text("Cancel")
+                    }
+                }
+            )
+        }
     }
 }

@@ -6,6 +6,8 @@ import android.content.Intent
 import android.net.Uri
 import android.speech.tts.TextToSpeech
 import android.widget.Toast
+import androidx.compose.ui.graphics.asImageBitmap
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -121,15 +124,30 @@ fun ReadNoteScreen(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
 
+    androidx.activity.compose.BackHandler {
+        onBack()
+    }
+
     var showExportDialog by remember { mutableStateOf(false) }
     var showPinDialog by remember { mutableStateOf(false) }
+    var pinDialogForLocking by remember { mutableStateOf(false) }
     var isSpeaking by remember { mutableStateOf(false) }
+    var isLoadingAiSpeech by remember { mutableStateOf(false) }
+    var viewAsFormat by remember { mutableStateOf("normal") } // "normal" | "md" | "pdf" | "txt"
+    var showViewAsMenu by remember { mutableStateOf(false) }
     var revealApi by remember { mutableStateOf(false) }
     var pdfAttachmentToView by remember { mutableStateOf<Uri?>(null) }
     var showAlarmDialog by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
     val noteAlarms by preferences.noteAlarms.collectAsState()
     val activeAlarm = noteAlarms[note.id]
+    val noteReaderVoiceMode by preferences.noteReaderVoiceMode.collectAsState()
+    val liveVoiceName by preferences.liveVoiceName.collectAsState()
+    val hasCustomPin by preferences.hasCustomPin.collectAsState()
+    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+    val aiService = remember { com.example.data.ai.AiService() }
+    var activeAudioTrack by remember { mutableStateOf<android.media.AudioTrack?>(null) }
+    var speechJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     val allAttachments = remember(note.attachmentsJson) {
         RichTextFormatter.deserializeAttachments(note.attachmentsJson)
@@ -147,7 +165,7 @@ fun ReadNoteScreen(
         tts = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.setSpeechRate(0.97f)
-                tts?.setPitch(1.0f)
+                tts?.setPitch(0.95f)
                 try {
                     val attrs = android.media.AudioAttributes.Builder()
                         .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
@@ -164,13 +182,30 @@ fun ReadNoteScreen(
             }
         }
         onDispose {
+            speechJob?.cancel()
+            try { activeAudioTrack?.stop(); activeAudioTrack?.release() } catch (_: Exception) {}
             tts?.stop()
             tts?.shutdown()
         }
     }
 
-    // Natural voice: pick the language from the note text and the best installed (offline, high quality) voice.
-    fun speakNote() {
+    fun stopAllSpeech() {
+        speechJob?.cancel()
+        speechJob = null
+        isLoadingAiSpeech = false
+        try {
+            activeAudioTrack?.pause()
+            activeAudioTrack?.flush()
+            activeAudioTrack?.stop()
+            activeAudioTrack?.release()
+        } catch (_: Exception) {}
+        activeAudioTrack = null
+        try { tts?.stop() } catch (_: Exception) {}
+        isSpeaking = false
+    }
+
+    // Natural offline voice: pick the language from the note text and the best installed (offline, high quality) voice.
+    fun speakNoteNative() {
         val engine = tts ?: return
         val text = "${note.title}. ${com.example.ui.util.ImageMarkers.strip(note.content)}"
             .replace(Regex("[*_#>`|=]+"), " ")
@@ -183,7 +218,6 @@ fun ReadNoteScreen(
                 ?.maxByOrNull { it.quality }
             if (best != null) engine.voice = best
         } catch (_: Exception) {}
-        // The engine refuses very long strings, so read the note sentence-group by sentence-group.
         val chunks = text.split(Regex("(?<=[.!?।\n])\\s+")).fold(mutableListOf<String>()) { acc, sentence ->
             if (acc.isNotEmpty() && acc.last().length + sentence.length < 600) acc[acc.lastIndex] = acc.last() + " " + sentence
             else acc.add(sentence)
@@ -195,6 +229,79 @@ fun ReadNoteScreen(
             engine.speak(chunk.take(3500), if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, null, id)
         }
         isSpeaking = chunks.isNotEmpty()
+    }
+
+    fun speakNote() {
+        val useAiVoice = noteReaderVoiceMode == "ai" &&
+            com.example.data.ai.ApiConnectivityChecker.isOnline(context) &&
+            preferences.getEffectiveApiKey().isNotBlank()
+        if (!useAiVoice) {
+            if (noteReaderVoiceMode == "ai" && !com.example.data.ai.ApiConnectivityChecker.isOnline(context)) {
+                Toast.makeText(context, "Offline — using Native Voice", Toast.LENGTH_SHORT).show()
+            }
+            speakNoteNative()
+            return
+        }
+        isSpeaking = true
+        isLoadingAiSpeech = true
+        val fullText = "${note.title}. ${com.example.ui.util.ImageMarkers.strip(note.content)}"
+        speechJob = coroutineScope.launch {
+            val res = aiService.generateSpeechAudio(
+                apiKey = preferences.getEffectiveApiKey(),
+                text = fullText,
+                voiceName = liveVoiceName.ifBlank { "Puck" }
+            )
+            isLoadingAiSpeech = false
+            res.fold(
+                onSuccess = { (pcmBytes, sampleRate) ->
+                    try {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            val minBuf = android.media.AudioTrack.getMinBufferSize(
+                                sampleRate,
+                                android.media.AudioFormat.CHANNEL_OUT_MONO,
+                                android.media.AudioFormat.ENCODING_PCM_16BIT
+                            ).coerceAtLeast(4096)
+                            val track = android.media.AudioTrack.Builder()
+                                .setAudioAttributes(
+                                    android.media.AudioAttributes.Builder()
+                                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                                        .build()
+                                )
+                                .setAudioFormat(
+                                    android.media.AudioFormat.Builder()
+                                        .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                                        .setSampleRate(sampleRate)
+                                        .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                                        .build()
+                                )
+                                .setBufferSizeInBytes(maxOf(minBuf, pcmBytes.size.coerceAtMost(65536)))
+                                .setTransferMode(android.media.AudioTrack.MODE_STREAM)
+                                .build()
+                            activeAudioTrack = track
+                            track.play()
+                            var offset = 0
+                            val step = 4096
+                            while (offset < pcmBytes.size && isSpeaking) {
+                                val count = minOf(step, pcmBytes.size - offset)
+                                val written = track.write(pcmBytes, offset, count)
+                                if (written <= 0) break
+                                offset += written
+                            }
+                            try { track.stop(); track.release() } catch (_: Exception) {}
+                            if (activeAudioTrack === track) activeAudioTrack = null
+                        }
+                        isSpeaking = false
+                    } catch (_: Exception) {
+                        speakNoteNative()
+                    }
+                },
+                onFailure = {
+                    // Automatically fall back to Native Voice if quota is reached or model unavailable
+                    speakNoteNative()
+                }
+            )
+        }
     }
 
     val dateFormatter = remember {
@@ -384,7 +491,7 @@ fun ReadNoteScreen(
                 ) {
                     Column(modifier = Modifier.fillMaxSize()) {
 
-                        // Action Toolbar Card (Lock | Export | Delete | TTS | Copy)
+                        // Action Toolbar Card (Lock | Export | Delete | Listen | Copy | View as)
                         GlassCard(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
@@ -395,23 +502,28 @@ fun ReadNoteScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
                                     .padding(vertical = 5.dp, horizontal = 8.dp),
                                 horizontalArrangement = Arrangement.SpaceEvenly,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Lock Button
+                                // Lock Button (Requirement #3: works reliably & prompts PIN setup if not set)
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
                                         .clickable {
                                             if (note.isLocked) {
+                                                pinDialogForLocking = false
+                                                showPinDialog = true
+                                            } else if (!hasCustomPin) {
+                                                pinDialogForLocking = true
                                                 showPinDialog = true
                                             } else {
                                                 onToggleLock(note.id, false)
                                                 Toast.makeText(context, "Note Locked", Toast.LENGTH_SHORT).show()
                                             }
                                         }
-                                        .padding(4.dp)
+                                        .padding(horizontal = 5.dp, vertical = 4.dp)
                                 ) {
                                     Icon(
                                         painter = painterResource(if (note.isLocked) R.drawable.ic_security_lock else R.drawable.ic_security_unlock),
@@ -423,7 +535,8 @@ fun ReadNoteScreen(
                                     Text(
                                         text = if (note.isLocked) "Locked" else "Lock",
                                         fontSize = 11.sp,
-                                        color = if (isDarkMode) Color.White.copy(0.85f) else Color.Black
+                                        fontWeight = if (note.isLocked) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (note.isLocked) CrimsonPrimary else if (isDarkMode) Color.White.copy(0.85f) else Color.Black
                                     )
                                 }
 
@@ -434,7 +547,7 @@ fun ReadNoteScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
                                         .clickable { showExportDialog = true }
-                                        .padding(4.dp)
+                                        .padding(horizontal = 5.dp, vertical = 4.dp)
                                 ) {
                                     Icon(
                                         painter = painterResource(R.drawable.ic_export_download),
@@ -460,7 +573,7 @@ fun ReadNoteScreen(
                                             onDeleteNote(note.id)
                                             Toast.makeText(context, "Moved to Recycle Bin", Toast.LENGTH_SHORT).show()
                                         }
-                                        .padding(4.dp)
+                                        .padding(horizontal = 5.dp, vertical = 4.dp)
                                 ) {
                                     Icon(
                                         painter = painterResource(R.drawable.ic_recycle_bin),
@@ -478,29 +591,32 @@ fun ReadNoteScreen(
 
                                 Text("|", color = if (isDarkMode) Color(0x33FFFFFF) else Color(0x33000000), fontSize = 12.sp)
 
-                                // TTS Button (Speaker)
+                                // TTS / AI Speak Button (Speaker)
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
                                         .clickable {
-                                            if (isSpeaking) {
-                                                tts?.stop()
-                                                isSpeaking = false
+                                            if (isSpeaking || isLoadingAiSpeech) {
+                                                stopAllSpeech()
                                             } else {
                                                 speakNote()
                                             }
                                         }
-                                        .padding(4.dp)
+                                        .padding(horizontal = 5.dp, vertical = 4.dp)
                                 ) {
                                     Icon(
                                         painter = painterResource(if (isSpeaking) R.drawable.ic_mute_tts else R.drawable.ic_speaker_tts),
-                                        contentDescription = "TTS",
+                                        contentDescription = "Speak Note",
                                         tint = Color(0xFF2CF95F),
                                         modifier = Modifier.size(15.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = if (isSpeaking) "Stop" else "Listen",
+                                        text = when {
+                                            isLoadingAiSpeech -> "AI Voice…"
+                                            isSpeaking -> "Stop"
+                                            else -> "Speak"
+                                        },
                                         fontSize = 11.sp,
                                         color = if (isDarkMode) Color.White.copy(0.85f) else Color.Black
                                     )
@@ -516,7 +632,7 @@ fun ReadNoteScreen(
                                             clipboard.setText(AnnotatedString(com.example.ui.util.ImageMarkers.strip(note.content)))
                                             Toast.makeText(context, "Note copied to clipboard", Toast.LENGTH_SHORT).show()
                                         }
-                                        .padding(4.dp)
+                                        .padding(horizontal = 5.dp, vertical = 4.dp)
                                 ) {
                                     Icon(
                                         painter = painterResource(R.drawable.ic_copy_content),
@@ -531,6 +647,57 @@ fun ReadNoteScreen(
                                         color = if (isDarkMode) Color.White.copy(0.85f) else Color.Black
                                     )
                                 }
+
+                                Text("|", color = if (isDarkMode) Color(0x33FFFFFF) else Color(0x33000000), fontSize = 12.sp)
+
+                                // Requirement #15: "View as" (.md, .pdf, .txt) right next to Copy
+                                Box {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .clickable { showViewAsMenu = true }
+                                            .padding(horizontal = 5.dp, vertical = 4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Visibility,
+                                            contentDescription = "View as",
+                                            tint = if (viewAsFormat != "normal") CrimsonPrimary else Color(0xFFA855F7),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (viewAsFormat == "normal") "View as" else "View: .${viewAsFormat}",
+                                            fontSize = 11.sp,
+                                            fontWeight = if (viewAsFormat != "normal") FontWeight.Bold else FontWeight.Normal,
+                                            color = if (viewAsFormat != "normal") CrimsonPrimary else if (isDarkMode) Color.White.copy(0.85f) else Color.Black
+                                        )
+                                    }
+                                    androidx.compose.material3.DropdownMenu(
+                                        expanded = showViewAsMenu,
+                                        onDismissRequest = { showViewAsMenu = false }
+                                    ) {
+                                        listOf(
+                                            "normal" to "Normal (Rich Note)",
+                                            "md" to "View as .md (Markdown)",
+                                            "pdf" to "View as .pdf (PDF Pages)",
+                                            "txt" to "View as .txt (Plain Text)"
+                                        ).forEach { (fmt, label) ->
+                                            androidx.compose.material3.DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        label,
+                                                        fontWeight = if (viewAsFormat == fmt) FontWeight.Bold else FontWeight.Normal,
+                                                        color = if (viewAsFormat == fmt) CrimsonPrimary else Color.Unspecified
+                                                    )
+                                                },
+                                                onClick = {
+                                                    viewAsFormat = fmt
+                                                    showViewAsMenu = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -542,6 +709,79 @@ fun ReadNoteScreen(
                                 .verticalScroll(rememberScrollState())
                                 .padding(top = 10.dp)
                         ) {
+                        if (viewAsFormat == "md") {
+                            val mdText = remember(note) { com.example.ui.util.NoteExporter.buildMarkdown(note) }
+                            GlassCard(
+                                modifier = Modifier.fillMaxWidth().padding(4.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                isDarkMode = isDarkMode
+                            ) {
+                                androidx.compose.foundation.text.selection.SelectionContainer {
+                                    Text(
+                                        text = mdText,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 13.sp,
+                                        lineHeight = 19.sp,
+                                        color = if (isDarkMode) Color(0xFFE2E8F0) else Color(0xFF1E293B),
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                }
+                            }
+                        } else if (viewAsFormat == "txt") {
+                            val txtContent = remember(note) { com.example.ui.util.NoteExporter.buildPlainText(note) }
+                            GlassCard(
+                                modifier = Modifier.fillMaxWidth().padding(4.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                isDarkMode = isDarkMode
+                            ) {
+                                androidx.compose.foundation.text.selection.SelectionContainer {
+                                    Text(
+                                        text = txtContent,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 13.sp,
+                                        lineHeight = 19.sp,
+                                        color = if (isDarkMode) Color.White.copy(0.9f) else Color(0xFF111111),
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                }
+                            }
+                        } else if (viewAsFormat == "pdf") {
+                            val pdfPages by produceState<List<android.graphics.Bitmap>?>(initialValue = null, note) {
+                                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    try {
+                                        val tmpPdf = com.example.ui.util.NoteExporter.buildPdf(context, note, "preview_${note.id}.pdf", false)
+                                        val pages = com.example.ui.util.NoteExporter.renderPages(tmpPdf, scale = 1.6f)
+                                        tmpPdf.delete()
+                                        pages
+                                    } catch (_: Exception) {
+                                        emptyList()
+                                    }
+                                }
+                            }
+                            if (pdfPages == null) {
+                                Text("Rendering PDF preview…", fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(16.dp))
+                            } else if (pdfPages.isNullOrEmpty()) {
+                                Text("Could not render PDF preview.", fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(16.dp))
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().padding(4.dp)) {
+                                    pdfPages!!.forEachIndexed { idx, bmp ->
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                                            androidx.compose.foundation.Image(
+                                                bitmap = bmp.asImageBitmap(),
+                                                contentDescription = "PDF Page ${idx + 1}",
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .border(1.dp, Color.Gray.copy(alpha = 0.3f), RoundedCornerShape(8.dp)),
+                                                contentScale = ContentScale.FillWidth
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text("Page ${idx + 1} of ${pdfPages!!.size}", fontSize = 11.sp, color = Color.Gray)
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
                         // Render Attached Images and Files in Read Mode (PART F Item 6 Fix)
                         if (attachments.isNotEmpty()) {
                             Text(
@@ -565,7 +805,12 @@ fun ReadNoteScreen(
                                             Column(modifier = Modifier.padding(8.dp)) {
                                                 com.example.ui.components.AttachmentFrame(
                                                     att = attachment,
-                                                    modifier = Modifier.fillMaxWidth(attachment.widthFraction),
+                                                    modifier = Modifier
+                                                        .offset(
+                                                            x = attachment.posX.coerceAtLeast(0f).dp,
+                                                            y = attachment.posY.dp
+                                                        )
+                                                        .fillMaxWidth(attachment.widthFraction.coerceIn(0.22f, 1f)),
                                                     cornerRadius = 8
                                                 )
                                                 Spacer(modifier = Modifier.height(4.dp))
@@ -688,6 +933,7 @@ fun ReadNoteScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             RenderTable(note.tableData, isDarkMode)
                         }
+                        } // end normal viewAsFormat
                         }
                     }
                 }
@@ -706,14 +952,32 @@ fun ReadNoteScreen(
 
     if (showPinDialog) {
         val storedPin by preferences.lockPin.collectAsState()
+        val secQuestion by preferences.securityQuestion.collectAsState()
+        val secAnswer by preferences.securityAnswer.collectAsState()
         PinLockDialog(
             correctPin = storedPin,
+            title = if (pinDialogForLocking) "Set Up PIN to Lock Note" else "Unlock Note",
+            subtitle = if (pinDialogForLocking) "Create a 4-digit PIN to lock this note" else "Enter your 4-digit PIN to unlock this note",
+            securityQuestion = secQuestion,
+            securityAnswer = secAnswer,
             isDarkMode = isDarkMode,
+            requireSetup = !hasCustomPin,
             onDismiss = { showPinDialog = false },
             onUnlocked = {
                 showPinDialog = false
-                onToggleLock(note.id, true)
-                Toast.makeText(context, "Note Unlocked", Toast.LENGTH_SHORT).show()
+                if (pinDialogForLocking) {
+                    onToggleLock(note.id, false)
+                    Toast.makeText(context, "Note Locked", Toast.LENGTH_SHORT).show()
+                } else {
+                    onToggleLock(note.id, true)
+                    Toast.makeText(context, "Note Unlocked", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onSetupComplete = { pin, q, a ->
+                preferences.setSecurityDetails(pin, q, a)
+            },
+            onPinReset = { newPin ->
+                preferences.setLockPin(newPin)
             }
         )
     }
@@ -1148,7 +1412,12 @@ private fun ReadRichBody(
                         Spacer(Modifier.height(8.dp))
                         com.example.ui.components.AttachmentFrame(
                             att = att,
-                            modifier = Modifier.fillMaxWidth(att.widthFraction)
+                            modifier = Modifier
+                                .offset(
+                                    x = att.posX.coerceAtLeast(0f).dp,
+                                    y = att.posY.dp
+                                )
+                                .fillMaxWidth(att.widthFraction.coerceIn(0.22f, 1f))
                         )
                         Spacer(Modifier.height(8.dp))
                     }

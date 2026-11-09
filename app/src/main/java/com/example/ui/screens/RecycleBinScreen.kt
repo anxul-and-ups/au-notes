@@ -186,24 +186,6 @@ fun RecycleBinScreen(
                             )
                         }
                     }
-                    if (!selectMode) {
-                        // Lock / unlock the whole recycle bin
-                        NeuIconButton(
-                            icon = if (binLocked) Icons.Default.Lock else Icons.Default.LockOpen,
-                            contentDescription = if (binLocked) "Unlock recycle bin" else "Lock recycle bin",
-                            isDarkMode = isDarkMode,
-                            size = 38.dp, iconSize = 18.dp,
-                            tint = if (binLocked) CrimsonPrimary else Color.Gray,
-                            onClick = {
-                                if (binLocked) showUnlockBinVerify = true
-                                else if (!hasCustomPin) showLockSetup = true
-                                else {
-                                    preferences.setRecycleBinLocked(true)
-                                    Toast.makeText(context, "Recycle Bin locked", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        )
-                    }
                 }
             }
 

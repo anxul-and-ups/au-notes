@@ -1,0 +1,139 @@
+Untitled Note
+==================
+ab is app me kuch aise changes karo ki 
+
+
+
+jo settings hai uske andar jo sequirty area hai us me bahar se dekhne per pin fingerprint and hidden folders bhi likha hua hai to usme hidden folders text remove kardo bahar se but ye feature availbale rhna chahiye 
+bas bahar se iska text remove kardo aur kuch nahi  
+
+and themes option ke andar jo lock ka option text me likha hua hai use change kar ye sequirty area ke andar jo settings ka option hai usme cards bana ek themes ka 2nd api room ka 3rd recycle bin ka 
+
+aur vaha se ye lock and unlock ho aur jo lock options abhi hain jaise options ke andar like themes ke andar api room ke andar ye sab remove karde sab vahi se ho sake 
+
+and app ke andar abhi aur causes hain jaise 
+
+jaha readmode me note hota hai to us lock option se note lock nahi hota 
+
+aur aisa karo jo speak wala option hai agar us per tap kiya jaye to ai bole  na ki native speaker 
+and agar user offline model me hai data on nahi hai to native hi bolde 
+
+and iske name se ek option banake daal dena agent settings me 
+note reader name se option one native voice 
+2nd me ai voice 
+
+done me halke fade words me likha ho english me ki 
+
+jaise ai voice use karne per api quota ya limit me se jayga 
+and native wala unlimited hai 
+and ek agent settings me ek aur option add kar 
+what should agent call you and uske aage user ka name ho 
+
+and jo chat screen hai ise pura change kar 
+
+abhi bhaut noob jaise lag rhi hai 
+
+abhi isme aisa hai ki agar user koi file vagaira send karta hai to turant immediatly bot ki taraf se working likha hua show hota hai and chahe user ka response agent tk gaya ho ya na gaya ho 
+
+to message ke niche sending show hua kare and jab message vaha tk jaye tabhi agent response de
+
+and agent ke andar web search  enable kar
+
+agar  user kuch bhi puchta hai to ye google ke gemini ke zariya vo data web se bhi find kare 
+
+har cheej nahi , agar user normal baat cheet kar rha hai ya koi note edit karva rha hai to aise nahi 
+
+agar use koi aur question ya kuch alag matlab Aisa jo web per search karna hi pade aisa puche to agent web search  kare aur actions me likha ana chaiye ki web searching ya kuch aur aise 
+
+
+and agar user no koi badi file di hai aur uska summary maga hai tobhi agent ke actions dikhna chahiye 
+like reading document anylysing documnet 
+
+agar pdf hai to ye bhi add karde 
+like multi pages ka hai to reading 1st page 
+then actions kaam done hone ke baad gayab na ho walki vahi show hoti rahe 
+1s page read 
+
+reading 2nd page 
+page read aise likha aana chahiye 
+
+
+
+and jab koi note create karta hai ya kuch aur to 
+har cheej actions me ani chahiye ki bot kya kar rha hai
+and aisa kar jo actions work done ke baad gayab ho jati hain vo gayab na hua kari balki collapse ho jaya kare jaise claude ai app ka screenshot diya hai maine tujhe ki kaise vo cmds run karta hai and baad me collapse ho jati hain aur baad me aap unhe khol kar bhi dekh sakte hai 
+ 
+
+and agent ka sara ui change kar 
+
+ek proffesniol ui design bana 
+
+and ui design ekdam change kar iska 
+
+jaisa ki screenshot me diya hai tujhe same vaisa 
+
+lekin vhaa yadav ji ki jagha user ka name show hona chahiye 
+
+and main thing ye bhi hai ki 
+
+jo orb hai jo agent settings ke andar jaise dikhte hain matlab unka bakcground to voice mode me same vahi cheej kar dark ya day mode ka koi asar un per na ho orb per aur unke bg per qki abhi jo bg voice mode me hain unka bg ekdam bekar ai neon type hai to jo settings ke andar hai use change karde 
+
+
+and agar user ka data off hai and vo agent per tap karta hai to you'r currently offline show hona chahiye 
+
+
+
+and agent koi context chota ya bda na chode use ekdam perfect banaye 
+
+like agar user ka koi prompt hai bada and use perfect karke .md banane ko bolta hai toh 
+usme se kuch bhi remove na kare 
+matlab remove kare lekin ek do bekar si chije lekin is prompt ko ekdam badhiya markdown banade 
+
+and agar user bolta hai ise short kardo isme se bekar chije hata do to vo karde 
+and kisi bhi note ka same title na rahe and 
+name generator hatado app me se 
+usse related sara code remove karde 
+stylish names wala folder bhi 
+
+and jaisa maine bataya tha image generation ka khayaal sahi se rkhna 
+agar user use koi pdf bhejta hai aur kahta hai ki iske jaise graphs add karo 
+ya ye chije to agent apni taraf se images generate karke notes me laga de 
+
+and actions me show hona chahiye ki 
+making graphs  .. jaisa kuch 
+
+
+aur jab notes dekhte hain to copy ke barabar me ek option ho view as name ka jisse aap note ko alag formats me dekh sake 
+jaise .md .pdf .txt aise 
+
+
+and jab user isme .html me import karta hai file to wo working nahi rhti bcs us code me au notes karke kuch aa jta hai to use remove kardo file ekdam real code ke sath import honi chahiye 
+
+
+and ai agent ka jo voice hai vo default per puck ka rhe and use pata ki vo ek male agent hai 
+to baat me aisa na bole ki ye kardugi ya kar rhi hu 
+
+ladke ki Jaise baat kare 
+
+
+
+aur agar me note write karta hu and agar maine back kar diya aur again note edit karne aayu aur edit per tap karte hi note ke bilkul end me chala jaye mera cursor 
+
+and ek problem ye bhi hai ki agar main note likh rha hai 
+aur 3..4 lines likhli 
+and me 2nd ya 3rd line per jakar enter click karunga to mera cursor note ke end me aa jayga to ise fix karo 
+
+
+and ek feature aur add karna aur vo ye hai ki 
+
+jaha koi file vagaira share ki jaye 
+jaise 
+
+user koi image ya koi pdf ya koi file share karta hai to share list me kaii sare apps aa jate hai to vaha per hamara app bhi show ho aur 
+app per tap karte hi 3 option aye 
+1st save to documents 
+2nd agent ko dene ke liye 
+3rd file editor me open karne ke liye 
+
+
+aise options aye 

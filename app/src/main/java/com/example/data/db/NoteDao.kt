@@ -67,4 +67,8 @@ interface NoteDao {
 
     @Query("UPDATE notes SET isHidden = :isHidden, originalFolder = :originalFolder, folder = CASE WHEN :isHidden = 1 THEN 'Hidden' ELSE :originalFolder END, updatedAt = :timestamp WHERE id = :id")
     suspend fun updateHidden(id: Long, isHidden: Boolean, originalFolder: String, timestamp: Long = System.currentTimeMillis())
+
+    @Query("SELECT title FROM notes WHERE isTrash = 0 AND id != :excludeId")
+    suspend fun getActiveTitlesExcept(excludeId: Long): List<String>
 }
+
