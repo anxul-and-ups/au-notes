@@ -27,6 +27,15 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Ensure Signing Keystore Exists
+        run: |
+          if [ -f "my-upload-key.jks" ]; then
+            echo "Found my-upload-key.jks in project root — release APK will be signed with upload key."
+          elif [ ! -f "debug.keystore" ]; then
+            echo "Generating fallback debug.keystore for CI..."
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
       - name: Build Release APK
         run: |
           if [ -f "./gradlew" ]; then

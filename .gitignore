@@ -19,7 +19,6 @@ local.properties
 .env
 debug.keystore
 debug.keystore.base64
-my-upload-key.jks
 *.bak
 *.bak2
 *.bak*

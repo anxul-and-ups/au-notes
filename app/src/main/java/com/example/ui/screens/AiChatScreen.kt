@@ -1338,31 +1338,39 @@ fun AiChatScreen(
                 systemPrompt = system,
                 tools = if (enabledNow.isEmpty()) null else AgentTools.toDeclarations(enabledNow),
                 executeTool = { name, args ->
-                    stepRunning(toolLabel(name))
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        stepRunning(toolLabel(name))
+                    }
                     val out = runTool(name, args)
-                    stepFinish(!toolFailed(out.result))
-                    coroutineScope.launch { delay(2500); if (agentSteps.none { it.state == 0 }) agentSteps.clear() }
-                    if (out.pending != null || out.noteResults != null) {
-                        messages.add(ChatMessage(sender = "bot", text = out.result, noteResults = out.noteResults, pendingAction = out.pending))
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        stepFinish(!toolFailed(out.result))
+                        coroutineScope.launch { delay(2500); if (agentSteps.none { it.state == 0 }) agentSteps.clear() }
+                        if (out.pending != null || out.noteResults != null) {
+                            messages.add(ChatMessage(sender = "bot", text = out.result, noteResults = out.noteResults, pendingAction = out.pending))
+                        }
                     }
                     out.result
                 },
                 onTurn = { u, a ->
-                    if (u.isNotBlank()) messages.add(ChatMessage(sender = "user", text = u))
-                    val botReply = buildString {
-                        append(a)
-                        latestGeneratedImageBlock?.let {
-                            append("\n").append(it)
-                            latestGeneratedImageBlock = null
-                        }
-                    }.trim()
-                    if (botReply.isNotBlank()) messages.add(ChatMessage(sender = "bot", text = botReply))
-                    saveCurrentChatSession()
+                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                        if (u.isNotBlank()) messages.add(ChatMessage(sender = "user", text = u))
+                        val botReply = buildString {
+                            append(a)
+                            latestGeneratedImageBlock?.let {
+                                append("\n").append(it)
+                                latestGeneratedImageBlock = null
+                            }
+                        }.trim()
+                        if (botReply.isNotBlank()) messages.add(ChatMessage(sender = "bot", text = botReply))
+                        saveCurrentChatSession()
+                    }
                 },
                 onFatal = { msg ->
-                    Toast.makeText(context, msg + " Using the normal voice instead.", Toast.LENGTH_LONG).show()
-                    stopLive()
-                    if (!voiceManager.isVoiceModeActive) voiceManager.startVoiceMode(skipGreeting = messages.size > 1)
+                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                        Toast.makeText(context, msg + " Using the normal voice instead.", Toast.LENGTH_LONG).show()
+                        stopLive()
+                        if (!voiceManager.isVoiceModeActive) voiceManager.startVoiceMode(skipGreeting = messages.size > 1)
+                    }
                 },
                 context = context.applicationContext,
                 initialImagesBase64 = (attachedPdfImages ?: sessionAttachmentImages).orEmpty()
@@ -3436,31 +3444,6 @@ fun AiChatScreen(
                     indication = null
                 ) {}
         ) {
-            // Background full-bleed OrbView so its radial backdrop and particles fill the stage seamlessly
-            if (orbEnabled) {
-                com.example.ui.components.OrbView(
-                    state = when (voiceState) {
-                        VoiceState.LISTENING -> "listening"
-                        VoiceState.THINKING -> "thinking"
-                        VoiceState.SPEAKING -> "speaking"
-                        else -> "idle"
-                    },
-                    level = {
-                        if (live != null) live.level.value
-                        else when (voiceState) {
-                            VoiceState.LISTENING -> (0.25f + voiceManager.micLevel.value / 10f).coerceIn(0.2f, 1f)
-                            VoiceState.SPEAKING -> voiceManager.speakLevel.value.coerceAtLeast(0.45f)
-                            VoiceState.THINKING -> 0.35f
-                            else -> 0.15f
-                        }
-                    },
-                    theme = orbTheme,
-                    customColor = orbColor,
-                    intensity = orbIntensity,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -3568,8 +3551,37 @@ fun AiChatScreen(
                     }
                 }
 
-                // Center space (Orb renders full-bleed behind this; status pill sits cleanly below the Orb center)
-                Spacer(Modifier.weight(1f))
+                // Center stage: 3D WebGL OrbView inside the middle weight(1f) space
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (orbEnabled) {
+                        com.example.ui.components.OrbView(
+                            state = when (voiceState) {
+                                VoiceState.LISTENING -> "listening"
+                                VoiceState.THINKING -> "thinking"
+                                VoiceState.SPEAKING -> "speaking"
+                                else -> "idle"
+                            },
+                            level = {
+                                if (live != null) live.level.value
+                                else when (voiceState) {
+                                    VoiceState.LISTENING -> (0.25f + voiceManager.micLevel.value / 10f).coerceIn(0.2f, 1f)
+                                    VoiceState.SPEAKING -> voiceManager.speakLevel.value.coerceAtLeast(0.45f)
+                                    VoiceState.THINKING -> 0.35f
+                                    else -> 0.15f
+                                }
+                            },
+                            theme = orbTheme,
+                            customColor = orbColor,
+                            intensity = orbIntensity,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
 
                 // Lower section: Status Pill + Transcripts + Optional Voice Keyboard Bar + Elevated Floating Control Dock
                 Column(
