@@ -152,8 +152,6 @@ fun SettingsScreen(
         )
     }
 
-    val models = listOf("gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash")
-
     GlassBackground(isDarkMode = isDarkMode) {
         Column(
             modifier = Modifier

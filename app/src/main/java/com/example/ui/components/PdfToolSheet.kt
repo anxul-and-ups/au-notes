@@ -162,6 +162,7 @@ fun PdfToolSheet(
             decorFitsSystemWindows = false
         )
     ) {
+        ConfigureEdgeToEdgeDialog(isDarkMode = isDarkMode)
         Column(
             Modifier
                 .fillMaxSize()

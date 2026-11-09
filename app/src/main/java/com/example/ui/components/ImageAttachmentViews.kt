@@ -205,6 +205,7 @@ fun ImageEditorDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
+        ConfigureEdgeToEdgeDialog(isDarkMode = isDarkMode)
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = if (isDarkMode) Color(0xFF0E1015) else Color(0xFFF6F8FB)

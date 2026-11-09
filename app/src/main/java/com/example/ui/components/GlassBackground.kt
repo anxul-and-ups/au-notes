@@ -107,3 +107,40 @@ fun GlassBackground(
         content()
     }
 }
+
+@Composable
+fun ConfigureEdgeToEdgeDialog(isDarkMode: Boolean = true) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    if (!view.isInEditMode) {
+        androidx.compose.runtime.SideEffect {
+            val dialogWindow = (view.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
+            dialogWindow?.let { win ->
+                androidx.core.view.WindowCompat.setDecorFitsSystemWindows(win, false)
+                win.setLayout(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                win.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+                win.statusBarColor = android.graphics.Color.TRANSPARENT
+                win.navigationBarColor = android.graphics.Color.TRANSPARENT
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    win.attributes = win.attributes.apply {
+                        layoutInDisplayCutoutMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                            android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                        } else {
+                            android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                        }
+                    }
+                }
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    win.isNavigationBarContrastEnforced = false
+                    win.isStatusBarContrastEnforced = false
+                }
+                val ctrl = androidx.core.view.WindowCompat.getInsetsController(win, view)
+                ctrl.isAppearanceLightStatusBars = !isDarkMode
+                ctrl.isAppearanceLightNavigationBars = !isDarkMode
+            }
+        }
+    }
+}
+

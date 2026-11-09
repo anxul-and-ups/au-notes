@@ -12,10 +12,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -123,7 +126,13 @@ fun ApiRoomScreen(
     val activeProvider by preferences.activeProvider.collectAsState()
 
     GlassBackground(isDarkMode = isDarkMode) {
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(16.dp)
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -236,13 +245,7 @@ fun ApiRoomScreen(
                     val imgGenKey by preferences.imageGenApiKey.collectAsState()
                     var imgModelInput by remember(imgGenModel) { mutableStateOf(imgGenModel) }
                     var imgKeyInput by remember(imgGenKey) { mutableStateOf(imgGenKey) }
-                    val presetImgModels = remember {
-                        listOf(
-                            "gemini-2.0-flash-preview-image-generation",
-                            "gemini-2.0-flash-exp-image-generation",
-                            "imagen-3.0-generate-002"
-                        )
-                    }
+                    val detectedGeminiModels = detectedModels["Gemini"].orEmpty()
                     GlassCard(modifier = Modifier.fillMaxWidth(), isDarkMode = isDarkMode) {
                         Column(Modifier.padding(14.dp)) {
                             Text(
@@ -257,35 +260,40 @@ fun ApiRoomScreen(
                                 color = Color.Gray,
                                 modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
                             )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                presetImgModels.forEach { preset ->
-                                    val isSelected = imgModelInput == preset
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(if (isSelected) CrimsonPrimary else (if (isDarkMode) Color(0x22FFFFFF) else Color(0x14000000)))
-                                            .clickable {
-                                                imgModelInput = preset
-                                                preferences.setImageGenModel(preset)
+                            if (detectedGeminiModels.isNotEmpty()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    detectedGeminiModels.filter { it.contains("image", ignoreCase = true) || it.contains("imagen", ignoreCase = true) || it.contains("flash", ignoreCase = true) }
+                                        .take(6)
+                                        .forEach { detected ->
+                                            val isSelected = imgModelInput == detected
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(if (isSelected) CrimsonPrimary else (if (isDarkMode) Color(0x22FFFFFF) else Color(0x14000000)))
+                                                    .clickable {
+                                                        imgModelInput = detected
+                                                        preferences.setImageGenModel(detected)
+                                                    }
+                                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = detected.removePrefix("models/"),
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = if (isSelected) Color.White else (if (isDarkMode) Color.White else Color.Black),
+                                                    maxLines = 1
+                                                )
                                             }
-                                            .padding(horizontal = 6.dp, vertical = 6.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = preset.removePrefix("gemini-2.0-").removeSuffix("-generation"),
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (isSelected) Color.White else (if (isDarkMode) Color.White else Color.Black),
-                                            maxLines = 1
-                                        )
-                                    }
+                                        }
                                 }
+                                Spacer(Modifier.height(8.dp))
                             }
-                            Spacer(Modifier.height(8.dp))
                             OutlinedTextField(
                                 value = imgModelInput,
                                 onValueChange = {

@@ -606,6 +606,7 @@ private fun DocumentViewer(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
+        com.example.ui.components.ConfigureEdgeToEdgeDialog(isDarkMode = isDarkMode)
         Column(Modifier.fillMaxSize().background(bg).statusBarsPadding().navigationBarsPadding()) {
             // Artifacts Top Bar: Title, Toggle (Preview/Code), Search Toggle, Zoom, Share
             Surface(

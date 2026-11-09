@@ -346,7 +346,13 @@ fun AgentSettingsScreen(
                     Column(Modifier.padding(14.dp)) {
                         SwitchRow("Show the orb in voice mode", "Off = simple sound-wave bars instead.", orbEnabled) { preferences.setOrbEnabled(it) }
                         if (orbEnabled) {
-                            Box(Modifier.fillMaxWidth().height(210.dp).clip(RoundedCornerShape(14.dp)).background(if (orbTheme == "light" || orbTheme == "sunset") Color(0xFFF1F3FA) else Color(0xFF0A0D1F))) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(210.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(com.example.ui.components.getOrbBackgroundBrush(orbTheme, orbColor))
+                            ) {
                                 // preview: gentle demo motion so you can see the style (live voice uses real audio)
                                 val t = remember { mutableStateOf(0f) }
                                 androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -359,7 +365,7 @@ fun AgentSettingsScreen(
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
-                            Text("Preview (demo motion — in voice mode it follows your real voice)", fontSize = 10.sp, color = sub, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+                            Text("Preview (demo motion — in voice mode it follows your real voice & theme)", fontSize = 10.sp, color = sub, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
                             Text("Theme", fontSize = 13.sp, color = sub)
                             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 listOf("dark" to "Dark", "light" to "Light", "red" to "Red", "sunset" to "Sunset").forEach { (id, label) ->
@@ -375,16 +381,18 @@ fun AgentSettingsScreen(
                                 }
                             }
                             Spacer(Modifier.height(10.dp))
-                            Text("Custom colour", fontSize = 13.sp, color = sub)
+                            Text("Custom colour (overrides theme background & orb)", fontSize = 13.sp, color = sub)
                             Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 listOf("#2F6BFF", "#8B5CF6", "#EC4899", "#EF4444", "#F59E0B", "#22C55E", "#06B6D4", "#FFFFFF").forEach { hex ->
                                     val on = orbColor.equals(hex, ignoreCase = true)
                                     Box(
                                         Modifier.size(36.dp).clip(CircleShape).background(Color(android.graphics.Color.parseColor(hex)))
                                             .border(if (on) 3.dp else 1.dp, if (on) CrimsonPrimary else Color.Gray.copy(alpha = 0.4f), CircleShape)
-                                            .clickable { preferences.setOrbColor(hex) },
+                                            .clickable {
+                                                if (on) preferences.setOrbColor("") else preferences.setOrbColor(hex)
+                                            },
                                         contentAlignment = Alignment.Center
-                                    ) { if (on) Icon(Icons.Default.Check, null, tint = Color.Black, modifier = Modifier.size(16.dp)) }
+                                    ) { if (on) Icon(Icons.Default.Check, null, tint = if (hex == "#FFFFFF") Color.Black else Color.White, modifier = Modifier.size(16.dp)) }
                                 }
                             }
                             Spacer(Modifier.height(8.dp))

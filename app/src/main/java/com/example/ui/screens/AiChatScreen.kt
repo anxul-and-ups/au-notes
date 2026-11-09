@@ -1543,6 +1543,18 @@ fun AiChatScreen(
                     (lowerMsg.contains("laga") || lowerMsg.contains("daal") || lowerMsg.contains("add") || lowerMsg.contains("insert") || lowerMsg.contains("paste") || lowerMsg.contains("chipka"))
 
                 if (wantsImageInNote) {
+                    if (!isWorkMode) {
+                        val finishedSteps = agentSteps.toList()
+                        agentSteps.clear()
+                        isLoading = false
+                        val replyMsg = "Abhi aap **Chat Mode** me hain (jisme sirf chats aur notes/documents ki summary milti hai). Image ko note me add ya edit karne ke liye kripya upar diye gaye **⚡ Work Mode** par switch karein!"
+                        val idx = messages.indexOfFirst { it.id == botMsgId }
+                        if (idx != -1) {
+                            messages[idx] = messages[idx].copy(text = replyMsg, steps = finishedSteps)
+                        }
+                        saveCurrentChatSession()
+                        return@launch
+                    }
                     stepRunning("Inserting image into note")
                     val out = insertImageIntoTargetNote(
                         sourceUri = currentImgUri ?: sessionAttachmentUri,
@@ -1574,6 +1586,18 @@ fun AiChatScreen(
                     lowerMsg.contains("image bana do")
 
                 if (isDirectImagine) {
+                    if (!isWorkMode) {
+                        val finishedSteps = agentSteps.toList()
+                        agentSteps.clear()
+                        isLoading = false
+                        val replyMsg = "Abhi aap **Chat Mode** me hain. AI image generate karne ya notes create/edit karne ke liye kripya upar diye gaye **⚡ Work Mode** par switch karein!"
+                        val idx = messages.indexOfFirst { it.id == botMsgId }
+                        if (idx != -1) {
+                            messages[idx] = messages[idx].copy(text = replyMsg, steps = finishedSteps)
+                        }
+                        saveCurrentChatSession()
+                        return@launch
+                    }
                     stepRunning("Generating AI image")
                     val cleanPrompt = userMsg.replace(Regex("^(imagine\\s+|iska\\s+image\\s+generate\\s+kar\\w*\\s*:?)", RegexOption.IGNORE_CASE), "").trim().ifBlank { userMsg }
                     val out = runTool("generate_image", org.json.JSONObject().put("prompt", cleanPrompt))
@@ -1799,9 +1823,11 @@ fun AiChatScreen(
         enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(350)) + fadeIn(),
         exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(300)) + fadeOut()
     ) {
+        val fullChatBg = if (isDarkMode) Color(0xFF0E0E10) else Color(0xFFFAF8F5)
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .background(if (isCompactMode) Color.Transparent else fullChatBg)
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .imePadding(),
@@ -1830,9 +1856,7 @@ fun AiChatScreen(
                             .fillMaxWidth()
                             .fillMaxHeight()
                     )
-                    .background(
-                        if (isDarkMode) Color(0xFF0E0E10) else Color(0xFFFAF8F5)
-                    )
+                    .background(fullChatBg)
             ) {
                 if (isCompactMode) {
                     Box(
@@ -1865,81 +1889,156 @@ fun AiChatScreen(
                         )
                     }
 
-                    // Minimal Editorial Top Header Bar (Matches reference layout cleanly)
+                    // Top Header Bar with prominent Chat Mode / Work Mode Switcher at the top
                     val isCurrentlyOnline = remember(isOpen, messages.size) {
                         com.example.data.ai.ApiConnectivityChecker.isOnline(context)
                     }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Left: Sleek Hamburger Menu Icon
                         IconButton(
                             onClick = { isAgentSidebarOpen = true },
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(38.dp)
                         ) {
                             Icon(
                                 Icons.Default.Menu,
                                 contentDescription = "Open Sidebar",
                                 tint = if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(23.dp)
                             )
                         }
 
-                        // Center: Offline indicator pill when offline, or subtle empty space
-                        if (!isCurrentlyOnline) {
-                            Row(
+                        // Center: Top Segmented Mode Switcher (Chat Mode vs Work Mode)
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(if (isDarkMode) Color(0xFF1A1A20) else Color(0xFFEBE8E0))
+                                .border(
+                                    1.dp,
+                                    if (isDarkMode) Color(0x26FFFFFF) else Color(0x18000000),
+                                    RoundedCornerShape(22.dp)
+                                )
+                                .padding(3.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Chat Mode Pill
+                            Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(Color(0xFFEF4444).copy(alpha = 0.16f))
-                                    .border(1.dp, Color(0xFFEF4444).copy(alpha = 0.4f), RoundedCornerShape(16.dp))
-                                    .padding(horizontal = 12.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(
+                                        if (!isWorkMode) {
+                                            if (isDarkMode) Color(0xFF2C2C35) else Color.White
+                                        } else Color.Transparent
+                                    )
+                                    .clickable {
+                                        if (isWorkMode) {
+                                            isWorkMode = false
+                                            Toast.makeText(context, "Chat Mode: Chats & Note/Document Summaries", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    .padding(horizontal = 13.dp, vertical = 6.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFFEF4444)))
                                 Text(
-                                    text = "You're currently offline",
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFFF87171)
+                                    text = "💬 Chat",
+                                    fontSize = 12.sp,
+                                    fontWeight = if (!isWorkMode) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (!isWorkMode) {
+                                        if (isDarkMode) Color.White else Color(0xFF18181B)
+                                    } else {
+                                        if (isDarkMode) Color(0xFF9CA3AF) else Color(0xFF6B7280)
+                                    }
                                 )
                             }
-                        } else {
-                            Spacer(modifier = Modifier.width(8.dp))
+
+                            // Work Mode Pill
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(
+                                        if (isWorkMode) Color(0xFFD97757) else Color.Transparent
+                                    )
+                                    .clickable {
+                                        if (!isWorkMode) {
+                                            isWorkMode = true
+                                            Toast.makeText(context, "Work Mode ON: Create & Edit Notes, Slides & Graphs", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    .padding(horizontal = 13.dp, vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "⚡ Work Mode",
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isWorkMode) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isWorkMode) Color.White else {
+                                        if (isDarkMode) Color(0xFF9CA3AF) else Color(0xFF6B7280)
+                                    }
+                                )
+                            }
                         }
 
                         // Right: New Chat + Close
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             if (messages.size > 1) {
                                 IconButton(
                                     onClick = { startNewChat() },
-                                    modifier = Modifier.size(38.dp)
+                                    modifier = Modifier.size(36.dp)
                                 ) {
                                     Icon(
                                         Icons.Default.Edit,
                                         contentDescription = "New Chat",
                                         tint = if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
-                                        modifier = Modifier.size(19.dp)
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
 
                             IconButton(
                                 onClick = onClose,
-                                modifier = Modifier.size(38.dp)
+                                modifier = Modifier.size(36.dp)
                             ) {
                                 Icon(
                                     Icons.Default.Close,
                                     contentDescription = "Close",
                                     tint = if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
-                                    modifier = Modifier.size(21.dp)
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Offline indicator banner if offline
+                    if (!isCurrentlyOnline) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 2.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(Color(0xFFEF4444).copy(alpha = 0.16f))
+                                    .border(1.dp, Color(0xFFEF4444).copy(alpha = 0.4f), RoundedCornerShape(16.dp))
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFFEF4444)))
+                                Text(
+                                    text = "You're currently offline",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFFF87171)
                                 )
                             }
                         }
@@ -1968,7 +2067,7 @@ fun AiChatScreen(
                         }
                     }
 
-                    // Requirement 6: Center Empty State with Sketch-style AU Notes icon & Serif Time-of-Day Greeting
+                    // Requirement 6: Balanced Full-Height Initial State with Sketch Icon, Serif Greeting, Mode Info & Starter Cards
                     if (messages.size <= 1) {
                         val hour = remember { Calendar.getInstance().get(Calendar.HOUR_OF_DAY) }
                         val timeGreeting = when {
@@ -1977,22 +2076,81 @@ fun AiChatScreen(
                             else -> "Good evening"
                         }
                         val displayName = userName.trim().ifBlank { "Friend" }
-                        Box(
+                        val starterChips = if (isWorkMode) {
+                            listOf(
+                                "📝 Create Rich Note" to "Python programming ke upar ek detailed structured note create karo with tables and code",
+                                "✏️ Edit Open Note" to "Jo note abhi screen par open hai usko format aur improve kar do",
+                                "📊 Slides & Graphs" to "Artificial Intelligence ke upar 5 slides bana do",
+                                "🗂️ Organise .md File" to "Mere notes/content ko full context ke saath organised .md file me convert karo"
+                            )
+                        } else {
+                            listOf(
+                                "📋 Summarize My Notes" to "Mere recent notes padh kar unki concise summary batao",
+                                "📄 Document Summary" to "Mere attached document ya open note ka overview, summary aur key points batao",
+                                "💡 Explain a Topic" to "Quantum computing kya hota hai? Asaan bhasha me samjhao",
+                                "🥛 Milk Hisab Summary" to "Is mahine ka Milk Accounting summary aur total hisab batao"
+                            )
+                        }
+
+                        Column(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxWidth()
-                                .padding(horizontal = 24.dp),
-                            contentAlignment = Alignment.Center
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 20.dp, vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.SpaceBetween
                         ) {
+                            // Upper Mode Status Banner (fills upper screen space cleanly)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(
+                                        if (isWorkMode) Color(0xFFD97757).copy(alpha = 0.12f)
+                                        else (if (isDarkMode) Color(0xFF18181E) else Color(0xFFF1EFEA))
+                                    )
+                                    .border(
+                                        0.8.dp,
+                                        if (isWorkMode) Color(0xFFD97757).copy(alpha = 0.35f)
+                                        else (if (isDarkMode) Color(0x22FFFFFF) else Color(0x14000000)),
+                                        RoundedCornerShape(16.dp)
+                                    )
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (isWorkMode) "⚡ Work Mode Active" else "💬 Chat Mode Active",
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isWorkMode) Color(0xFFD97757) else (if (isDarkMode) Color(0xFFE4E4E7) else Color(0xFF18181B))
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        text = if (isWorkMode) {
+                                            "Full access to create/edit notes, insert images & graphs, make slides & .md files"
+                                        } else {
+                                            "Chat & get summaries of notes/documents • Switch to Work Mode above to edit or create notes"
+                                        },
+                                        fontSize = 11.sp,
+                                        lineHeight = 14.sp,
+                                        color = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF52525B)
+                                    )
+                                }
+                            }
+
+                            // Center Sketch-style AU Notes icon & Serif Time-of-Day Greeting
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
+                                modifier = Modifier.padding(vertical = 18.dp)
                             ) {
                                 AuNotesSketchIcon(
-                                    modifier = Modifier.size(64.dp),
+                                    modifier = Modifier.size(68.dp),
                                     sketchColor = Color(0xFFD97757)
                                 )
-                                Spacer(Modifier.height(18.dp))
+                                Spacer(Modifier.height(16.dp))
                                 Text(
                                     text = "$timeGreeting, $displayName",
                                     fontSize = 27.sp,
@@ -2000,6 +2158,56 @@ fun AiChatScreen(
                                     fontWeight = FontWeight.Normal,
                                     color = if (isDarkMode) Color(0xFFF3F2EE) else Color(0xFF1C1B18)
                                 )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    text = if (!currentNoteTitle.isNullOrBlank()) {
+                                        "Reading context: \"$currentNoteTitle\""
+                                    } else if (!sessionAttachmentName.isNullOrBlank()) {
+                                        "Attached: \"$sessionAttachmentName\""
+                                    } else {
+                                        "How can AU Agent help you today?"
+                                    },
+                                    fontSize = 13.sp,
+                                    color = if (isDarkMode) Color(0xFF9CA3AF) else Color(0xFF6B7280)
+                                )
+                            }
+
+                            // Lower 2x2 Quick Starter Grid (fills lower screen space above composer)
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                starterChips.chunked(2).forEach { pair ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        pair.forEach { (label, promptToRun) ->
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .clip(RoundedCornerShape(14.dp))
+                                                    .background(if (isDarkMode) Color(0xFF17171C) else Color(0xFFFFFFFF))
+                                                    .border(
+                                                        0.8.dp,
+                                                        if (isDarkMode) Color(0x22FFFFFF) else Color(0x16000000),
+                                                        RoundedCornerShape(14.dp)
+                                                    )
+                                                    .clickable { handleSend(promptToRun) }
+                                                    .padding(horizontal = 12.dp, vertical = 11.dp)
+                                            ) {
+                                                Text(
+                                                    text = label,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = if (isDarkMode) Color(0xFFE4E4E7) else Color(0xFF27272A),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -2154,6 +2362,34 @@ fun AiChatScreen(
                                                         }
                                                     }
                                                 )
+
+                                                // One-tap button to switch to Work Mode when the bot informs the user that Chat Mode is active
+                                                if (!isWorkMode && msg.text.contains("Work Mode", ignoreCase = true)) {
+                                                    Spacer(modifier = Modifier.height(10.dp))
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .clip(RoundedCornerShape(14.dp))
+                                                            .background(Color(0xFFD97757))
+                                                            .clickable {
+                                                                isWorkMode = true
+                                                                Toast.makeText(
+                                                                    context,
+                                                                    "Switched to ⚡ Work Mode — you can now create & edit notes!",
+                                                                    Toast.LENGTH_SHORT
+                                                                ).show()
+                                                            }
+                                                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = "⚡ Switch to Work Mode",
+                                                            fontSize = 12.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = Color.White
+                                                        )
+                                                    }
+                                                }
 
                                                 // Note search results — tap to pick which one you meant.
                                                 msg.noteResults?.let { results ->
@@ -2352,43 +2588,37 @@ fun AiChatScreen(
                                     .fillMaxWidth()
                                     .padding(horizontal = 10.dp, vertical = 10.dp)
                             ) {
-                                // Subtle Top Strip inside the composer card (Workspace / Note context + Work Mode toggle)
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .background(if (isDarkMode) Color(0xFF232329) else Color(0xFFF3F1EC))
-                                        .padding(horizontal = 14.dp, vertical = 9.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = if (!currentNoteTitle.isNullOrBlank()) {
-                                            "Note context: $currentNoteTitle"
-                                        } else {
-                                            "Smart Note & Document Studio"
-                                        },
-                                        fontSize = 12.5.sp,
-                                        color = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF52525B),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        text = if (isWorkMode) "Work Mode ON" else "Enable Work Mode",
-                                        fontSize = 12.5.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFF8AB4F8),
-                                        modifier = Modifier.clickable {
-                                            isWorkMode = !isWorkMode
-                                        }
-                                    )
+                                // Only show a subtle note context badge if a note is currently open (no Work/Chat mode toggle here since it's in the Top Bar)
+                                if (!currentNoteTitle.isNullOrBlank()) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(if (isDarkMode) Color(0xFF232329) else Color(0xFFF3F1EC))
+                                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Edit,
+                                            contentDescription = null,
+                                            tint = Color(0xFFD97757),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            text = "Active note: $currentNoteTitle",
+                                            fontSize = 11.5.sp,
+                                            color = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF52525B),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Spacer(Modifier.height(4.dp))
                                 }
 
                                 // Attached file preview chip inside composer card
                                 if (attachedFileName != null) {
-                                    Spacer(Modifier.height(8.dp))
+                                    Spacer(Modifier.height(6.dp))
                                     Row(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(14.dp))
@@ -2481,7 +2711,16 @@ fun AiChatScreen(
                                         }
                                 )
 
-                                // Bottom Control Row: [+] [Model • Mode Pill] ------ [Mic] [Waveform / Send]
+                                // Bottom Control Row: [+] [Tools] [Online Detected Model Pill (only when online & detected)] ------ [Mic] [Waveform / Send]
+                                val detectedModelsMap by preferences.detectedModels.collectAsState()
+                                val onlineDetectedModels = if (isCurrentlyOnline) detectedModelsMap[activeProvider].orEmpty() else emptyList()
+                                val verifiedActiveModel = when {
+                                    onlineDetectedModels.isEmpty() -> null
+                                    activeProvider == "Gemini" && selectedModelPref in onlineDetectedModels -> selectedModelPref
+                                    activeProvider != "Gemini" && providerEntries[activeProvider]?.model in onlineDetectedModels -> providerEntries[activeProvider]?.model
+                                    else -> onlineDetectedModels.first()
+                                }
+
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -2512,70 +2751,83 @@ fun AiChatScreen(
                                             )
                                         }
 
-                                        // Model + Thinking/Fast selector pill (uses actual AU Notes model, never "Sonnet 5.5")
-                                        Box {
-                                            Row(
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(20.dp))
-                                                    .background(if (isDarkMode) Color(0xFF28282F) else Color(0xFFEEECE6))
-                                                    .clickable { modeMenuExpanded = true }
-                                                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                Text(
-                                                    text = activeModelDisplayName.removePrefix("models/"),
-                                                    fontSize = 13.sp,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    modifier = Modifier.widthIn(max = 130.dp)
-                                                )
-                                                Text(
-                                                    text = if (isWorkMode) "Thinking" else "Standard",
-                                                    fontSize = 12.5.sp,
-                                                    color = if (isDarkMode) Color(0xFF9CA3AF) else Color(0xFF6B7280)
-                                                )
-                                            }
+                                        // Agent Tools button
+                                        Box(
+                                            modifier = Modifier
+                                                .size(38.dp)
+                                                .clip(CircleShape)
+                                                .background(if (isDarkMode) Color(0xFF28282F) else Color(0xFFEEECE6))
+                                                .clickable { showToolsSheet = true },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Tune,
+                                                contentDescription = "Configure Agent Tools",
+                                                tint = if (isDarkMode) Color(0xFFE4E4E7) else Color(0xFF27272A),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
 
-                                            DropdownMenu(
-                                                expanded = modeMenuExpanded,
-                                                onDismissRequest = { modeMenuExpanded = false }
-                                            ) {
-                                                DropdownMenuItem(
-                                                    text = {
-                                                        Column {
-                                                            Text("Standard (Chat Mode)", fontWeight = if (!isWorkMode) FontWeight.Bold else FontWeight.Normal)
-                                                            Text("Fast everyday note & document assistant", fontSize = 11.sp, color = Color.Gray)
-                                                        }
-                                                    },
-                                                    onClick = {
-                                                        isWorkMode = false
-                                                        modeMenuExpanded = false
+                                        // Only display a model selector pill when online AND real models have been detected via Model Detector (no offline hardcoded models)
+                                        if (verifiedActiveModel != null) {
+                                            Box {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(20.dp))
+                                                        .background(if (isDarkMode) Color(0xFF28282F) else Color(0xFFEEECE6))
+                                                        .clickable { modeMenuExpanded = true }
+                                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Text(
+                                                        text = verifiedActiveModel.removePrefix("models/"),
+                                                        fontSize = 12.5.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B),
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier.widthIn(max = 135.dp)
+                                                    )
+                                                    Icon(
+                                                        imageVector = Icons.Default.ExpandMore,
+                                                        contentDescription = null,
+                                                        tint = if (isDarkMode) Color(0xFF9CA3AF) else Color(0xFF6B7280),
+                                                        modifier = Modifier.size(15.dp)
+                                                    )
+                                                }
+
+                                                DropdownMenu(
+                                                    expanded = modeMenuExpanded,
+                                                    onDismissRequest = { modeMenuExpanded = false }
+                                                ) {
+                                                    onlineDetectedModels.forEach { m ->
+                                                        DropdownMenuItem(
+                                                            text = {
+                                                                Text(
+                                                                    m.removePrefix("models/"),
+                                                                    fontSize = 12.5.sp,
+                                                                    fontWeight = if (m == verifiedActiveModel) FontWeight.Bold else FontWeight.Normal
+                                                                )
+                                                            },
+                                                            onClick = {
+                                                                if (activeProvider == "Gemini") {
+                                                                    preferences.setSelectedModel(m)
+                                                                } else {
+                                                                    val existing = providerEntries[activeProvider]
+                                                                    preferences.saveApiProvider(
+                                                                        name = activeProvider,
+                                                                        apiKey = existing?.apiKey.orEmpty(),
+                                                                        baseUrl = existing?.baseUrl.orEmpty(),
+                                                                        model = m,
+                                                                        isCustom = existing?.isCustom ?: false
+                                                                    )
+                                                                }
+                                                                modeMenuExpanded = false
+                                                            }
+                                                        )
                                                     }
-                                                )
-                                                DropdownMenuItem(
-                                                    text = {
-                                                        Column {
-                                                            Text("Thinking (Work Mode)", fontWeight = if (isWorkMode) FontWeight.Bold else FontWeight.Normal)
-                                                            Text("Deep analysis, structured tables, graphs & long notes", fontSize = 11.sp, color = Color.Gray)
-                                                        }
-                                                    },
-                                                    onClick = {
-                                                        isWorkMode = true
-                                                        modeMenuExpanded = false
-                                                    }
-                                                )
-                                                DropdownMenuItem(
-                                                    text = {
-                                                        Text("Configure Agent Tools", fontSize = 13.sp)
-                                                    },
-                                                    onClick = {
-                                                        modeMenuExpanded = false
-                                                        showToolsSheet = true
-                                                    }
-                                                )
+                                                }
                                             }
                                         }
                                     }
@@ -2988,8 +3240,15 @@ fun AiChatScreen(
                                 Text("Select Model for $activeProvider:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray)
                                 Spacer(modifier = Modifier.height(6.dp))
                                 val detectedModelsMap by preferences.detectedModels.collectAsState()
-                                val availableModels = detectedModelsMap[activeProvider].orEmpty()
-                                if (availableModels.isEmpty()) {
+                                val isOnlineForSidebar = com.example.data.ai.ApiConnectivityChecker.isOnline(context)
+                                val availableModels = if (isOnlineForSidebar) detectedModelsMap[activeProvider].orEmpty() else emptyList()
+                                if (!isOnlineForSidebar) {
+                                    Text(
+                                        "You are currently offline. Connect to the internet and run 'Model Detector' in API Room to view live models.",
+                                        fontSize = 11.sp,
+                                        color = Color.Gray
+                                    )
+                                } else if (availableModels.isEmpty()) {
                                     Text(
                                         "Abhi koi model detect nahi hua. Settings → API Room me $activeProvider ka key daalo aur 'Model Detector' chalao — wahi real models yahan dikhenge.",
                                         fontSize = 11.sp,
@@ -2998,7 +3257,7 @@ fun AiChatScreen(
                                 }
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     availableModels.forEach { m ->
-                                        val isCurrent = if (activeProvider == "Gemini") selectedModelPref == m else (providerEntries[activeProvider]?.model == m || activeModelDisplayName == m)
+                                        val isCurrent = if (activeProvider == "Gemini") selectedModelPref == m else (providerEntries[activeProvider]?.model == m)
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
@@ -3114,13 +3373,19 @@ fun AiChatScreen(
         }
     }
 
-    // Voice Mode Overlay (Gemini Live Style)
+    // Voice Mode Full-Screen Overlay (Non-Dialog so WindowInsets.navigationBars and IME keyboard padding work 100% accurately, never hidden under navigation bar)
     if (showVoiceOverlay) {
+        androidx.activity.compose.BackHandler {
+            if (voiceTextMode) {
+                voiceTextMode = false
+            } else {
+                showVoiceOverlay = false
+            }
+        }
+
         val micVoiceState by voiceManager.voiceState.collectAsState()
         val micUserTranscript by voiceManager.userTranscript.collectAsState()
         val micLastSpoken by voiceManager.lastSpokenText.collectAsState()
-        val micLevel by voiceManager.micLevel.collectAsState()
-        // when the realistic live voice is running, ITS state / transcripts / audio level drive this screen
         val live = liveSession
         val liveStateV by (live?.state ?: noLiveState).collectAsState()
         val liveUserV by (live?.userText ?: noLiveText).collectAsState()
@@ -3136,18 +3401,21 @@ fun AiChatScreen(
         val agentName by preferences.agentUserName.collectAsState()
         val who = agentName.ifBlank { "" }
 
-        val infinite = rememberInfiniteTransition(label = "voice_wave")
-        val phase by infinite.animateFloat(
-            initialValue = 0f,
-            targetValue = (2 * Math.PI).toFloat(),
-            animationSpec = infiniteRepeatable(animation = tween(1400, easing = androidx.compose.animation.core.LinearEasing)),
-            label = "phase"
-        )
+        val orbEnabled by preferences.orbEnabled.collectAsState()
+        val orbTheme by preferences.orbTheme.collectAsState()
+        val orbColor by preferences.orbColor.collectAsState()
+        val orbIntensity by preferences.orbIntensity.collectAsState()
+        val isLightOrbBg = com.example.ui.components.isOrbBackgroundLight(orbTheme, orbColor)
+
+        val orbFg = if (isLightOrbBg) Color(0xFF1D2340) else Color.White
+        val orbSubFg = if (isLightOrbBg) Color(0xFF4A527A) else Color.White.copy(alpha = 0.72f)
+        val glassCardBg = if (isLightOrbBg) Color.White.copy(alpha = 0.72f) else Color.White.copy(alpha = 0.07f)
+        val glassCardBorder = if (isLightOrbBg) Color(0xFF1D2340).copy(alpha = 0.12f) else Color.White.copy(alpha = 0.14f)
 
         val stateColor = when (voiceState) {
             VoiceState.LISTENING -> CrimsonPrimary
             VoiceState.THINKING -> Color(0xFFF59E0B)
-            VoiceState.SPEAKING -> Color(0xFF38BDF8)
+            VoiceState.SPEAKING -> if (isLightOrbBg) Color(0xFF2563EB) else Color(0xFF38BDF8)
             else -> Color(0xFF8B5CF6)
         }
         val stateTitle = when (voiceState) {
@@ -3157,163 +3425,398 @@ fun AiChatScreen(
             else -> "Ready"
         }
 
-        Dialog(
-            onDismissRequest = { showVoiceOverlay = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+        // Full-screen Box matching the exact Orb theme / custom color radial background from AgentSettingsScreen
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(100f)
+                .background(com.example.ui.components.getOrbBackgroundBrush(orbTheme, orbColor))
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null
+                ) {}
         ) {
-            val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-            val safeBottom = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
-            val maxNav = if (navBottom > safeBottom) navBottom else safeBottom
-            val effectiveBottom = if (maxNav > 56.dp) maxNav + 24.dp else 80.dp
+            // Background full-bleed OrbView so its radial backdrop and particles fill the stage seamlessly
+            if (orbEnabled) {
+                com.example.ui.components.OrbView(
+                    state = when (voiceState) {
+                        VoiceState.LISTENING -> "listening"
+                        VoiceState.THINKING -> "thinking"
+                        VoiceState.SPEAKING -> "speaking"
+                        else -> "idle"
+                    },
+                    level = {
+                        if (live != null) live.level.value
+                        else when (voiceState) {
+                            VoiceState.LISTENING -> (0.25f + voiceManager.micLevel.value / 10f).coerceIn(0.2f, 1f)
+                            VoiceState.SPEAKING -> voiceManager.speakLevel.value.coerceAtLeast(0.45f)
+                            VoiceState.THINKING -> 0.35f
+                            else -> 0.15f
+                        }
+                    },
+                    theme = orbTheme,
+                    customColor = orbColor,
+                    intensity = orbIntensity,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
 
-            // Requirement 10: Solid dark space background Color(0xFF0A0D1F) & OrbView matching AgentSettingsScreen, completely unaffected by Day/Dark mode
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0xFF0A0D1F))
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 26.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween
             ) {
+                // Upper section: Top Bar + Mode Switcher + Context Banner
                 Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .statusBarsPadding()
-                        .imePadding()
-                        .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = effectiveBottom),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // Top bar
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(glassCardBg)
+                            .border(1.dp, glassCardBorder, RoundedCornerShape(20.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Box(Modifier.size(9.dp).clip(CircleShape).background(stateColor))
                         Spacer(Modifier.width(8.dp))
-                        Text("AU Agent", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                        Spacer(Modifier.width(8.dp))
-                        Text("LIVE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = stateColor,
-                            modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(stateColor.copy(alpha = 0.15f)).padding(horizontal = 6.dp, vertical = 2.dp))
+                        Text("AU Agent", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = orbFg)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "LIVE",
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = stateColor,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(stateColor.copy(alpha = 0.16f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
                         Spacer(Modifier.weight(1f))
-                        IconButton(onClick = {
-                            showVoiceOverlay = false
-                            Toast.makeText(context, "Voice assistant keeps listening in the background", Toast.LENGTH_SHORT).show()
-                        }) { Icon(Icons.Default.KeyboardArrowDown, "Minimize", tint = Color.White) }
-                        IconButton(onClick = {
-                            showVoiceOverlay = false
-                            if (live != null) stopLive() else voiceManager.stopVoiceMode()
-                        }) { Icon(Icons.Default.Close, "End voice", tint = Color.White) }
+
+                        // Top Bar Chat / Work Mode Toggle Pill
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (isLightOrbBg) Color(0xFF1D2340).copy(alpha = 0.08f) else Color.White.copy(alpha = 0.10f))
+                                .padding(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(if (!isWorkMode) Color(0xFFD97757) else Color.Transparent)
+                                    .clickable { isWorkMode = false }
+                                    .padding(horizontal = 9.dp, vertical = 5.dp)
+                            ) {
+                                Text(
+                                    text = "💬 Chat",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (!isWorkMode) Color.White else orbSubFg
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(if (isWorkMode) Color(0xFFD97757) else Color.Transparent)
+                                    .clickable { isWorkMode = true }
+                                    .padding(horizontal = 9.dp, vertical = 5.dp)
+                            ) {
+                                Text(
+                                    text = "⚡ Work",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isWorkMode) Color.White else orbSubFg
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.width(4.dp))
+                        IconButton(
+                            onClick = {
+                                showVoiceOverlay = false
+                                Toast.makeText(context, "Voice assistant keeps listening in the background", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.KeyboardArrowDown, "Minimize", tint = orbFg)
+                        }
                     }
 
                     if (screenShareOn) {
-                        Spacer(Modifier.height(6.dp))
                         Row(
-                            Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF16A34A).copy(alpha = 0.18f)).padding(horizontal = 12.dp, vertical = 6.dp),
+                            Modifier
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Color(0xFF16A34A).copy(alpha = 0.22f))
+                                .border(1.dp, Color(0xFF4ADE80).copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(Icons.Default.ScreenShare, null, tint = Color(0xFF4ADE80), modifier = Modifier.size(14.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Screen sharing is ON — I can see your screen", fontSize = 11.sp, color = Color(0xFF86EFAC))
+                            Text("Screen sharing ON — AU Agent can see your screen", fontSize = 11.sp, color = if (isLightOrbBg) Color(0xFF065F46) else Color(0xFF86EFAC), fontWeight = FontWeight.SemiBold)
                         }
                     }
+                }
 
-                    Spacer(Modifier.weight(1f))
+                // Center space (Orb renders full-bleed behind this; status pill sits cleanly below the Orb center)
+                Spacer(Modifier.weight(1f))
 
-                    val orbTheme by preferences.orbTheme.collectAsState()
-                    val orbColor by preferences.orbColor.collectAsState()
-                    val orbIntensity by preferences.orbIntensity.collectAsState()
-                    Box(
+                // Lower section: Status Pill + Transcripts + Optional Voice Keyboard Bar + Elevated Floating Control Dock
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Status pill ("Listening…", "Speaking…", "Working…")
+                    Row(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .height(250.dp)
-                            .clip(RoundedCornerShape(22.dp))
-                            .background(Color(0xFF0A0D1F)),
-                        contentAlignment = Alignment.Center
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(glassCardBg)
+                            .border(1.dp, glassCardBorder, RoundedCornerShape(999.dp))
+                            .padding(horizontal = 18.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        com.example.ui.components.OrbView(
-                            state = when (voiceState) {
-                                VoiceState.LISTENING -> "listening"
-                                VoiceState.THINKING -> "thinking"
-                                VoiceState.SPEAKING -> "speaking"
-                                else -> "idle"
-                            },
-                            level = {
-                                if (live != null) live.level.value
-                                else when (voiceState) {
-                                    VoiceState.LISTENING -> (0.25f + voiceManager.micLevel.value / 10f).coerceIn(0.2f, 1f)
-                                    VoiceState.SPEAKING -> voiceManager.speakLevel.value.coerceAtLeast(0.45f)
-                                    VoiceState.THINKING -> 0.35f
-                                    else -> 0.15f
-                                }
-                            },
-                            theme = orbTheme,
-                            customColor = orbColor,
-                            intensity = orbIntensity,
-                            modifier = Modifier.fillMaxSize()
+                        Box(Modifier.size(8.dp).clip(CircleShape).background(stateColor))
+                        Text(
+                            text = stateTitle.uppercase(),
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.6.sp,
+                            color = orbFg
                         )
                     }
 
-                    Spacer(Modifier.height(14.dp))
-                    Text(stateTitle, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
                     if (agentSteps.isNotEmpty()) {
-                        Spacer(Modifier.height(8.dp))
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.alpha(0.6f)) {
-                            agentSteps.takeLast(3).forEach { st ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            agentSteps.takeLast(2).forEach { st ->
                                 Text(
                                     (if (st.state == 1) "✓ " else if (st.state == 2) "✕ " else "● ") + st.label,
-                                    fontSize = 12.sp, color = Color.White
+                                    fontSize = 11.5.sp,
+                                    color = orbSubFg
                                 )
                             }
                         }
                     }
-                    Spacer(Modifier.height(14.dp))
 
-                    if (userTranscript.isNotBlank()) {
-                        Text(
-                            text = userTranscript,
-                            fontSize = 14.sp,
-                            color = Color.White.copy(alpha = 0.85f),
-                            maxLines = 3,
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = 0.07f)).padding(12.dp)
-                        )
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    if (lastSpoken.isNotBlank()) {
-                        Text(
-                            text = lastSpoken.take(220),
-                            fontSize = 13.sp,
-                            color = stateColor.copy(alpha = 0.95f),
-                            maxLines = 4,
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(stateColor.copy(alpha = 0.10f)).padding(12.dp)
-                        )
-                    }
-
-                    Spacer(Modifier.weight(1f))
-
-                    // Controls (Rule B1: Keyboard option removed from Voice screen)
-                    Row(
-                        Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        @Composable
-                        fun RoundCtl(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, on: Boolean, bg: Color? = null, onClick: () -> Unit) {
-                            Box(
-                                Modifier.size(58.dp).clip(CircleShape)
-                                    .background(bg ?: if (on) stateColor.copy(alpha = 0.30f) else Color.White.copy(alpha = 0.12f))
-                                    .clickable(onClick = onClick),
-                                contentAlignment = Alignment.Center
-                            ) { Icon(icon, desc, tint = Color.White, modifier = Modifier.size(26.dp)) }
-                        }
-                        RoundCtl(
-                            if (live != null) (if (liveMuted) Icons.Default.MicOff else Icons.Default.Mic)
-                            else if (voiceState == VoiceState.SPEAKING) Icons.Default.MicOff else Icons.Default.Mic,
-                            "Mic", if (live != null) !liveMuted else voiceState == VoiceState.LISTENING
+                    if (userTranscript.isNotBlank() || lastSpoken.isNotBlank()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            if (live != null) { liveMuted = !liveMuted; live.setMuted(liveMuted) }
-                            else if (voiceState == VoiceState.SPEAKING) voiceManager.stopSpeaking() else voiceManager.startListening()
+                            if (userTranscript.isNotBlank()) {
+                                Text(
+                                    text = userTranscript,
+                                    fontSize = 13.5.sp,
+                                    color = orbFg,
+                                    maxLines = 2,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(glassCardBg)
+                                        .border(1.dp, glassCardBorder, RoundedCornerShape(14.dp))
+                                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                                )
+                            }
+                            if (lastSpoken.isNotBlank()) {
+                                Text(
+                                    text = lastSpoken.take(220),
+                                    fontSize = 13.sp,
+                                    color = if (isLightOrbBg) Color(0xFF1E3A8A) else stateColor,
+                                    maxLines = 3,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(stateColor.copy(alpha = 0.14f))
+                                        .border(1.dp, stateColor.copy(alpha = 0.30f), RoundedCornerShape(14.dp))
+                                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                                )
+                            }
                         }
-                        RoundCtl(
-                            if (screenShareOn) Icons.Default.StopScreenShare else Icons.Default.ScreenShare,
-                            "Share screen", screenShareOn
-                        ) { toggleScreenShare() }
-                        RoundCtl(Icons.Default.Close, "End", false, bg = Color(0xFFDC2626)) {
-                            showVoiceOverlay = false
-                            if (live != null) stopLive() else voiceManager.stopVoiceMode()
+                    }
+
+                    // In-Voice Keyboard Input Bar (when user taps Keyboard button in Voice Mode, floats cleanly above the control dock & navigation bar)
+                    androidx.compose.animation.AnimatedVisibility(visible = voiceTextMode) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(if (isLightOrbBg) Color.White.copy(alpha = 0.92f) else Color(0xFF141829).copy(alpha = 0.94f))
+                                .border(1.dp, glassCardBorder, RoundedCornerShape(22.dp))
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextField(
+                                value = voiceTextInput,
+                                onValueChange = { voiceTextInput = it },
+                                placeholder = {
+                                    Text(
+                                        "Type a message in Voice Mode…",
+                                        fontSize = 13.5.sp,
+                                        color = orbSubFg
+                                    )
+                                },
+                                singleLine = true,
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                    focusedTextColor = orbFg,
+                                    unfocusedTextColor = orbFg
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(CrimsonPrimary)
+                                    .clickable {
+                                        val toSend = voiceTextInput.trim()
+                                        if (toSend.isNotEmpty()) {
+                                            voiceTextInput = ""
+                                            voiceTextMode = false
+                                            handleSend(toSend)
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Send,
+                                    contentDescription = "Send",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Premium Elevated Glass Control Dock (sits well above the system navigation bar)
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        shape = RoundedCornerShape(28.dp),
+                        color = if (isLightOrbBg) Color.White.copy(alpha = 0.82f) else Color(0xFF111526).copy(alpha = 0.86f),
+                        shadowElevation = 12.dp,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, glassCardBorder)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            @Composable
+                            fun VoiceActionBtn(
+                                icon: androidx.compose.ui.graphics.vector.ImageVector,
+                                label: String,
+                                isActive: Boolean,
+                                activeColor: Color = stateColor,
+                                isDestructive: Boolean = false,
+                                onClick: () -> Unit
+                            ) {
+                                val btnBg = when {
+                                    isDestructive -> Color(0xFFDC2626)
+                                    isActive -> activeColor
+                                    isLightOrbBg -> Color(0xFF1D2340).copy(alpha = 0.08f)
+                                    else -> Color.White.copy(alpha = 0.10f)
+                                }
+                                val iconTint = when {
+                                    isDestructive || isActive -> Color.White
+                                    else -> orbFg
+                                }
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .clickable(onClick = onClick)
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(52.dp)
+                                            .clip(CircleShape)
+                                            .background(btnBg)
+                                            .border(
+                                                width = if (isActive || isDestructive) 1.5.dp else 1.dp,
+                                                color = if (isDestructive) Color(0xFFF87171).copy(alpha = 0.5f)
+                                                else if (isActive) Color.White.copy(alpha = 0.45f)
+                                                else glassCardBorder,
+                                                shape = CircleShape
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(icon, contentDescription = label, tint = iconTint, modifier = Modifier.size(23.dp))
+                                    }
+                                    Text(
+                                        text = label,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isDestructive) Color(0xFFEF4444) else if (isActive) activeColor else orbSubFg
+                                    )
+                                }
+                            }
+
+                            val isMicOn = if (live != null) !liveMuted else voiceState == VoiceState.LISTENING
+                            VoiceActionBtn(
+                                icon = if (live != null) (if (liveMuted) Icons.Default.MicOff else Icons.Default.Mic)
+                                else if (voiceState == VoiceState.SPEAKING) Icons.Default.MicOff else Icons.Default.Mic,
+                                label = if (isMicOn) "Listening" else "Mic",
+                                isActive = isMicOn,
+                                activeColor = CrimsonPrimary
+                            ) {
+                                if (live != null) {
+                                    liveMuted = !liveMuted
+                                    live.setMuted(liveMuted)
+                                } else if (voiceState == VoiceState.SPEAKING) {
+                                    voiceManager.stopSpeaking()
+                                } else {
+                                    voiceManager.startListening()
+                                }
+                            }
+
+                            VoiceActionBtn(
+                                icon = Icons.Default.Keyboard,
+                                label = "Keyboard",
+                                isActive = voiceTextMode,
+                                activeColor = Color(0xFFD97757)
+                            ) {
+                                voiceTextMode = !voiceTextMode
+                            }
+
+                            VoiceActionBtn(
+                                icon = if (screenShareOn) Icons.Default.StopScreenShare else Icons.Default.ScreenShare,
+                                label = if (screenShareOn) "Sharing" else "Screen",
+                                isActive = screenShareOn,
+                                activeColor = Color(0xFF16A34A)
+                            ) {
+                                toggleScreenShare()
+                            }
+
+                            VoiceActionBtn(
+                                icon = Icons.Default.Close,
+                                label = "End",
+                                isActive = false,
+                                isDestructive = true
+                            ) {
+                                voiceTextMode = false
+                                showVoiceOverlay = false
+                                if (live != null) stopLive() else voiceManager.stopVoiceMode()
+                            }
                         }
                     }
                 }

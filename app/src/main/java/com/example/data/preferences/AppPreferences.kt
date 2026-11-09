@@ -566,8 +566,7 @@ class AppPreferences(context: Context) {
 
     // Image Generation Model & API Key (Item G1)
     private val _imageGenModel = MutableStateFlow(
-        prefs.getString("image_gen_model", "gemini-2.0-flash-preview-image-generation")
-            ?: "gemini-2.0-flash-preview-image-generation"
+        prefs.getString("image_gen_model", "") ?: ""
     )
     val imageGenModel: StateFlow<String> = _imageGenModel.asStateFlow()
 
@@ -575,7 +574,7 @@ class AppPreferences(context: Context) {
     val imageGenApiKey: StateFlow<String> = _imageGenApiKey.asStateFlow()
 
     fun setImageGenModel(model: String) {
-        val m = model.trim().ifBlank { "gemini-2.0-flash-preview-image-generation" }
+        val m = model.trim()
         _imageGenModel.value = m
         prefs.edit().putString("image_gen_model", m).apply()
     }

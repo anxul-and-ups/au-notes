@@ -2688,6 +2688,7 @@ Row(
             onDismissRequest = { maximizedCodeFence = null },
             properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
         ) {
+            com.example.ui.components.ConfigureEdgeToEdgeDialog(isDarkMode = isDarkMode)
             Column(
                 Modifier
                     .fillMaxSize()

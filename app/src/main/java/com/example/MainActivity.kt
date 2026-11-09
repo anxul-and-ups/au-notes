@@ -149,6 +149,22 @@ class MainActivity : FragmentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                } else {
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
         com.example.ui.util.SirenAudioPlayer.init(applicationContext)
 
         if (savedInstanceState == null) {
@@ -182,6 +198,21 @@ class MainActivity : FragmentActivity() {
                 else -> storedDark
             }
 
+            val view = androidx.compose.ui.platform.LocalView.current
+            if (!view.isInEditMode) {
+                androidx.compose.runtime.SideEffect {
+                    window.statusBarColor = android.graphics.Color.TRANSPARENT
+                    window.navigationBarColor = android.graphics.Color.TRANSPARENT
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        window.isNavigationBarContrastEnforced = false
+                        window.isStatusBarContrastEnforced = false
+                    }
+                    val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, view)
+                    insetsController.isAppearanceLightStatusBars = !isDarkMode
+                    insetsController.isAppearanceLightNavigationBars = !isDarkMode
+                }
+            }
+
             // Custom wallpaper (Theme Settings): decoded off the main thread, reloaded on change.
             val bgPath by preferences.bgImagePath.collectAsState()
             val bgVersion by preferences.bgImageVersion.collectAsState()
@@ -198,7 +229,10 @@ class MainActivity : FragmentActivity() {
 
             MyApplicationTheme(darkTheme = isDarkMode) {
                 CompositionLocalProvider(LocalAppBackdrop provides AppBackdropState(bgImage, bgDim)) {
-                    Surface(modifier = Modifier.fillMaxSize()) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = if (isDarkMode) com.example.ui.theme.NeuDarkBg else com.example.ui.theme.NeuLightBg
+                    ) {
                         AuNotesApp(
                             activity = this,
                             repository = repository,
