@@ -120,7 +120,7 @@ fun ApiRoomScreen(
         return
     }
 
-    var expandedProvider by remember { mutableStateOf<String?>(null) }
+    var expandedProvider by remember { mutableStateOf<String?>("Gemini") }
     var showAddProviderDialog by remember { mutableStateOf(false) }
 
     val activeProvider by preferences.activeProvider.collectAsState()
@@ -158,8 +158,6 @@ fun ApiRoomScreen(
             Spacer(modifier = Modifier.height(10.dp))
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // Gemini card — reuses the existing working prefs so nothing
-                // that already calls Gemini elsewhere in the app breaks.
                 item {
                     GeminiProviderCard(
                         isDarkMode = isDarkMode,
@@ -179,204 +177,7 @@ fun ApiRoomScreen(
                     )
                 }
 
-                items(BUILT_IN_PROVIDERS.filter { it != "Gemini" }) { providerName ->
-                    val saved = providerEntries[providerName]
-                    ProviderCard(
-                        name = providerName,
-                        isDarkMode = isDarkMode,
-                        expanded = expandedProvider == providerName,
-                        onToggleExpand = { expandedProvider = if (expandedProvider == providerName) null else providerName },
-                        savedKey = saved?.apiKey ?: "",
-                        savedBaseUrl = saved?.baseUrl ?: "",
-                        savedModel = saved?.model ?: "",
-                        detectedModels = detectedModels[providerName] ?: emptyList(),
-                        onModelsDetected = { preferences.setDetectedModels(providerName, it) },
-                        onSelectModel = { m -> preferences.saveApiProvider(providerName, saved?.apiKey ?: "", saved?.baseUrl ?: "", m) },
-                        needsBaseUrl = providerName == "OpenCode",
-                        onSave = { key, baseUrl -> preferences.saveApiProvider(providerName, key, baseUrl) },
-                        isActive = activeProvider == providerName,
-                        onSetActive = { preferences.setActiveProvider(providerName) }
-                    )
-                }
-
-                item {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showAddProviderDialog = true }
-                            .padding(vertical = 10.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Add Provider", color = CrimsonPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                }
-
-                if (providerEntries.values.any { it.isCustom }) {
-                    item {
-                        Text("Custom Providers", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
-                    }
-                }
-                items(providerEntries.values.filter { it.isCustom }.toList()) { entry ->
-                    ProviderCard(
-                        name = entry.name,
-                        isDarkMode = isDarkMode,
-                        expanded = expandedProvider == entry.name,
-                        onToggleExpand = { expandedProvider = if (expandedProvider == entry.name) null else entry.name },
-                        savedKey = entry.apiKey,
-                        savedBaseUrl = entry.baseUrl,
-                        savedModel = entry.model,
-                        detectedModels = detectedModels[entry.name] ?: emptyList(),
-                        onModelsDetected = { preferences.setDetectedModels(entry.name, it) },
-                        onSelectModel = { m -> preferences.saveApiProvider(entry.name, entry.apiKey, entry.baseUrl, m, isCustom = true) },
-                        needsBaseUrl = true,
-                        onSave = { key, baseUrl -> preferences.saveApiProvider(entry.name, key, baseUrl, isCustom = true) },
-                        onDelete = { preferences.deleteApiProvider(entry.name) },
-                        isActive = activeProvider == entry.name,
-                        onSetActive = { preferences.setActiveProvider(entry.name) }
-                    )
-                }
-
-                item {
-                    val imgGenModel by preferences.imageGenModel.collectAsState()
-                    val imgGenKey by preferences.imageGenApiKey.collectAsState()
-                    var imgModelInput by remember(imgGenModel) { mutableStateOf(imgGenModel) }
-                    var imgKeyInput by remember(imgGenKey) { mutableStateOf(imgGenKey) }
-                    val detectedGeminiModels = detectedModels["Gemini"].orEmpty()
-                    GlassCard(modifier = Modifier.fillMaxWidth(), isDarkMode = isDarkMode) {
-                        Column(Modifier.padding(14.dp)) {
-                            Text(
-                                "Image Generation Model (AI Chat)",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = CrimsonPrimary
-                            )
-                            Text(
-                                "Used when you ask 'imagine ...' or 'iska image generate kar' in chat. Leave API key blank to use your active Gemini key.",
-                                fontSize = 11.sp,
-                                color = Color.Gray,
-                                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
-                            )
-                            if (detectedGeminiModels.isNotEmpty()) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    detectedGeminiModels.filter { it.contains("image", ignoreCase = true) || it.contains("imagen", ignoreCase = true) || it.contains("flash", ignoreCase = true) }
-                                        .take(6)
-                                        .forEach { detected ->
-                                            val isSelected = imgModelInput == detected
-                                            Box(
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(8.dp))
-                                                    .background(if (isSelected) CrimsonPrimary else (if (isDarkMode) Color(0x22FFFFFF) else Color(0x14000000)))
-                                                    .clickable {
-                                                        imgModelInput = detected
-                                                        preferences.setImageGenModel(detected)
-                                                    }
-                                                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(
-                                                    text = detected.removePrefix("models/"),
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = if (isSelected) Color.White else (if (isDarkMode) Color.White else Color.Black),
-                                                    maxLines = 1
-                                                )
-                                            }
-                                        }
-                                }
-                                Spacer(Modifier.height(8.dp))
-                            }
-                            OutlinedTextField(
-                                value = imgModelInput,
-                                onValueChange = {
-                                    imgModelInput = it
-                                    preferences.setImageGenModel(it)
-                                },
-                                label = { Text("Image Generation Model ID", fontSize = 11.sp) },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary)
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            OutlinedTextField(
-                                value = imgKeyInput,
-                                onValueChange = {
-                                    imgKeyInput = it
-                                    preferences.setImageGenApiKey(it)
-                                },
-                                label = { Text("Optional Dedicated Image API Key", fontSize = 11.sp) },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary)
-                            )
-                        }
-                    }
-                }
-
                 item { Spacer(modifier = Modifier.height(30.dp)) }
-            }
-        }
-    }
-
-    if (showAddProviderDialog) {
-        var newProviderName by remember { mutableStateOf("") }
-        var newProviderKey by remember { mutableStateOf("") }
-        var newProviderUrl by remember { mutableStateOf("") }
-        androidx.compose.ui.window.Dialog(onDismissRequest = { showAddProviderDialog = false }) {
-            GlassCard(modifier = Modifier.fillMaxWidth().padding(16.dp), isDarkMode = isDarkMode, strong = true) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Text("Add Custom Provider", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
-                    Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = newProviderName,
-                        onValueChange = { newProviderName = it },
-                        label = { Text("Provider name") },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = newProviderUrl,
-                        onValueChange = { newProviderUrl = it },
-                        label = { Text("Base URL / endpoint") },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = newProviderKey,
-                        onValueChange = { newProviderKey = it },
-                        label = { Text("API key") },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = { showAddProviderDialog = false }) { Text("Cancel") }
-                        Button(
-                            onClick = {
-                                if (newProviderName.isBlank()) {
-                                    Toast.makeText(context, "Enter a provider name", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    preferences.saveApiProvider(newProviderName.trim(), newProviderKey, newProviderUrl, isCustom = true)
-                                    showAddProviderDialog = false
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary)
-                        ) { Text("Save") }
-                    }
-                }
             }
         }
     }
@@ -408,50 +209,42 @@ private fun GeminiProviderCard(
     GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                ProviderHeader("Gemini", if (isActive) "Active Engine • Google AI Studio" else "Google AI Studio", isDarkMode, expanded, onToggleExpand, modifier = Modifier.weight(1f))
-            }
-            if (isActive) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("● CURRENT ACTIVE AI ENGINE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                ProviderHeader("Setup Your Gemini API", if (userApiKey.isNotBlank()) "API Key Configured" else "Enter your Gemini API Key", isDarkMode, expanded, onToggleExpand, modifier = Modifier.weight(1f))
             }
             if (expanded) {
                 Spacer(modifier = Modifier.height(10.dp))
-                Button(
-                    onClick = onSetActive,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isActive) Color(0xFF2E7D32) else CrimsonPrimary.copy(alpha = 0.2f),
-                        contentColor = if (isActive) Color.White else CrimsonPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(if (isActive) "✓ ACTIVE ENGINE FOR AU AGENT" else "SET AS ACTIVE ENGINE", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth().clickable { onSetUseInbuilt(true) }, verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = useInbuiltApi, onClick = { onSetUseInbuilt(true) }, colors = RadioButtonDefaults.colors(selectedColor = CrimsonPrimary))
-                    Text("Inbuilt API (Auto-Configured)", fontSize = 13.sp, color = if (isDarkMode) Color.White else Color.Black)
-                }
-                Row(modifier = Modifier.fillMaxWidth().clickable { onSetUseInbuilt(false) }, verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = !useInbuiltApi, onClick = { onSetUseInbuilt(false) }, colors = RadioButtonDefaults.colors(selectedColor = CrimsonPrimary))
-                    Text("Use your own API key", fontSize = 13.sp, color = if (isDarkMode) Color.White else Color.Black)
-                }
-                if (!useInbuiltApi) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = keyInput,
-                        onValueChange = { keyInput = it; onSetApiKey(it) },
-                        label = { Text("Gemini API Key") },
-                        singleLine = true,
-                        visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        trailingIcon = {
+                OutlinedTextField(
+                    value = keyInput,
+                    onValueChange = {
+                        keyInput = it
+                        detectorResult = null
+                        onSetUseInbuilt(false)
+                        onSetApiKey(it)
+                    },
+                    label = { Text("Gemini API Key (AIza...)") },
+                    placeholder = { Text("Paste your Google AI Studio API key") },
+                    singleLine = true,
+                    visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (keyInput.isNotEmpty()) {
+                                IconButton(onClick = {
+                                    keyInput = ""
+                                    detectorResult = null
+                                    onSetApiKey("")
+                                    onModelsDetected(emptyList())
+                                }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear key", tint = Color.Gray)
+                                }
+                            }
                             IconButton(onClick = { keyVisible = !keyVisible }) {
                                 Icon(if (keyVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff, null, tint = Color.Gray)
                             }
-                        },
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary),
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Spacer(modifier = Modifier.height(8.dp))
                 ModelDetectorRow(
                     isDetecting = isDetecting,
@@ -464,9 +257,17 @@ private fun GeminiProviderCard(
                     onDetect = {
                         isDetecting = true
                         coroutineScope.launch {
-                            val r = ApiConnectivityChecker.check("Gemini", effectiveKey)
+                            val r = ApiConnectivityChecker.check("Gemini", keyInput.trim())
                             detectorResult = r
-                            if (r.isActive && r.availableModels.isNotEmpty()) onModelsDetected(r.availableModels)
+                            if (r.isActive && r.availableModels.isNotEmpty()) {
+                                onSetActive()
+                                onModelsDetected(r.availableModels)
+                                if (selectedModel.removePrefix("models/") !in r.availableModels) {
+                                    onSetModel(r.availableModels.first())
+                                }
+                            } else {
+                                onModelsDetected(emptyList())
+                            }
                             isDetecting = false
                         }
                     }

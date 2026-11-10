@@ -418,7 +418,7 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text("API Room", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = if (isDarkMode) Color.White else Color.Black)
-                            Text("Gemini, OpenAI, Anthropic, DeepSeek, Kimi & more", fontSize = 11.sp, color = Color.Gray)
+                            Text("Setup your Gemini API key & detect models", fontSize = 11.sp, color = Color.Gray)
                         }
                     }
                     Icon(Icons.Default.ChevronRight, contentDescription = null, tint = CrimsonPrimary)

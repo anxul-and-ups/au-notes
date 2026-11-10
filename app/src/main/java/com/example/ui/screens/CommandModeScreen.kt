@@ -311,9 +311,85 @@ fun CommandModeScreen(
             }
 
             else -> {
-                val defaultMsg = "Command received: '$raw'. Try saying 'create new note', 'summary notes', 'open note [title]' or 'gemini api'."
-                speak(defaultMsg)
-                logs.add(CommandLog("AU_VOICE", defaultMsg))
+                // Full AI Voice Agent execution for open-ended requests (creating PDFs, notes, summaries, web search, Q&A)
+                logs.add(CommandLog("AU_VOICE", "Working on your request: \"$raw\"..."))
+                speak("Ok sir, working on it.")
+                coroutineScope.launch {
+                    try {
+                        val aiService = com.example.data.ai.AiService()
+                        val provider = preferences.activeProvider.value
+                        val entries = preferences.apiProviderEntries.value
+                        val (key, baseUrl, chosenModel) = when (provider) {
+                            "Gemini" -> Triple(preferences.getEffectiveApiKey(), "", preferences.selectedModel.value)
+                            else -> {
+                                val e = entries[provider]
+                                Triple(e?.apiKey.orEmpty(), e?.baseUrl.orEmpty(), e?.model.orEmpty())
+                            }
+                        }
+                        val wantsPdf = cmd.contains("pdf") || cmd.contains("document")
+                        val wantsNote = cmd.contains("note") || cmd.contains("write") || cmd.contains("likh") || cmd.contains("banao") || cmd.contains("bana do")
+                        val searchOn = preferences.searchModeEnabled.value || cmd.contains("search") || cmd.contains("latest") || cmd.contains("news")
+                        val webCtx = if (searchOn) {
+                            "\n\n" + aiService.performWebSearch(raw).formattedContext
+                        } else ""
+
+                        val sys = """
+                            You are AU Agent (Voice Command Mode), a capable male AI workstation assistant.
+                            Always address the user respectfully ("Ok sir") and use masculine Hindi/Hinglish grammar ("karta hoon", "bana diya hai").
+                            Never say you cannot create PDFs, files, or notes.
+                            If the user asked to create a PDF or note, write the complete structured markdown content with a clear `# Title` on the first line.
+                        """.trimIndent()
+
+                        val reply = aiService.chatOnce(
+                            provider = provider,
+                            apiKey = key,
+                            baseUrl = baseUrl,
+                            model = chosenModel,
+                            system = sys,
+                            history = emptyList(),
+                            prompt = raw + webCtx,
+                            enableWebSearch = searchOn
+                        )
+
+                        if ((wantsPdf || wantsNote) && !reply.startsWith("⚠️")) {
+                            val titleLine = reply.lineSequence().firstOrNull { it.trim().startsWith("#") }
+                                ?.replace(Regex("^#+\\s*"), "")?.trim()
+                                ?.takeIf { it.isNotBlank() }
+                                ?: raw.take(40).trim()
+                            val rich = com.example.ui.util.NoteAgentFormatter.convertToRichNote(reply, defaultTitle = titleLine)
+                            val newId = repository.saveNote(rich)
+                            val savedNote = repository.getNoteByIdOnce(newId) ?: rich.copy(id = newId)
+                            if (wantsPdf) {
+                                val safeName = titleLine.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").trim().take(50).ifBlank { "document" } + ".pdf"
+                                val savedPath = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    try {
+                                        val f = com.example.ui.util.NoteExporter.buildFile(context, savedNote, safeName, ".pdf")
+                                        com.example.ui.util.NoteExporter.saveToDevice(context, f, safeName, com.example.ui.util.NoteExporter.mimeFor(".pdf"))?.displayPath ?: f.absolutePath
+                                    } catch (_: Throwable) { null }
+                                }
+                                val msg = if (savedPath != null) {
+                                    "Ok sir, maine \"$titleLine\" ka PDF generate karke save kar diya hai ($savedPath)."
+                                } else {
+                                    "Ok sir, maine \"$titleLine\" note save kar diya hai."
+                                }
+                                speak(msg)
+                                logs.add(CommandLog("AU_VOICE", msg))
+                            } else {
+                                val msg = "Ok sir, maine \"$titleLine\" note create karke save kar diya hai."
+                                speak(msg)
+                                logs.add(CommandLog("AU_VOICE", msg))
+                            }
+                        } else {
+                            val cleanSpoken = reply.replace(Regex("```[\\s\\S]*?```"), "").replace(Regex("[#*_`>]"), "").trim()
+                            speak(cleanSpoken.take(360))
+                            logs.add(CommandLog("AU_VOICE", reply))
+                        }
+                    } catch (e: Exception) {
+                        val err = "Could not complete voice task: ${e.message}"
+                        speak(err)
+                        logs.add(CommandLog("AU_VOICE", err, isError = true))
+                    }
+                }
             }
         }
     }

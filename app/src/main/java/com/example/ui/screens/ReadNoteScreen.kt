@@ -1384,21 +1384,78 @@ private fun ReadRichBody(
             val fence = fences.firstOrNull { it.start == starts[i] }
 
             when {
-                // Fenced code block
+                // Fenced block (live Editorial Charts, Swipeable Slides, Diagrams, HTML, or Code Box)
                 fence != null -> {
                     Spacer(Modifier.height(6.dp))
-                    val codeStart = fence.codeStart
-                    val codeEnd = (fence.codeStart + fence.code.length).coerceAtMost(styled.length)
-                    val codeStyled = if (codeStart in 0..codeEnd && codeStart < codeEnd) styled.subSequence(codeStart, codeEnd) else null
-                    com.example.ui.components.CodeBoxCard(
-                        title = fence.title.ifBlank { "Title" },
-                        code = fence.code,
-                        lang = fence.lang,
-                        isDarkMode = isDarkMode,
-                        modifier = Modifier.fillMaxWidth(),
-                        fontSize = (fontSize - 2).coerceAtLeast(11),
-                        styledCode = codeStyled
-                    )
+                    val langLower = fence.lang.trim().lowercase()
+                    val slideDeck = remember(fence.code, langLower) {
+                        if (langLower in setOf("slides", "typography_slides", "slide_deck")) {
+                            com.example.ui.components.AgentVisualsParser.parseSlideDeck(fence.code)
+                        } else null
+                    }
+                    val chartSpec = remember(fence.code, langLower) {
+                        if (langLower in setOf("chart", "graph")) {
+                            com.example.ui.components.AgentVisualsParser.parseChart(fence.code)
+                        } else null
+                    }
+                    val diagramSpec = remember(fence.code, langLower) {
+                        if (langLower in setOf("diagram", "svg")) {
+                            com.example.ui.components.AgentVisualsParser.parseDiagram(fence.code)
+                        } else null
+                    }
+                    val organisedSpec = remember(fence.code, langLower) {
+                        if (langLower in setOf("organised_file", "file")) {
+                            com.example.ui.components.AgentVisualsParser.parseOrganisedFile(fence.code)
+                        } else null
+                    }
+
+                    when {
+                        slideDeck != null -> {
+                            com.example.ui.components.SlidesMakerCard(
+                                initialDeck = slideDeck,
+                                isDarkMode = isDarkMode
+                            )
+                        }
+                        chartSpec != null -> {
+                            com.example.ui.components.AgentChartCard(
+                                spec = chartSpec,
+                                isDarkMode = isDarkMode
+                            )
+                        }
+                        diagramSpec != null -> {
+                            com.example.ui.components.AgentDiagramCard(
+                                spec = diagramSpec,
+                                isDarkMode = isDarkMode
+                            )
+                        }
+                        organisedSpec != null -> {
+                            com.example.ui.components.OrganisedFileCard(
+                                spec = organisedSpec,
+                                isDarkMode = isDarkMode
+                            )
+                        }
+                        langLower == "html" && (fence.code.contains("<div", true) || fence.code.contains("<html", true) || fence.code.contains("<style", true) || fence.code.contains("<svg", true)) -> {
+                            com.example.ui.components.HtmlArtifactCard(
+                                title = fence.title.ifBlank { "Interactive HTML" },
+                                htmlCode = fence.code,
+                                isDarkMode = isDarkMode
+                            )
+                        }
+                        else -> {
+                            val codeStart = fence.codeStart
+                            val codeEnd = (fence.codeStart + fence.code.length).coerceAtMost(styled.length)
+                            val codeStyled = if (codeStart in 0..codeEnd && codeStart < codeEnd) styled.subSequence(codeStart, codeEnd) else null
+                            com.example.ui.components.CodeBoxCard(
+                                title = fence.title.ifBlank { "Title" },
+                                code = fence.code,
+                                lang = fence.lang,
+                                isDarkMode = isDarkMode,
+                                modifier = Modifier.fillMaxWidth(),
+                                fontSize = (fontSize - 2).coerceAtLeast(11),
+                                styledCode = codeStyled
+                            )
+                        }
+                    }
                     Spacer(Modifier.height(6.dp))
                     var k = i
                     while (k < lines.size && starts[k] < fence.end) k++

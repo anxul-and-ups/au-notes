@@ -27,7 +27,8 @@ object NoteAgentFormatter {
         data class ChartBlock(val rawJson: String) : ChatSegment()
         data class DiagramBlock(val rawContent: String) : ChatSegment()
         data class OrganisedFileBlock(val rawJson: String) : ChatSegment()
-        data class GeneratedImageBlock(val base64Data: String, val prompt: String) : ChatSegment()
+        data class HtmlArtifactBlock(val title: String, val htmlCode: String) : ChatSegment()
+        data class PdfArtifactBlock(val title: String, val filePath: String, val summary: String) : ChatSegment()
     }
 
     /**
@@ -42,20 +43,37 @@ object NoteAgentFormatter {
             val line = lines[i]
             val trimmed = line.trim()
 
-            // 0. Generated Image Marker: [generated_image:prompt|base64]
-            if (trimmed.startsWith("[generated_image:") && trimmed.endsWith("]")) {
-                val payload = trimmed.removePrefix("[generated_image:").removeSuffix("]")
-                val sep = payload.indexOf('|')
-                if (sep > 0) {
-                    val prompt = payload.substring(0, sep)
-                    val b64 = payload.substring(sep + 1)
-                    segments.add(ChatSegment.GeneratedImageBlock(b64, prompt))
+            // 0a. PDF Artifact Marker: [pdf_artifact:title|filePath|summary]
+            if (trimmed.startsWith("[pdf_artifact:") && trimmed.endsWith("]")) {
+                val payload = trimmed.removePrefix("[pdf_artifact:").removeSuffix("]")
+                val parts = payload.split("|", limit = 3)
+                if (parts.size >= 2) {
+                    val title = parts[0].ifBlank { "Generated Document.pdf" }
+                    val path = parts[1]
+                    val summary = parts.getOrNull(2) ?: "Formatted PDF Document"
+                    segments.add(ChatSegment.PdfArtifactBlock(title, path, summary))
                 }
                 i++
                 continue
             }
 
-            // 1. Fenced Block: ```lang (including slides, chart, diagram/svg, organised_file, or code)
+            // 0b. HTML Artifact Marker: [html_artifact:title|base64Html]
+            if (trimmed.startsWith("[html_artifact:") && trimmed.endsWith("]")) {
+                val payload = trimmed.removePrefix("[html_artifact:").removeSuffix("]")
+                val sep = payload.indexOf('|')
+                if (sep > 0) {
+                    val title = payload.substring(0, sep).ifBlank { "Interactive HTML Page" }
+                    val b64 = payload.substring(sep + 1)
+                    val decoded = runCatching {
+                        String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT), Charsets.UTF_8)
+                    }.getOrDefault(b64)
+                    segments.add(ChatSegment.HtmlArtifactBlock(title, decoded))
+                }
+                i++
+                continue
+            }
+
+            // 1. Fenced Block: ```lang (including slides, chart, diagram/svg, html_artifact/html, organised_file, or code)
             if (trimmed.startsWith("```")) {
                 val lang = trimmed.removePrefix("```").trim().lowercase().ifEmpty { "code" }
                 val codeLines = mutableListOf<String>()
@@ -67,19 +85,30 @@ object NoteAgentFormatter {
                 if (i < lines.size) i++ // skip closing ```
                 val blockBody = codeLines.joinToString("\n")
                 when (lang) {
-                    "slides", "slide_deck" -> segments.add(ChatSegment.SlideDeckBlock(blockBody))
+                    "slides", "slide_deck", "typography_slides" -> segments.add(ChatSegment.SlideDeckBlock(blockBody))
                     "chart", "graph" -> segments.add(ChatSegment.ChartBlock(blockBody))
                     "diagram", "svg", "shape" -> segments.add(ChatSegment.DiagramBlock(blockBody))
                     "organised_file", "organized_file" -> segments.add(ChatSegment.OrganisedFileBlock(blockBody))
+                    "html_artifact", "html_page" -> {
+                        val extractedTitle = Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE)
+                            .find(blockBody)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+                            ?: "Interactive HTML Artifact"
+                        segments.add(ChatSegment.HtmlArtifactBlock(extractedTitle, blockBody))
+                    }
                     else -> {
-                        // Also auto-detect if a ```json block is actually a slides or chart block
+                        // Also auto-detect if a ```json block is actually a slides or chart block, or ```html is a full standalone HTML document
                         val tBody = blockBody.trim()
                         if (lang == "json" && tBody.startsWith("{") && tBody.contains("\"slides\"")) {
                             segments.add(ChatSegment.SlideDeckBlock(blockBody))
-                        } else if (lang == "json" && tBody.startsWith("{") && tBody.contains("\"type\"") && (tBody.contains("\"data\"") || tBody.contains("\"steps\""))) {
+                        } else if (lang == "json" && tBody.startsWith("{") && (tBody.contains("\"chart_type\"") || (tBody.contains("\"type\"") && (tBody.contains("\"data\"") || tBody.contains("\"items\"") || tBody.contains("\"steps\""))))) {
                             segments.add(ChatSegment.ChartBlock(blockBody))
                         } else if (tBody.startsWith("<svg", ignoreCase = true)) {
                             segments.add(ChatSegment.DiagramBlock(blockBody))
+                        } else if (lang == "html" && (tBody.startsWith("<!doctype html", ignoreCase = true) || tBody.startsWith("<html", ignoreCase = true) || (tBody.contains("<style", ignoreCase = true) && tBody.contains("</", ignoreCase = true)))) {
+                            val extractedTitle = Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE)
+                                .find(tBody)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+                                ?: "Interactive HTML Page"
+                            segments.add(ChatSegment.HtmlArtifactBlock(extractedTitle, blockBody))
                         } else {
                             segments.add(ChatSegment.CodeBlock(lang, blockBody))
                         }
@@ -381,8 +410,12 @@ object NoteAgentFormatter {
                         sb.append(f.content).append("\n")
                     }
                 }
-                is ChatSegment.GeneratedImageBlock -> {
-                    appendStyledSegment("[Generated Image: ${seg.prompt}]", forceBold = true)
+                is ChatSegment.HtmlArtifactBlock -> {
+                    appendStyledSegment("HTML Page: ${seg.title}", forceBold = true)
+                    sb.append("\n")
+                }
+                is ChatSegment.PdfArtifactBlock -> {
+                    appendStyledSegment("PDF Document: ${seg.title} (${seg.summary})", forceBold = true)
                     sb.append("\n")
                 }
             }
@@ -432,7 +465,8 @@ object NoteAgentFormatter {
                 is ChatSegment.ChartBlock -> AgentContentBlock.ChartBlock(seg.rawJson)
                 is ChatSegment.DiagramBlock -> AgentContentBlock.DiagramBlock(seg.rawContent)
                 is ChatSegment.OrganisedFileBlock -> AgentContentBlock.OrganisedFileBlock(seg.rawJson)
-                is ChatSegment.GeneratedImageBlock -> AgentContentBlock.GeneratedImageBlock(seg.prompt, seg.base64Data)
+                is ChatSegment.HtmlArtifactBlock -> AgentContentBlock.HtmlArtifactBlock(seg.title, seg.htmlCode)
+                is ChatSegment.PdfArtifactBlock -> AgentContentBlock.PdfArtifactBlock(seg.title, seg.filePath, seg.summary)
                 is ChatSegment.BulletItem -> AgentContentBlock.Paragraph("• ${seg.text}")
                 is ChatSegment.RichParagraph -> AgentContentBlock.Paragraph(seg.text)
             }
@@ -528,6 +562,7 @@ sealed class AgentContentBlock {
     data class ChartBlock(val json: String) : AgentContentBlock()
     data class DiagramBlock(val svgOrJson: String) : AgentContentBlock()
     data class OrganisedFileBlock(val json: String) : AgentContentBlock()
-    data class GeneratedImageBlock(val prompt: String, val base64: String) : AgentContentBlock()
+    data class HtmlArtifactBlock(val title: String, val htmlCode: String) : AgentContentBlock()
+    data class PdfArtifactBlock(val title: String, val filePath: String, val summary: String) : AgentContentBlock()
 }
 

@@ -26,13 +26,26 @@ object ApiConnectivityChecker {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
+    @Suppress("DEPRECATION")
     fun isOnline(context: android.content.Context): Boolean {
         return try {
             val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
-                ?: return false
-            val net = cm.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(net) ?: return false
-            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                ?: return true
+            val net = cm.activeNetwork
+            if (net != null) {
+                val caps = cm.getNetworkCapabilities(net)
+                if (caps != null && (
+                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                    )
+                ) {
+                    return true
+                }
+            }
+            val legacyInfo = cm.activeNetworkInfo
+            legacyInfo?.isConnectedOrConnecting == true
         } catch (_: Exception) {
             true
         }
@@ -57,8 +70,8 @@ object ApiConnectivityChecker {
             if (baseUrl.isNotBlank() && !baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
                 baseUrl = "https://$baseUrl"
             }
-            if (apiKey.isBlank() && providerName != "Custom") {
-                return@withContext ConnectivityResult(false, "No API key entered.")
+            if (apiKey.isBlank() || apiKey == "YOUR_API_KEY_HERE" || apiKey == "MY_GEMINI_API_KEY" || apiKey == "your_api_key_here") {
+                return@withContext ConnectivityResult(false, "API key is empty. Please enter a valid Gemini API key and try again.")
             }
             try {
                 when (providerName) {
@@ -88,6 +101,9 @@ object ApiConnectivityChecker {
         }
 
     private fun checkGemini(apiKey: String): ConnectivityResult {
+        if (!apiKey.startsWith("AIza") || apiKey.length < 30) {
+            return ConnectivityResult(false, "Invalid Gemini API key format. Please check or change your API key.")
+        }
         val request = Request.Builder()
             .url("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=$apiKey")
             .get()
@@ -95,7 +111,7 @@ object ApiConnectivityChecker {
         client.newCall(request).execute().use { resp ->
             val body = resp.body?.string() ?: ""
             if (!resp.isSuccessful) {
-                return ConnectivityResult(false, "Gemini rejected the key (HTTP ${resp.code}). ${errorText(body)}".trim(), rawInfo = body.take(300))
+                return ConnectivityResult(false, "Invalid API key (HTTP ${resp.code}). Please check or change your API key. ${errorText(body)}".trim(), rawInfo = body.take(300))
             }
             val models = try {
                 val arr = JSONObject(body).optJSONArray("models") ?: JSONArray()
@@ -106,7 +122,10 @@ object ApiConnectivityChecker {
                     if (canGenerate) m.optString("name").removePrefix("models/") else null
                 }.filter { it.isNotBlank() }
             } catch (e: Exception) { emptyList() }
-            return ConnectivityResult(true, "Gemini API is active.", models)
+            if (models.isEmpty()) {
+                return ConnectivityResult(false, "No models returned for this API key. Please check or change your API key.")
+            }
+            return ConnectivityResult(true, "API key verified! ${models.size} live models loaded.", models)
         }
     }
 

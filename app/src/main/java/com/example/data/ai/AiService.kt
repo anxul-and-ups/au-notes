@@ -9,6 +9,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLDecoder
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 data class ConversationTurn(
@@ -16,19 +18,32 @@ data class ConversationTurn(
     val content: String
 )
 
+data class WebSearchHit(
+    val title: String,
+    val url: String,
+    val snippet: String,
+    val source: String = ""
+)
+
+data class WebSearchOutcome(
+    val query: String,
+    val hits: List<WebSearchHit>,
+    val formattedContext: String
+) {
+    val sources: List<WebSearchHit> get() = hits
+}
+
 /** Result of a tool-enabled AU Bot turn: either a normal text reply, or a request
- * to run one of the small set of safe app-command functions defined below. */
+ * to run one of the app-command functions defined below. */
 sealed class AiActionResult {
     data class Text(val text: String) : AiActionResult()
     data class FunctionCall(val name: String, val args: JSONObject) : AiActionResult()
 }
 
 /**
- * AU Bot brain. Talks to Gemini with a proper system instruction, real multi-turn
- * history, document / image input and optional app-function calling.
- *
- * IMPORTANT: failures are reported honestly (bad key, quota, offline...) — this class
- * never replaces a failed request with a canned answer any more.
+ * AU Bot brain. Talks to Gemini, Anthropic, OpenAI, DeepSeek, or custom OpenAI-compatible
+ * endpoints with proper system instructions, multi-turn history, live web search grounding,
+ * document/image analysis, and app tool calling.
  */
 class AiService {
     private val client = OkHttpClient.Builder()
@@ -37,7 +52,16 @@ class AiService {
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    private class ApiFailure(val userMessage: String, val retryable: Boolean, val modelMissing: Boolean = false) : Exception(userMessage)
+    private class ApiFailure(
+        val userMessage: String,
+        val retryable: Boolean,
+        val modelMissing: Boolean = false
+    ) : Exception(userMessage)
+
+    private data class GeminiCallResponse(
+        val parts: JSONArray,
+        val groundingHits: List<WebSearchHit> = emptyList()
+    )
 
     private fun baseSystemPrompt(): String = """
         You are AU Agent, an advanced, highly intelligent AI Assistant and Note Craftsman inside AU Notes (built by student developer Anshul).
@@ -47,63 +71,33 @@ class AiService {
           Address the user respectfully as 'Ok sir'.
           Always use masculine Hindi/Hinglish grammar for yourself (e.g., 'main kar dunga', 'main abhi update kar deta hoon', 'kar raha hoon' — never 'kar dungi' or 'kar rahi hoon').
           Do NOT sound rigid, scripted, robotic, or hyper. Maintain a composed, reliable, focused, and conversational tone.
-          Crucial Conversational Flow Examples:
-          - When the user asks to edit or change a note (e.g. "is note ko edit karo", "Python note me changes karo"):
-            * If the user specified what to change, call the `edit_note` or `edit_current_note` tool immediately and reply: "Ok sir, maine ye changes kar diye hain. Ab aapko kuch aur karwana hai?"
-            * If the user did NOT specify what to change, politely ask: "Ok sir, isme kya changes karu? Bataiye main abhi update kar deta hoon."
-          - When changes or actions are executed:
-            Confirm politely: "Ok sir, ye changes kar diye hain. Ab aapko kuch aur karwana hai?"
-          - When user asks to see the screen or take screenshot ("screenshot le lo", "screen capture karo", "screen par dikh raha text copy karo"):
-            Call the `capture_screen` tool with the requested action!
-          - Context & Memory:
-            Always preserve conversation context! Remember previously discussed topics, notes created in this session, and user instructions.
-        - When the user asks for an explanation (e.g., "Python ke upar ek explanation do", "Explain Machine Learning", "Prepare notes on Indian History", etc.), a tutorial, or a guide:
-          DO NOT reply with plain, flat, boring text! You MUST act as an autonomous Agent utilizing AU Note Writer's full set of formatting tools to create an aesthetically structured, rich note:
+          Important boundary: AI image generation has been permanently removed from this app. Do not offer to generate AI photos; instead, offer and generate rich SVG vector diagrams, typography slide decks, structured charts, HTML pages, and PDF documents.
+        - Up-to-Date AI Model Knowledge & Verification:
+          • Confirmed modern AI models include:
+            - Google Gemini: Gemini 2.5 Pro (`gemini-2.5-pro`), Gemini 2.5 Flash (`gemini-2.5-flash`), Gemini 2.0 Flash (`gemini-2.0-flash`), Gemini 1.5 Pro/Flash, and Gemini 3.x preview builds.
+            - Anthropic Claude: Claude 3.5 Sonnet/Haiku, Claude 3.7 Sonnet (hybrid reasoning), Claude 4 Sonnet (`claude-sonnet-4`), Claude 4 Opus (`claude-opus-4`).
+            - OpenAI: GPT-4o, GPT-4o mini, GPT-4.1, GPT-4.5, o1, o3, o3-mini, o4-mini.
+            - DeepSeek: DeepSeek-V3 (`deepseek-chat`) and DeepSeek-R1 (`deepseek-reasoner`).
+          • Strict Verification for Unfamiliar or Rumored Models (e.g., "Claude Mythos", "Claude Fable 5", etc.):
+            - NEVER invent benchmark scores, release dates, or capabilities for an unverified or rumored model name.
+            - If live web search results are provided, verify whether the model is an official vendor release or an unconfirmed rumor/codename/hoax, and cite your sources clearly.
+        - Rich Note & Artifact Formatting:
           1. Headings: Start with '# Title', followed by '## Section Heading' and '### Subheading'.
           2. Highlights: Highlight core definitions and key concepts using '==highlighted key phrase==' and '**bold terminology**'.
-          3. Tables: ALWAYS organize comparisons, syntax sheets, or data into a structured Markdown Table:
-             | Feature / Concept | Description | Example / Syntax |
-             |---|---|---|
-             | ... | ... | ... |
-          4. Interactive Checkboxes: ALWAYS include an actionable learning checklist using '[ ] Task to do', '[x] Completed task'.
+          3. Tables: Organize comparisons, syntax sheets, or structured data into Markdown Tables.
+          4. Interactive Checkboxes: Include actionable checklists using '[ ] Task to do', '[x] Completed task'.
           5. Callout Boxes: Use '> 💡 Key Concept: ...' or '> ⚠️ Pro-Tip: ...'.
-          6. Code Blocks: Provide syntax-highlighted code blocks with language tags (e.g. ```python ... ```).
-        - Reply in the same language and style the user writes in (English, Hindi, or Hinglish written in Roman script).
-        - When the user attaches a document, screenshot, or image, read it carefully and base your answer on its real content.
-        - **Adaptive Prompt Writing (Rule D)**:
-          When the user asks "mere liye prompt likh do" / "write a prompt for me":
-          1. First assess how small or large the concept is.
-          2. Small / simple need → write a **short, crisp prompt (2–3 lines only)** without unnecessary explanation or fluff.
-          3. Large / complex need → write a **structured long prompt** with clear sections: `Role`, `Context`, `Task`, `Constraints`, and `Output Format`.
-        - **Long Input → Organised File — Zero-Skip Rule (Rule E)**:
-          When the user sends long/chaotic text and asks to organise it into a `.md`, `.txt`, or structured file:
-          1. Internally parse every single point/item into a numbered list (1..N).
-          2. Organise all N points into logical headings and sub-points without changing their meaning (only fix structure and spelling).
-          3. Any item that does not fit a main category MUST be placed under `## Misc / Others` — **NEVER skip or drop even a single point**.
-          4. At the end of your response, ALWAYS include the coverage verification line:
-             `Input me N points the, output me N included.`
-          5. Also include a downloadable file block using:
-             ```organised_file
-             {"fileName":"organised_notes.md","format":"md","inputPoints":N,"outputPoints":N,"content":"# Full Organised Content..."}
-             ```
-        - **Slides Maker — Gemini Style (Rule F)**:
-          When the user asks "X par slides bana do" / "make slides on X":
-          1. If the user specifies a slide count (e.g. "5 slides"), generate that exact number of slides; otherwise generate 5–7 slides (Title slide, Content slides, Summary slide).
-          2. Pick a cohesive, attractive background gradient (`bgStartHex`, `bgEndHex`) and high-contrast `textColorHex` + `accentColorHex` that fits the topic and stays consistent across all slides.
-          3. Output a `slides` block so the interactive Slides Maker renders in chat:
+          6. Editorial Warm-Paper Typography Slides (`slides` block):
+             Use warm paper `#EFECE4` background, `#18181B` ink, and a strong topic accent (`#EA580C` orange, `#3F6212` olive, `#CA8A04` gold, `#15803D` green, `#DC2626` red):
              ```slides
-             {"title":"Topic Title","bgStartHex":"#0F172A","bgEndHex":"#1E3A5F","textColorHex":"#F8FAFC","accentColorHex":"#38BDF8","slides":[{"title":"Slide 1 Title","subtitle":"Overview","bullets":["Key point 1","Key point 2","Key point 3"]}]}
+             {"title":"Topic — Typography Slides","bgStartHex":"#EFECE4","bgEndHex":"#E7E2D8","textColorHex":"#18181B","accentColorHex":"#EA580C","slides":[{"section":"OVERVIEW","layout":"cover","title":"MAIN","accentTitle":"concept","subtitle":"==Key phrase== explanation.","stats":[{"value":"100%","label":"accuracy"}]}]}
              ```
-        - **Graphs & Charts from Real Data (Rule G2)**:
-          When the user asks "iska graph/chart bana do":
-          Output a `chart` block using ONLY real numbers from the document/concept (NEVER invent numbers):
-          ```chart
-          {"type":"bar","title":"Chart Title","xAxisLabel":"Category","yAxisLabel":"Value","unit":"","data":[{"label":"Item A","value":45},{"label":"Item B","value":80}]}
-          ```
-          (`type` can be `"bar"`, `"line"`, `"pie"`, or `"flowchart"` with `"steps":["Step 1","Step 2"]`).
-        - **Element / Structure Shapes & Diagrams (Rule G3)**:
-          When the user asks "is element/structure ka shape/diagram banao" (atom, cell, circuit, flowchart, architecture, etc.):
-          Output a `diagram` block containing a clean, well-labelled `<svg viewBox="0 0 600 360" xmlns="http://www.w3.org/2000/svg">...</svg>` so it renders visually in chat.
+          7. Warm-Paper Charts (`chart` block):
+             ```chart
+             {"type":"bar","title":"BENCHMARK COMPARISON","unit":"%","max":100,"data":[{"label":"Model A","value":74.2,"color":"#EA580C","icon":"sparkle"},{"label":"Model B","value":70.0,"color":"#DC2626","icon":"whale"}]}
+             ```
+          8. Vector Diagrams (`diagram` block):
+             Output a clean `<svg viewBox="0 0 680 400" xmlns="http://www.w3.org/2000/svg">...</svg>` with warm cream background `#EFECE4`, `#18181B` 3px borders, and high-contrast labels.
     """.trimIndent()
 
     private fun textContent(role: String, text: String) = JSONObject().apply {
@@ -122,7 +116,6 @@ class AiService {
             } else cleaned.add(role to turn.content)
         }
         while (cleaned.isNotEmpty() && cleaned.first().first != "user") cleaned.removeAt(0)
-        // the latest message is a user turn — a trailing user history turn would make two in a row
         if (cleaned.isNotEmpty() && cleaned.last().first == "user") cleaned.removeAt(cleaned.lastIndex)
         val arr = JSONArray()
         cleaned.forEach { (r, t) -> arr.put(textContent(r, t)) }
@@ -131,22 +124,23 @@ class AiService {
     }
 
     private fun describeHttpError(code: Int, body: String?): ApiFailure {
-        val apiMsg = try { JSONObject(body ?: "").optJSONObject("error")?.optString("message") } catch (e: Exception) { null }
+        val apiMsg = try { JSONObject(body ?: "").optJSONObject("error")?.optString("message") } catch (_: Exception) { null }
         return when (code) {
             400 -> if (apiMsg?.contains("API key", ignoreCase = true) == true)
                 ApiFailure("Your Gemini API key looks invalid. Open Settings → API Room and check the key.", false)
             else ApiFailure("Gemini could not process this request. ${apiMsg.orEmpty()}".trim(), false)
             401, 403 -> ApiFailure("Gemini rejected your API key (or it has no access to this model). Open Settings → API Room and check the key.", false)
             404 -> ApiFailure("The selected model isn't available for your key.", false, modelMissing = true)
-            429 -> ApiFailure("Gemini rate limit / free quota reached. Wait a minute and try again, or switch model in API Room.", true)
+            429 -> ApiFailure("Gemini rate limit / free quota reached. Wait a minute and try again, or switch model in the Sidebar.", true)
             500, 502, 503, 504 -> ApiFailure("Gemini is busy right now. Please try again in a moment.", true)
             else -> ApiFailure("Gemini error (HTTP $code). ${apiMsg.orEmpty()}".trim(), false)
         }
     }
 
-    /** One HTTP call. Returns the parsed candidate parts or throws [ApiFailure]. */
-    private fun callGemini(model: String, apiKey: String, body: JSONObject): JSONArray {
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
+    /** One HTTP call to Gemini, returning both content parts and any groundingMetadata web chunks. */
+    private fun callGeminiWithMetadata(model: String, apiKey: String, body: JSONObject): GeminiCallResponse {
+        val cleanModel = model.removePrefix("models/").trim().ifBlank { "gemini-2.0-flash" }
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$cleanModel:generateContent"
         val request = Request.Builder()
             .url(url)
             .header("x-goog-api-key", apiKey)
@@ -154,7 +148,7 @@ class AiService {
             .build()
         val response = try {
             client.newCall(request).execute()
-        } catch (e: java.io.IOException) {
+        } catch (_: java.io.IOException) {
             throw ApiFailure("Couldn't reach Gemini. Check your internet connection and try again.", true)
         }
         response.use { resp ->
@@ -179,21 +173,35 @@ class AiService {
                     reason != "SAFETY"
                 )
             }
-            return parts
+            val groundingHits = mutableListOf<WebSearchHit>()
+            val groundingMeta = cand.optJSONObject("groundingMetadata")
+            val chunks = groundingMeta?.optJSONArray("groundingChunks")
+            if (chunks != null) {
+                for (i in 0 until chunks.length()) {
+                    val web = chunks.optJSONObject(i)?.optJSONObject("web") ?: continue
+                    val uri = web.optString("uri").trim()
+                    val title = web.optString("title").trim().ifBlank { uri }
+                    if (uri.isNotBlank()) {
+                        groundingHits.add(WebSearchHit(title = title, url = uri, snippet = "", source = "Google Grounding"))
+                    }
+                }
+            }
+            return GeminiCallResponse(parts = parts, groundingHits = groundingHits.distinctBy { it.url })
         }
     }
 
     /** Calls Gemini with retry on transient errors and fallback when the chosen model isn't available. */
-    private suspend fun generate(apiKey: String, model: String, body: JSONObject): JSONArray {
+    private suspend fun generateWithMeta(apiKey: String, model: String, body: JSONObject): GeminiCallResponse {
         val key = apiKey.trim()
         if (key.isBlank()) throw ApiFailure("No API key set. Open Settings → API Room and add your Gemini API key.", false)
-        val candidatesModels = listOf(model.ifBlank { "gemini-2.0-flash" }, "gemini-2.0-flash", "gemini-1.5-flash").distinct()
+        val cleanModel = model.removePrefix("models/").trim().ifBlank { "gemini-2.0-flash" }
+        val candidatesModels = listOf(cleanModel, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash").distinct()
         var lastFailure: ApiFailure? = null
         for (m in candidatesModels) {
             var attempt = 0
             while (attempt < 3) {
                 try {
-                    return callGemini(m, key, body)
+                    return callGeminiWithMetadata(m, key, body)
                 } catch (f: ApiFailure) {
                     lastFailure = f
                     if (f.modelMissing) break // try next model
@@ -207,6 +215,10 @@ class AiService {
         throw lastFailure ?: ApiFailure("Something went wrong talking to Gemini.", true)
     }
 
+    private suspend fun generate(apiKey: String, model: String, body: JSONObject): JSONArray {
+        return generateWithMeta(apiKey, model, body).parts
+    }
+
     private fun joinText(parts: JSONArray): String {
         val sb = StringBuilder()
         for (i in 0 until parts.length()) {
@@ -218,9 +230,174 @@ class AiService {
     }
 
     /**
-     * AU Bot with real app-command access, restricted to a small, explicit set of
-     * safe functions (search/create/move/delete-to-trash). Destructive functions are
-     * executed by the CALLER only after the user confirms.
+     * Live Multi-Source Web Search Engine:
+     * Queries DuckDuckGo HTML/Lite, Google News RSS, and Wikipedia API in parallel/sequence
+     * so that when `SEARCH` mode is ON (or `web_search` tool is called), the agent always gets
+     * real, live web results, snippets, publication dates, and URLs across ALL models & providers.
+     */
+    suspend fun performWebSearch(rawQuery: String): WebSearchOutcome = withContext(Dispatchers.IO) {
+        val query = rawQuery
+            .replace(Regex("^(search|google|find|look up|pata karo|search karo|tell me about)\\s+", RegexOption.IGNORE_CASE), "")
+            .trim()
+            .take(180)
+            .ifBlank { rawQuery.take(180) }
+
+        val hits = mutableListOf<WebSearchHit>()
+
+        // 1. DuckDuckGo HTML search for live web pages & snippets
+        runCatching {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val ddgUrl = "https://html.duckduckgo.com/html/?q=$encoded"
+            val req = Request.Builder()
+                .url(ddgUrl)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val html = resp.body?.string().orEmpty()
+                if (resp.isSuccessful && html.isNotBlank()) {
+                    val blockRegex = Regex(
+                        """<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>[\s\S]*?(?:<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)</a>|<div[^>]*class="result__snippet"[^>]*>([\s\S]*?)</div>)""",
+                        RegexOption.IGNORE_CASE
+                    )
+                    for (m in blockRegex.findAll(html)) {
+                        if (hits.size >= 6) break
+                        val rawHref = m.groupValues[1]
+                        val cleanUrl = extractRealUrlFromDdg(rawHref)
+                        val title = stripHtmlTags(m.groupValues[2])
+                        val snippet = stripHtmlTags(m.groupValues[3].ifBlank { m.groupValues[4] })
+                        if (title.isNotBlank() && cleanUrl.startsWith("http")) {
+                            hits.add(WebSearchHit(title = title, url = cleanUrl, snippet = snippet, source = "Web"))
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Google News RSS for dated news & official announcements (especially useful for AI model releases & current events)
+        runCatching {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val newsUrl = "https://news.google.com/rss/search?q=$encoded&hl=en-US&gl=US&ceid=US:en"
+            val req = Request.Builder()
+                .url(newsUrl)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val xml = resp.body?.string().orEmpty()
+                if (resp.isSuccessful && xml.isNotBlank()) {
+                    val itemRegex = Regex("<item>([\\s\\S]*?)</item>", RegexOption.IGNORE_CASE)
+                    for (m in itemRegex.findAll(xml)) {
+                        if (hits.size >= 9) break
+                        val itemXml = m.groupValues[1]
+                        val title = extractXmlTag(itemXml, "title")
+                        val link = extractXmlTag(itemXml, "link")
+                        val pubDate = extractXmlTag(itemXml, "pubDate")
+                        val source = extractXmlTag(itemXml, "source")
+                        val desc = stripHtmlTags(extractXmlTag(itemXml, "description"))
+                        if (title.isNotBlank() && link.isNotBlank()) {
+                            val snippet = buildString {
+                                if (source.isNotBlank()) append("Source: $source. ")
+                                if (pubDate.isNotBlank()) append("Published: $pubDate. ")
+                                if (desc.isNotBlank() && !desc.equals(title, ignoreCase = true)) append(desc)
+                            }.trim()
+                            hits.add(WebSearchHit(title = title, url = link, snippet = snippet, source = source.ifBlank { "Google News" }))
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Wikipedia Search API for encyclopedic / factual grounding
+        if (hits.size < 5) {
+            runCatching {
+                val encoded = URLEncoder.encode(query, "UTF-8")
+                val wikiUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&utf8=&format=json&srlimit=3"
+                val req = Request.Builder()
+                    .url(wikiUrl)
+                    .header("User-Agent", "AUNotesAndroid/1.0 (https://aistudio.google.com)")
+                    .get()
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful && body.isNotBlank()) {
+                        val searchArr = JSONObject(body).optJSONObject("query")?.optJSONArray("search")
+                        if (searchArr != null) {
+                            for (i in 0 until searchArr.length()) {
+                                val item = searchArr.getJSONObject(i)
+                                val title = item.optString("title")
+                                val snippet = stripHtmlTags(item.optString("snippet"))
+                                if (title.isNotBlank()) {
+                                    val pageUrl = "https://en.wikipedia.org/wiki/${URLEncoder.encode(title.replace(' ', '_'), "UTF-8")}"
+                                    hits.add(WebSearchHit(title = "$title — Wikipedia", url = pageUrl, snippet = snippet, source = "Wikipedia"))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        val uniqueHits = hits.distinctBy { it.title.lowercase().take(45) }.take(8)
+        val formatted = if (uniqueHits.isEmpty()) {
+            "[LIVE WEB SEARCH RESULTS for \"$query\"]\nNo exact web pages matched \"$query\". If the user is asking about a specific model name or claim (such as \"$query\"), note that no official public web announcement was found for that exact name."
+        } else {
+            buildString {
+                append("[LIVE WEB SEARCH RESULTS for \"$query\"]\n")
+                uniqueHits.forEachIndexed { idx, hit ->
+                    append("${idx + 1}. **${hit.title}**\n")
+                    append("   URL: ${hit.url}\n")
+                    if (hit.snippet.isNotBlank()) {
+                        append("   Snippet: ${hit.snippet}\n")
+                    }
+                }
+                append("\nUse these live web results to answer accurately. Cite relevant sources with markdown links `[Source Title](URL)` at the end of your response.")
+            }
+        }
+
+        WebSearchOutcome(query = query, hits = uniqueHits, formattedContext = formatted)
+    }
+
+    private fun extractRealUrlFromDdg(rawHref: String): String {
+        val decoded = rawHref.replace("&amp;", "&")
+        val uddgIdx = decoded.indexOf("uddg=")
+        if (uddgIdx != -1) {
+            val sub = decoded.substring(uddgIdx + 5).substringBefore("&")
+            return runCatching { URLDecoder.decode(sub, "UTF-8") }.getOrDefault(sub)
+        }
+        return if (decoded.startsWith("//")) "https:$decoded" else decoded
+    }
+
+    private fun extractXmlTag(xml: String, tag: String): String {
+        val m = Regex("<$tag[^>]*>([\\s\\S]*?)</$tag>", RegexOption.IGNORE_CASE).find(xml) ?: return ""
+        return m.groupValues[1]
+            .replace("<![CDATA[", "")
+            .replace("]]>", "")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .trim()
+    }
+
+    private fun stripHtmlTags(raw: String): String {
+        return raw
+            .replace(Regex("<[^>]+>"), " ")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&#x27;", "'")
+            .replace("&nbsp;", " ")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    /**
+     * AU Bot with real app-command access.
      */
     suspend fun generateWithTools(
         prompt: String,
@@ -231,19 +408,26 @@ class AiService {
         allowEditCurrentNote: Boolean = false,
         provider: String = "Gemini",
         customBaseUrl: String = "",
+        enableWebSearch: Boolean = false,
         onStatus: ((String) -> Unit)? = null
     ): AiActionResult = withContext(Dispatchers.IO) {
+        val webOutcome = if (enableWebSearch) {
+            onStatus?.invoke("Searching the web...")
+            performWebSearch(prompt)
+        } else null
+
         val system = buildString {
             append(baseSystemPrompt())
-            append("\n\nYou can also control the app through functions: search_notes, create_note, edit_note, edit_current_note, move_note_to_folder, delete_note, create_folder, delete_folder, open_folder, capture_screen, copy_screen_text.")
-            append(" Call a function ONLY when the user clearly asks for that app action (e.g. \"find my Java note\", \"edit Python note\", \"screen capture karo\", \"make a folder called Travel\").")
-            append(" For questions, explanations, writing, coding help or chatting, just answer in text — do NOT call a function.")
-            append(" When editing a note by title/name, call edit_note with title and complete updated new_content.")
+            append("\n\nYou can control the app through functions: search_notes, create_note, edit_note, edit_current_note, move_note_to_folder, delete_note, create_folder, delete_folder, open_folder, capture_screen, copy_screen_text.")
+            append(" Call a function when the user asks for that app action.")
             if (allowEditCurrentNote) {
                 append("\nYou are also running INSIDE the active note in [Current Note Context]. When the user asks to edit or update THIS active note, call edit_current_note or edit_note with the note's COMPLETE new text.")
             }
             if (!noteContext.isNullOrBlank()) {
                 append("\n\n[Current Note Context]\n").append(noteContext.take(30000))
+            }
+            if (webOutcome != null) {
+                append("\n\n").append(webOutcome.formattedContext)
             }
         }
 
@@ -267,11 +451,11 @@ class AiService {
                         model.isNotBlank() -> model
                         provider == "DeepSeek" -> "deepseek-chat"
                         provider == "OpenAI" -> "gpt-4o-mini"
-                        else -> "gpt-3.5-turbo"
+                        else -> "gpt-4o-mini"
                     }
                     callOpenAiCompatible(base, apiKey, chosenModel, system, history, prompt)
                 }
-                AiActionResult.Text(responseText)
+                AiActionResult.Text(appendSourcesIfMissing(responseText, webOutcome?.hits.orEmpty()))
             } catch (e: Exception) {
                 AiActionResult.Text("⚠️ $provider error: ${e.message ?: "Failed to generate response. Check API key and account balance in API Room."}")
             }
@@ -320,7 +504,7 @@ class AiService {
             put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             put("contents", buildContents(history, textContent("user", prompt)))
             put("tools", JSONArray().put(JSONObject().put("functionDeclarations", functionDeclarations)))
-            put("generationConfig", JSONObject().put("temperature", 0.8).put("maxOutputTokens", 4096))
+            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 4096))
         }
 
         try {
@@ -333,7 +517,11 @@ class AiService {
                 }
             }
             val text = joinText(parts)
-            AiActionResult.Text(text.ifBlank { "I couldn't come up with an answer. Could you rephrase that?" })
+            val finalReply = appendSourcesIfMissing(
+                text.ifBlank { "I couldn't come up with an answer. Could you rephrase that?" },
+                webOutcome?.hits.orEmpty()
+            )
+            AiActionResult.Text(finalReply)
         } catch (f: ApiFailure) {
             AiActionResult.Text("⚠️ ${f.userMessage}")
         } catch (e: Exception) {
@@ -341,10 +529,6 @@ class AiService {
         }
     }
 
-    /**
-     * One plain chat turn for ANY provider (no native function calling — tools are
-     * handled by the text protocol in [AgentTools]). Errors come back as "⚠️ ..." text.
-     */
     /** Alternating roles, starting with the user (Anthropic rejects anything else). */
     private fun normalizeTurns(history: List<ConversationTurn>): List<ConversationTurn> {
         val out = mutableListOf<ConversationTurn>()
@@ -361,13 +545,12 @@ class AiService {
     }
 
     /**
-     * Smart Web Search detector: returns true ONLY when the user's message asks for
-     * external/current/factual/web information (not for local note actions or casual greetings).
+     * Heuristic detector used only when explicitly requested by callers that don't have a toggle.
+     * In AiChatScreen, the dedicated `SEARCH` toggle controls web search directly.
      */
     fun shouldUseWebSearch(prompt: String): Boolean {
         val q = prompt.trim().lowercase()
         if (q.length < 6) return false
-        // Skip web search if it's purely a local note/folder command
         val localNoteVerbs = listOf("create_note", "edit_note", "delete_note", "move_note", "open_folder", "note me", "note mein", "folder bana")
         if (localNoteVerbs.any { q.contains(it) } && !q.contains("search") && !q.contains("latest") && !q.contains("news")) {
             return false
@@ -376,9 +559,24 @@ class AiService {
             "search", "google", "web", "internet", "online", "latest", "current", "today", "aaj",
             "news", "khabar", "price", "rate", "stock", "weather", "score", "match", "who is",
             "what is the latest", "2025", "2026", "update", "release", "repo", "github", "url", "website", "link",
-            "kaun hai", "kab hua", "kahaan hai", "pata karo", "search karo", "dhundo"
+            "kaun hai", "kab hua", "kahaan hai", "pata karo", "search karo", "dhundo", "mythos", "fable"
         )
         return webTriggers.any { q.contains(it) }
+    }
+
+    private fun appendSourcesIfMissing(reply: String, hits: List<WebSearchHit>): String {
+        if (hits.isEmpty() || reply.startsWith("⚠️") || reply.contains("<tool_call>")) return reply
+        // Don't append if the model already included markdown URLs from the hits
+        val hasUrlAlready = hits.any { h -> reply.contains(h.url.take(35), ignoreCase = true) }
+        if (hasUrlAlready) return reply
+        val topHits = hits.take(4)
+        return buildString {
+            append(reply.trimEnd())
+            append("\n\n---\n**🌐 Web Sources:**\n")
+            topHits.forEach { h ->
+                append("- [${h.title.take(75)}](${h.url})\n")
+            }
+        }.trim()
     }
 
     suspend fun chatOnce(
@@ -393,34 +591,68 @@ class AiService {
         enableWebSearch: Boolean = false
     ): String = withContext(Dispatchers.IO) {
         try {
+            // When SEARCH mode is ON (and we're not just feeding back an internal [TOOL RESULT]),
+            // fetch live web search results so every model/provider gets real grounded web context.
+            val isToolResultTurn = prompt.trimStart().startsWith("[TOOL RESULT")
+            val liveWebOutcome = if (enableWebSearch && !isToolResultTurn) {
+                runCatching { performWebSearch(prompt) }.getOrNull()
+            } else null
+
+            val effectiveSystem = if (liveWebOutcome != null) {
+                "$system\n\n${liveWebOutcome.formattedContext}"
+            } else {
+                system
+            }
+
             if (provider == "Gemini") {
                 val latest = JSONObject().apply {
                     put("role", "user")
                     val parts = JSONArray().put(JSONObject().put("text", prompt))
                     for (img in imagesBase64.take(8)) {
-                        parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", if (img.startsWith("/9j/")) "image/jpeg" else "image/png").put("data", img)))
+                        parts.put(
+                            JSONObject().put(
+                                "inline_data",
+                                JSONObject()
+                                    .put("mime_type", if (img.startsWith("/9j/")) "image/jpeg" else "image/png")
+                                    .put("data", img)
+                            )
+                        )
                     }
                     put("parts", parts)
                 }
                 val baseBody = JSONObject().apply {
-                    put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
+                    put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", effectiveSystem))))
                     put("contents", buildContents(history, latest))
                     put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 8192))
                 }
-                if (enableWebSearch) {
+                if (enableWebSearch && !isToolResultTurn) {
                     val searchBody = JSONObject(baseBody.toString()).apply {
                         put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
                     }
                     try {
-                        val txt = joinText(generate(apiKey, model, searchBody))
-                        if (txt.isNotBlank()) return@withContext txt
+                        val metaResp = generateWithMeta(apiKey, model, searchBody)
+                        val txt = joinText(metaResp.parts)
+                        if (txt.isNotBlank()) {
+                            val combinedHits = (metaResp.groundingHits + liveWebOutcome?.hits.orEmpty()).distinctBy { it.url }
+                            return@withContext appendSourcesIfMissing(txt, combinedHits)
+                        }
                     } catch (_: Exception) {
-                        // Fall back cleanly to standard generation if the chosen model rejects google_search tool
+                        // Fall back cleanly to standard generation (which already has liveWebOutcome in effectiveSystem!)
                     }
                 }
-                joinText(generate(apiKey, model, baseBody)).ifBlank { "I couldn't come up with an answer. Could you rephrase that?" }
+                val rawText = joinText(generate(apiKey, model, baseBody)).ifBlank {
+                    "I couldn't come up with an answer. Could you rephrase that?"
+                }
+                appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
             } else if (provider == "Anthropic") {
-                callAnthropic(apiKey, model.ifBlank { "claude-3-5-sonnet-20241022" }, system, normalizeTurns(history), prompt)
+                val rawText = callAnthropic(
+                    apiKey,
+                    model.ifBlank { "claude-3-5-sonnet-20241022" },
+                    effectiveSystem,
+                    normalizeTurns(history),
+                    prompt
+                )
+                appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
             } else {
                 val base = when (provider) {
                     "DeepSeek" -> "https://api.deepseek.com"
@@ -436,10 +668,11 @@ class AiService {
                     when (provider) {
                         "DeepSeek" -> "deepseek-chat"
                         "OpenAI" -> "gpt-4o-mini"
-                        else -> "gpt-3.5-turbo"
+                        else -> "gpt-4o-mini"
                     }
                 }
-                callOpenAiCompatible(base, apiKey, chosen, system, normalizeTurns(history), prompt)
+                val rawText = callOpenAiCompatible(base, apiKey, chosen, effectiveSystem, normalizeTurns(history), prompt)
+                appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
             }
         } catch (f: ApiFailure) {
             "⚠️ ${f.userMessage}"
@@ -473,8 +706,6 @@ class AiService {
 
     /**
      * Plain conversational path, used whenever the user sends a document / image.
-     * The attached text and/or page images are sent together with the question so the
-     * model answers from the real file content.
      */
     suspend fun generateResponse(
         prompt: String,
@@ -526,55 +757,25 @@ class AiService {
     }
 
     /**
-     * Real "Auto Detect Models" — calls Gemini's own ListModels endpoint with the
-     * user's key and returns the models that actually support generateContent,
-     * instead of a fixed guessed list. Throws on invalid key / network failure so
-     * the caller can show a real error instead of fake results.
+     * Real "Detect Models" — strictly validates the user's Gemini API key and returns live models,
+     * or fails with a clear error message if the key is missing or invalid.
      */
     suspend fun listAvailableModels(apiKey: String): Result<List<String>> = withContext(Dispatchers.IO) {
-        try {
-            val cleanKey = apiKey.trim()
-            if (cleanKey.isBlank()) {
-                return@withContext Result.failure(IllegalArgumentException("Enter an API key first"))
-            }
-            val url = "https://generativelanguage.googleapis.com/v1beta/models?key=$cleanKey"
-            val request = Request.Builder().url(url).get().build()
-            val response = client.newCall(request).execute()
-            val body = response.body?.string()
-
-            if (!response.isSuccessful || body.isNullOrBlank()) {
-                val message = when (response.code) {
-                    400, 403 -> "This API key was rejected — double-check it's correct"
-                    404 -> "Model list endpoint not found for this key's project"
-                    else -> "Could not reach Gemini (HTTP ${response.code})"
-                }
-                return@withContext Result.failure(Exception(message))
-            }
-
-            val json = JSONObject(body)
-            val modelsArray = json.optJSONArray("models") ?: JSONArray()
-            val names = mutableListOf<String>()
-            for (i in 0 until modelsArray.length()) {
-                val m = modelsArray.getJSONObject(i)
-                val supported = m.optJSONArray("supportedGenerationMethods")
-                val supportsGenerate = (0 until (supported?.length() ?: 0)).any {
-                    supported?.optString(it) == "generateContent"
-                }
-                if (supportsGenerate) {
-                    val fullName = m.optString("name", "") // e.g. "models/gemini-2.0-flash"
-                    val shortName = fullName.substringAfterLast('/')
-                    if (shortName.isNotBlank()) names.add(shortName)
-                }
-            }
-
-            if (names.isEmpty()) {
-                Result.failure(Exception("This key works, but no generateContent-capable models were returned"))
-            } else {
-                Result.success(names.distinct())
-            }
-        } catch (e: Exception) {
-            Result.failure(e)
+        val cleanKey = apiKey.trim()
+        val res = ApiConnectivityChecker.check("Gemini", cleanKey)
+        if (res.isActive && res.availableModels.isNotEmpty()) {
+            Result.success(res.availableModels.distinct())
+        } else {
+            Result.failure(Exception(res.statusMessage.ifBlank { "Invalid API key. Please check or change your API key." }))
         }
+    }
+
+    suspend fun fetchModels(
+        provider: String,
+        apiKey: String,
+        baseUrl: String = ""
+    ): Result<List<String>> = withContext(Dispatchers.IO) {
+        listAvailableModels(apiKey)
     }
 
     private fun callOpenAiCompatible(
@@ -699,185 +900,8 @@ class AiService {
     }
 
     /**
-     * Item G1: Generates an image for "imagine ..." / "iska image generate kar" requests.
-     * Tries the configured Gemini Image Generation / Imagen model first; if the key does not have
-     * paid image billing enabled on that model, falls back to generating a rich high-res visual
-     * illustration via Gemini SVG->Bitmap rendering so valid Gemini keys always produce a crisp image,
-     * while invalid/empty keys return a clear failure message.
-     */
-    suspend fun generateImage(
-        apiKey: String,
-        model: String,
-        prompt: String
-    ): Result<String> = withContext(Dispatchers.IO) {
-        val cleanKey = apiKey.trim()
-        if (cleanKey.isBlank() || cleanKey == "your_api_key_here") {
-            return@withContext Result.failure(
-                Exception("API key set nahi hai. Kripya Settings → API Room me jaakar apni Gemini API key daalein.")
-            )
-        }
-        val chosenModel = model.trim().ifBlank { "gemini-2.0-flash-preview-image-generation" }
-        try {
-            // 1. Try Imagen :predict endpoint if an imagen-* model is selected
-            if (chosenModel.startsWith("imagen", ignoreCase = true)) {
-                val url = "https://generativelanguage.googleapis.com/v1beta/models/$chosenModel:predict?key=$cleanKey"
-                val reqJson = JSONObject().apply {
-                    put("instances", JSONArray().put(JSONObject().put("prompt", prompt)))
-                    put("parameters", JSONObject().put("sampleCount", 1))
-                }
-                val req = Request.Builder()
-                    .url(url)
-                    .post(reqJson.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-                client.newCall(req).execute().use { resp ->
-                    val body = resp.body?.string() ?: ""
-                    if (resp.isSuccessful && body.isNotBlank()) {
-                        val json = JSONObject(body)
-                        val preds = json.optJSONArray("predictions")
-                        val b64 = preds?.optJSONObject(0)?.optString("bytesBase64Encoded").orEmpty()
-                        if (b64.isNotBlank()) return@withContext Result.success(b64)
-                    } else if (resp.code == 400 && body.contains("API key", ignoreCase = true) || resp.code == 401 || resp.code == 403) {
-                        return@withContext Result.failure(
-                            Exception("Image generation failed (HTTP ${resp.code}): Invalid or unauthorized API key. Check API Room.")
-                        )
-                    }
-                }
-            }
-
-            // 2. Try Gemini multimodal image generation (responseModalities: ["TEXT", "IMAGE"])
-            val candidateImgModels = listOf(
-                chosenModel,
-                "gemini-2.0-flash-preview-image-generation",
-                "gemini-2.0-flash-exp-image-generation"
-            ).distinct()
-
-            for (imgModel in candidateImgModels) {
-                if (imgModel.startsWith("imagen", ignoreCase = true)) continue
-                val url = "https://generativelanguage.googleapis.com/v1beta/models/$imgModel:generateContent?key=$cleanKey"
-                val reqJson = JSONObject().apply {
-                    put(
-                        "contents",
-                        JSONArray().put(
-                            JSONObject().apply {
-                                put("role", "user")
-                                put("parts", JSONArray().put(JSONObject().put("text", "Generate a high-quality image for: $prompt")))
-                            }
-                        )
-                    )
-                    put(
-                        "generationConfig",
-                        JSONObject().apply {
-                            put("responseModalities", JSONArray().put("TEXT").put("IMAGE"))
-                        }
-                    )
-                }
-                val req = Request.Builder()
-                    .url(url)
-                    .post(reqJson.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-                client.newCall(req).execute().use { resp ->
-                    val body = resp.body?.string() ?: ""
-                    if (resp.isSuccessful && body.isNotBlank()) {
-                        val parts = JSONObject(body)
-                            .optJSONArray("candidates")
-                            ?.optJSONObject(0)
-                            ?.optJSONObject("content")
-                            ?.optJSONArray("parts")
-                        if (parts != null) {
-                            for (i in 0 until parts.length()) {
-                                val p = parts.getJSONObject(i)
-                                val inline = p.optJSONObject("inlineData") ?: p.optJSONObject("inline_data")
-                                val data = inline?.optString("data").orEmpty()
-                                if (data.isNotBlank()) {
-                                    return@withContext Result.success(data)
-                                }
-                            }
-                        }
-                    } else if (resp.code == 400 && body.contains("API key", ignoreCase = true) || resp.code == 401) {
-                        return@withContext Result.failure(
-                            Exception("Invalid API Key. Kripya Settings → API Room me apni API key check karein.")
-                        )
-                    }
-                }
-            }
-
-            // 3. Fallback: ask Gemini Flash to generate a rich, detailed visual poster/illustration card
-            // and render it to a high-res 1280x720 PNG so valid keys without paid Imagen billing still work!
-            val fallbackBody = JSONObject().apply {
-                put(
-                    "contents",
-                    JSONArray().put(
-                        JSONObject().apply {
-                            put("role", "user")
-                            put(
-                                "parts",
-                                JSONArray().put(
-                                    JSONObject().put(
-                                        "text",
-                                        "Return ONLY valid JSON: {\"title\":\"short visual title\",\"subtitle\":\"1-line visual caption\",\"bgStart\":\"#0F172A\",\"bgEnd\":\"#1E3A8A\",\"accent\":\"#38BDF8\",\"elements\":[\"key visual detail 1\",\"key visual detail 2\",\"key visual detail 3\"]} for the image prompt: $prompt"
-                                    )
-                                )
-                            )
-                        }
-                    )
-                )
-            }
-            val respJson = generate(cleanKey, "gemini-2.0-flash", fallbackBody)
-            val txt = joinText(respJson).trim()
-                .removePrefix("```json")
-                .removePrefix("```")
-                .removeSuffix("```")
-                .trim()
-            val obj = try { JSONObject(txt) } catch (_: Exception) { JSONObject() }
-            val bmp = android.graphics.Bitmap.createBitmap(1280, 720, android.graphics.Bitmap.Config.ARGB_8888)
-            val canvas = android.graphics.Canvas(bmp)
-            val c1 = try { android.graphics.Color.parseColor(obj.optString("bgStart", "#0F172A")) } catch (_: Exception) { android.graphics.Color.parseColor("#0F172A") }
-            val c2 = try { android.graphics.Color.parseColor(obj.optString("bgEnd", "#1E3A8A")) } catch (_: Exception) { android.graphics.Color.parseColor("#1E3A8A") }
-            val acc = try { android.graphics.Color.parseColor(obj.optString("accent", "#38BDF8")) } catch (_: Exception) { android.graphics.Color.parseColor("#38BDF8") }
-            val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                shader = android.graphics.LinearGradient(0f, 0f, 1280f, 720f, c1, c2, android.graphics.Shader.TileMode.CLAMP)
-            }
-            canvas.drawRect(0f, 0f, 1280f, 720f, bgPaint)
-            val glow = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = acc; alpha = 48 }
-            canvas.drawCircle(1020f, 180f, 220f, glow)
-            canvas.drawCircle(240f, 560f, 180f, glow)
-            val tPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                color = android.graphics.Color.WHITE
-                textSize = 54f
-                typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-            }
-            val sPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                color = acc
-                textSize = 30f
-            }
-            val vTitle = obj.optString("title", prompt.take(42))
-            val vSub = obj.optString("subtitle", prompt.take(80))
-            canvas.drawText(vTitle.take(36), 80f, 220f, tPaint)
-            canvas.drawText(vSub.take(64), 80f, 280f, sPaint)
-            val elArr = obj.optJSONArray("elements") ?: JSONArray()
-            val bPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                color = android.graphics.Color.WHITE
-                alpha = 230
-                textSize = 26f
-            }
-            for (i in 0 until minOf(elArr.length(), 4)) {
-                canvas.drawText("✦  " + elArr.optString(i).take(68), 88f, 360f + i * 56f, bPaint)
-            }
-            val bos = java.io.ByteArrayOutputStream()
-            bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bos)
-            bmp.recycle()
-            Result.success(android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP))
-        } catch (f: ApiFailure) {
-            Result.failure(Exception(f.userMessage))
-        } catch (e: Exception) {
-            Result.failure(Exception("Image generation error: ${e.message ?: "Check model & API key in API Room"}"))
-        }
-    }
-
-    /**
-     * Requirement #4: Generates natural AI Voice speech (24kHz 16-bit mono PCM) using Gemini TTS
-     * with the selected voice (default "Puck"). Used by ReadNoteScreen when AI Voice is selected
-     * and online; callers automatically fall back to native Android TTS if offline or quota is exceeded.
+     * Generates natural AI Voice speech (24kHz 16-bit mono PCM) using Gemini TTS
+     * with the selected voice (default "Puck").
      */
     suspend fun generateSpeechAudio(
         apiKey: String,
@@ -975,37 +999,58 @@ class AiService {
     }
 
     /**
-     * Requirement #14: Renders a high-resolution chart/graph Bitmap for `make_graphs_for_note`
-     * so the agent can attach graphs directly inside a note.
+     * Renders a high-resolution Warm-Paper Editorial Typography chart/graph Bitmap for `make_graphs_for_note`
+     * so the agent can attach crisp editorial graphs directly inside a note.
      */
     fun renderGraphBitmap(
         title: String,
         chartType: String,
         dataSummary: String
     ): android.graphics.Bitmap {
-        val w = 1200
-        val h = 760
+        val w = 1280
+        val h = 820
         val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bmp)
 
+        val paperBg = android.graphics.Color.parseColor("#EFECE4")
+        val inkColor = android.graphics.Color.parseColor("#18181B")
+        val mutedColor = android.graphics.Color.parseColor("#71717A")
+
+        // Warm paper background + 4px outer border
         val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            shader = android.graphics.LinearGradient(
-                0f, 0f, w.toFloat(), h.toFloat(),
-                android.graphics.Color.parseColor("#0F172A"),
-                android.graphics.Color.parseColor("#1E293B"),
-                android.graphics.Shader.TileMode.CLAMP
-            )
+            color = paperBg
+            style = android.graphics.Paint.Style.FILL
         }
         canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), bgPaint)
 
-        val titlePaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.WHITE
-            textSize = 36f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+        val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = inkColor
+            strokeWidth = 6f
+            style = android.graphics.Paint.Style.STROKE
         }
-        canvas.drawText(title.ifBlank { "Document Data Graph" }.take(48), 64f, 76f, titlePaint)
+        canvas.drawRect(18f, 18f, w - 18f, h - 18f, borderPaint)
 
-        // Parse label:value pairs from dataSummary (e.g. "2021: 45, 2022: 68, 2023: 92" or JSON/lines)
+        // Top editorial index rule
+        val headerPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = inkColor
+            textSize = 24f
+            letterSpacing = 0.18f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
+        }
+        canvas.drawText("01", 64f, 78f, headerPaint)
+        val rightLabel = chartType.uppercase().ifBlank { "BENCHMARK" }
+        val rw = headerPaint.measureText(rightLabel)
+        canvas.drawText(rightLabel, w - 64f - rw, 78f, headerPaint)
+        canvas.drawLine(64f, 96f, w - 64f, 96f, borderPaint)
+
+        val titlePaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = inkColor
+            textSize = 46f
+            typeface = android.graphics.Typeface.create("sans-serif-condensed", android.graphics.Typeface.BOLD)
+        }
+        canvas.drawText(title.ifBlank { "DATA BENCHMARK" }.uppercase().take(42), 64f, 162f, titlePaint)
+
+        // Parse label:value pairs from dataSummary
         val pairs = mutableListOf<Pair<String, Float>>()
         val regex = Regex("([A-Za-z0-9 _./%-]{1,24})\\s*[:=-]\\s*(-?\\d+(?:\\.\\d+)?)")
         regex.findAll(dataSummary).forEach { m ->
@@ -1018,80 +1063,130 @@ class AiService {
             nums.forEachIndexed { idx, v -> pairs.add("Item ${idx + 1}" to v) }
         }
         if (pairs.isEmpty()) {
-            pairs.addAll(listOf("Point 1" to 35f, "Point 2" to 62f, "Point 3" to 48f, "Point 4" to 85f))
+            pairs.addAll(listOf("Metric A" to 74.2f, "Metric B" to 68.5f, "Metric C" to 54.0f, "Metric D" to 88.0f))
         }
 
         val items = pairs.take(8)
         val maxVal = (items.maxOfOrNull { kotlin.math.abs(it.second) } ?: 100f).coerceAtLeast(1f)
-        val chartLeft = 110f
+        val chartLeft = 130f
         val chartRight = w - 80f
-        val chartTop = 140f
+        val chartTop = 230f
         val chartBottom = h - 130f
         val chartW = chartRight - chartLeft
         val chartH = chartBottom - chartTop
 
         val gridPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.parseColor("#334155")
-            strokeWidth = 2f
+            color = android.graphics.Color.parseColor("#D6D3CB")
+            strokeWidth = 2.5f
         }
         val labelPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.parseColor("#CBD5E1")
-            textSize = 22f
+            color = mutedColor
+            textSize = 24f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
         }
         for (g in 0..4) {
             val y = chartBottom - (chartH * g / 4f)
-            canvas.drawLine(chartLeft, y, chartRight, y, gridPaint)
+            canvas.drawLine(chartLeft, y, chartRight, y, if (g == 0) borderPaint else gridPaint)
             val vLabel = String.format(java.util.Locale.US, "%.0f", maxVal * g / 4f)
-            canvas.drawText(vLabel, 28f, y + 8f, labelPaint)
+            canvas.drawText(vLabel, 54f, y + 8f, labelPaint)
         }
 
         val palette = intArrayOf(
-            android.graphics.Color.parseColor("#38BDF8"),
-            android.graphics.Color.parseColor("#F43F5E"),
-            android.graphics.Color.parseColor("#22C55E"),
-            android.graphics.Color.parseColor("#F59E0B"),
-            android.graphics.Color.parseColor("#A855F7"),
-            android.graphics.Color.parseColor("#EC4899"),
-            android.graphics.Color.parseColor("#14B8A6"),
-            android.graphics.Color.parseColor("#6366F1")
+            android.graphics.Color.parseColor("#EA580C"), // Warm Orange
+            android.graphics.Color.parseColor("#3F6212"), // Olive Green
+            android.graphics.Color.parseColor("#CA8A04"), // Mustard Gold
+            android.graphics.Color.parseColor("#DC2626"), // Crimson Red
+            android.graphics.Color.parseColor("#15803D"), // Forest Green
+            android.graphics.Color.parseColor("#1D4ED8"), // Royal Blue
+            android.graphics.Color.parseColor("#7C3AED"), // Deep Violet
+            android.graphics.Color.parseColor("#0F766E")  // Teal
         )
 
         if (chartType.equals("line", ignoreCase = true) && items.size >= 2) {
             val linePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = palette[0]
-                strokeWidth = 6f
+                strokeWidth = 8f
                 style = android.graphics.Paint.Style.STROKE
             }
-            val dotPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                color = palette[1]
-                style = android.graphics.Paint.Style.FILL
-            }
-            val path = android.graphics.Path()
+            val fillPath = android.graphics.Path()
+            val strokePath = android.graphics.Path()
             items.forEachIndexed { i, (lbl, v) ->
                 val x = chartLeft + (chartW * (i + 0.5f) / items.size)
                 val y = (chartBottom - (v.coerceAtLeast(0f) / maxVal) * chartH).coerceIn(chartTop, chartBottom)
-                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-                canvas.drawCircle(x, y, 10f, dotPaint)
-                canvas.drawText(String.format(java.util.Locale.US, "%.1f", v).removeSuffix(".0"), x - 22f, y - 18f, labelPaint)
-                canvas.drawText(lbl.take(12), x - 40f, chartBottom + 44f, labelPaint)
+                if (i == 0) {
+                    strokePath.moveTo(x, y)
+                    fillPath.moveTo(x, chartBottom)
+                    fillPath.lineTo(x, y)
+                } else {
+                    strokePath.lineTo(x, y)
+                    fillPath.lineTo(x, y)
+                }
+                if (i == items.lastIndex) {
+                    fillPath.lineTo(x, chartBottom)
+                    fillPath.close()
+                }
             }
-            canvas.drawPath(path, linePaint)
+            val areaPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = palette[0]
+                alpha = 45
+                style = android.graphics.Paint.Style.FILL
+            }
+            canvas.drawPath(fillPath, areaPaint)
+            canvas.drawPath(strokePath, linePaint)
+
+            items.forEachIndexed { i, (lbl, v) ->
+                val x = chartLeft + (chartW * (i + 0.5f) / items.size)
+                val y = (chartBottom - (v.coerceAtLeast(0f) / maxVal) * chartH).coerceIn(chartTop, chartBottom)
+                val dotFill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    color = palette[0]
+                    style = android.graphics.Paint.Style.FILL
+                }
+                canvas.drawCircle(x, y, 13f, dotFill)
+                canvas.drawCircle(x, y, 13f, borderPaint)
+                val valTxt = String.format(java.util.Locale.US, "%.1f", v).removeSuffix(".0")
+                labelPaint.color = inkColor
+                canvas.drawText(valTxt, x - 24f, y - 22f, labelPaint)
+                canvas.drawText(lbl.take(12), x - 44f, chartBottom + 48f, labelPaint)
+            }
         } else {
             val slotW = chartW / items.size
-            val barW = (slotW * 0.56f).coerceAtMost(110f)
+            val barW = (slotW * 0.58f).coerceAtMost(130f)
+            val valPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.WHITE
+                textSize = 26f
+                typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            }
             items.forEachIndexed { i, (lbl, v) ->
-                val bh = ((v.coerceAtLeast(0f) / maxVal) * chartH).coerceAtLeast(10f)
+                val bh = ((v.coerceAtLeast(0f) / maxVal) * chartH).coerceAtLeast(18f)
                 val left = chartLeft + i * slotW + (slotW - barW) / 2f
                 val top = chartBottom - bh
                 val barPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     color = palette[i % palette.size]
+                    style = android.graphics.Paint.Style.FILL
                 }
-                canvas.drawRoundRect(
-                    android.graphics.RectF(left, top, left + barW, chartBottom),
-                    14f, 14f, barPaint
-                )
-                canvas.drawText(String.format(java.util.Locale.US, "%.1f", v).removeSuffix(".0"), left + 6f, top - 12f, labelPaint)
-                canvas.drawText(lbl.take(11), left, chartBottom + 42f, labelPaint)
+                val rect = android.graphics.RectF(left, top, left + barW, chartBottom)
+                canvas.drawRect(rect, barPaint)
+                canvas.drawRect(rect, borderPaint)
+
+                // Icon badge circle above bar
+                val cx = left + barW / 2f
+                val cy = (top - 32f).coerceAtLeast(chartTop - 24f)
+                val circleFill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    color = android.graphics.Color.parseColor("#FAF8F3")
+                    style = android.graphics.Paint.Style.FILL
+                }
+                canvas.drawCircle(cx, cy, 22f, circleFill)
+                canvas.drawCircle(cx, cy, 22f, borderPaint)
+
+                val valStr = String.format(java.util.Locale.US, "%.1f", v).removeSuffix(".0")
+                val vw = valPaint.measureText(valStr)
+                if (bh > 52f) {
+                    canvas.drawText(valStr, cx - vw / 2f, top + 38f, valPaint)
+                }
+                labelPaint.color = inkColor
+                val cleanLbl = lbl.take(12)
+                val lw = labelPaint.measureText(cleanLbl)
+                canvas.drawText(cleanLbl, cx - lw / 2f, chartBottom + 48f, labelPaint)
             }
         }
         return bmp

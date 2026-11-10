@@ -17,8 +17,6 @@ app/build/
 .cxx
 local.properties
 .env
-debug.keystore
-debug.keystore.base64
 *.bak
 *.bak2
 *.bak*

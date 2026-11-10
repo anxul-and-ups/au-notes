@@ -82,7 +82,7 @@ class AppPreferences(context: Context) {
     )
     val folderOrder: StateFlow<List<String>> = _folderOrder.asStateFlow()
 
-    private val _useInbuiltApi = MutableStateFlow(prefs.getBoolean("use_inbuilt_api", true))
+    private val _useInbuiltApi = MutableStateFlow(prefs.getBoolean("use_inbuilt_api", false))
     val useInbuiltApi: StateFlow<Boolean> = _useInbuiltApi.asStateFlow()
 
     private val _userApiKey = MutableStateFlow(prefs.getString("user_api_key", "") ?: "")
@@ -248,8 +248,13 @@ class AppPreferences(context: Context) {
     }
 
     fun setUserApiKey(key: String) {
-        prefs.edit().putString("user_api_key", key).apply()
-        _userApiKey.value = key
+        val trimmed = key.trim()
+        val changed = _userApiKey.value.trim() != trimmed
+        prefs.edit().putString("user_api_key", trimmed).apply()
+        _userApiKey.value = trimmed
+        if (changed) {
+            setDetectedModels("Gemini", emptyList())
+        }
     }
 
     fun setSelectedModel(model: String) {
@@ -564,38 +569,15 @@ class AppPreferences(context: Context) {
         _themePanelLocked.value = value
     }
 
-    // Image Generation Model & API Key (Item G1)
-    private val _imageGenModel = MutableStateFlow(
-        prefs.getString("image_gen_model", "") ?: ""
-    )
-    val imageGenModel: StateFlow<String> = _imageGenModel.asStateFlow()
-
-    private val _imageGenApiKey = MutableStateFlow(prefs.getString("image_gen_api_key", "") ?: "")
-    val imageGenApiKey: StateFlow<String> = _imageGenApiKey.asStateFlow()
-
-    fun setImageGenModel(model: String) {
-        val m = model.trim()
-        _imageGenModel.value = m
-        prefs.edit().putString("image_gen_model", m).apply()
-    }
-
-    fun setImageGenApiKey(key: String) {
-        val k = key.trim()
-        _imageGenApiKey.value = k
-        prefs.edit().putString("image_gen_api_key", k).apply()
-    }
-
-    fun getEffectiveImageGenApiKey(): String {
-        val dedicated = _imageGenApiKey.value.trim()
-        if (dedicated.isNotBlank()) return dedicated
-        return getEffectiveApiKey()
+    // Dedicated Web Search Mode toggle (SEARCH ON / OFF)
+    private val _searchModeEnabled = MutableStateFlow(prefs.getBoolean("agent_search_mode", false))
+    val searchModeEnabled: StateFlow<Boolean> = _searchModeEnabled.asStateFlow()
+    fun setSearchModeEnabled(enabled: Boolean) {
+        _searchModeEnabled.value = enabled
+        prefs.edit().putBoolean("agent_search_mode", enabled).apply()
     }
 
     fun getEffectiveApiKey(): String {
-        return if (_useInbuiltApi.value) {
-            DEFAULT_API_KEY
-        } else {
-            _userApiKey.value.ifBlank { DEFAULT_API_KEY }
-        }
+        return _userApiKey.value.trim()
     }
 }

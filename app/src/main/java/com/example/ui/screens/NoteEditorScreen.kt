@@ -1386,6 +1386,121 @@ fun NoteEditorScreen(
                         Spacer(modifier = Modifier.height(14.dp))
                     }
 
+                    // Live Embedded Editorial Charts, Swipeable Typography Slides, Vector Diagrams & HTML inside Note Editor
+                    val embeddedVisualFences = remember(contentValue.text) {
+                        if (!contentValue.text.contains("```")) emptyList()
+                        else CodeFences.find(contentValue.text).filter {
+                            it.lang.trim().lowercase() in setOf(
+                                "slides", "typography_slides", "slide_deck",
+                                "chart", "graph", "diagram", "svg", "organised_file", "html"
+                            )
+                        }
+                    }
+                    if (embeddedVisualFences.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            embeddedVisualFences.forEach { vf ->
+                                val langLower = vf.lang.trim().lowercase()
+                                val slideDeck = remember(vf.code, langLower) {
+                                    if (langLower in setOf("slides", "typography_slides", "slide_deck")) {
+                                        com.example.ui.components.AgentVisualsParser.parseSlideDeck(vf.code)
+                                    } else null
+                                }
+                                val chartSpec = remember(vf.code, langLower) {
+                                    if (langLower in setOf("chart", "graph")) {
+                                        com.example.ui.components.AgentVisualsParser.parseChart(vf.code)
+                                    } else null
+                                }
+                                val diagramSpec = remember(vf.code, langLower) {
+                                    if (langLower in setOf("diagram", "svg")) {
+                                        com.example.ui.components.AgentVisualsParser.parseDiagram(vf.code)
+                                    } else null
+                                }
+                                val organisedSpec = remember(vf.code, langLower) {
+                                    if (langLower in setOf("organised_file", "file")) {
+                                        com.example.ui.components.AgentVisualsParser.parseOrganisedFile(vf.code)
+                                    } else null
+                                }
+                                val isLiveVisual = slideDeck != null || chartSpec != null || diagramSpec != null || organisedSpec != null || langLower == "html"
+                                if (isLiveVisual) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(if (isDarkMode) Color(0xFF141418) else Color(0xFFF3EFE6))
+                                            .border(1.dp, if (isDarkMode) Color(0xFF2D2D35) else Color(0xFFD6D3CB), RoundedCornerShape(14.dp))
+                                            .padding(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = when {
+                                                    slideDeck != null -> "LIVE INTERACTIVE SLIDES • ${slideDeck.slides.size} SLIDES"
+                                                    chartSpec != null -> "LIVE EDITORIAL CHART • ${chartSpec.type.uppercase()}"
+                                                    diagramSpec != null -> "LIVE VECTOR DIAGRAM"
+                                                    organisedSpec != null -> "ORGANISED FILE CARD"
+                                                    else -> "INTERACTIVE HTML CARD"
+                                                },
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                letterSpacing = 1.sp,
+                                                color = Color(0xFFEA580C)
+                                            )
+                                            IconButton(
+                                                onClick = {
+                                                    val raw = contentValue.text
+                                                    val s = vf.start.coerceIn(0, raw.length)
+                                                    val e = vf.end.coerceIn(s, raw.length)
+                                                    val updated = (raw.substring(0, s).trimEnd() + "\n\n" + raw.substring(e).trimStart()).trim()
+                                                    contentValue = TextFieldValue(updated, TextRange(updated.length))
+                                                },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "Remove embedded card",
+                                                    tint = Color.Red.copy(alpha = 0.8f),
+                                                    modifier = Modifier.size(15.dp)
+                                                )
+                                            }
+                                        }
+                                        when {
+                                            slideDeck != null -> com.example.ui.components.SlidesMakerCard(
+                                                initialDeck = slideDeck,
+                                                isDarkMode = isDarkMode
+                                            )
+                                            chartSpec != null -> com.example.ui.components.AgentChartCard(
+                                                spec = chartSpec,
+                                                isDarkMode = isDarkMode
+                                            )
+                                            diagramSpec != null -> com.example.ui.components.AgentDiagramCard(
+                                                spec = diagramSpec,
+                                                isDarkMode = isDarkMode
+                                            )
+                                            organisedSpec != null -> com.example.ui.components.OrganisedFileCard(
+                                                spec = organisedSpec,
+                                                isDarkMode = isDarkMode
+                                            )
+                                            langLower == "html" -> com.example.ui.components.HtmlArtifactCard(
+                                                title = vf.title.ifBlank { "Interactive HTML" },
+                                                htmlCode = vf.code,
+                                                isDarkMode = isDarkMode
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(14.dp))
+                    }
+
                     // Main Content Input (Day Mode text contrast fix & Auto-Scroll buffer)
                     Box(modifier = Modifier
                         .fillMaxWidth()
