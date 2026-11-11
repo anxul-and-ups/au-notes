@@ -11,8 +11,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import com.example.ui.theme.NeuDarkBg
 import com.example.ui.theme.NeuLightBg
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeSource
 
 /**
  * Editorial & Obsidian Canvas Background matching AiChatScreen aesthetic.
@@ -25,12 +23,7 @@ fun GlassBackground(
     content: @Composable () -> Unit
 ) {
     val baseBg = if (isDarkMode) NeuDarkBg else NeuLightBg
-
-    val bgModifier = if (hazeState != null && ENABLE_HAZE_BLUR) {
-        Modifier.fillMaxSize().hazeSource(state = hazeState)
-    } else {
-        Modifier.fillMaxSize()
-    }
+    val bgModifier = Modifier.fillMaxSize()
 
     Box(
         modifier = Modifier

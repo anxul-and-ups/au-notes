@@ -114,7 +114,7 @@ import com.example.data.preferences.AppPreferences
 import com.example.data.repository.NoteRepository
 import com.example.ui.components.ExportDialog
 import com.example.ui.components.GlassBackground
-import dev.chrisbanes.haze.HazeState
+import com.example.ui.components.HazeState
 import com.example.ui.components.HazeGlassCard
 import com.example.ui.components.NeuIconButton
 import com.example.ui.components.PinLockDialog

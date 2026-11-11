@@ -21,11 +21,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.HazeStyle
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeChild
-import dev.chrisbanes.haze.hazeSource
+
+/** Lightweight state holder (no external blur library overhead). */
+class HazeState
 
 const val ENABLE_HAZE_BLUR = false
 
@@ -86,20 +84,7 @@ fun HazeGlassCard(
                 } else Modifier
             )
             .clip(shape)
-            .then(
-                if (ENABLE_HAZE_BLUR) {
-                    Modifier.hazeChild(
-                        state = hazeState,
-                        style = HazeStyle(
-                            blurRadius = if (strong) 40.dp else 24.dp,
-                            tint = HazeTint(surfaceColor),
-                            noiseFactor = 0.05f
-                        )
-                    )
-                } else {
-                    Modifier.background(surfaceColor)
-                }
-            )
+            .background(surfaceColor)
             .border(borderWidth, borderColor, shape)
             .then(clickableModifier)
     ) {
@@ -114,9 +99,7 @@ fun HazeBackground(
     content: @Composable () -> Unit
 ) {
     Box(
-        modifier = modifier
-            .fillMaxSize()
-            .then(if (ENABLE_HAZE_BLUR) Modifier.hazeSource(state = hazeState) else Modifier)
+        modifier = modifier.fillMaxSize()
     ) {
         content()
     }

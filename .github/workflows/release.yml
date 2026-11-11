@@ -38,6 +38,12 @@ jobs:
 
       - name: Build Release APK
         run: |
+          if [ ! -f ".env.example" ] || grep -q "^GEMINI_API_KEY=\s*$" .env.example; then
+            echo "GEMINI_API_KEY=YOUR_API_KEY_HERE" > .env.example
+          fi
+          if [ ! -f ".env" ] || grep -q "^GEMINI_API_KEY=\s*$" .env; then
+            cp .env.example .env
+          fi
           if [ -f "./gradlew" ]; then
             chmod +x ./gradlew
             ./gradlew assembleRelease
