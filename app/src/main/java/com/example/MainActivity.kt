@@ -55,7 +55,6 @@ import com.example.ui.screens.ReadNoteScreen
 import com.example.ui.screens.RecycleBinScreen
 import com.example.ui.screens.SecurityAreaScreen
 import com.example.ui.screens.SettingsScreen
-import com.example.ui.screens.SplashScreen
 import com.example.ui.screens.StorageFileEditorScreen
 import com.example.ui.screens.TableEditorScreen
 import com.example.ui.screens.TempMailScreen
@@ -95,6 +94,8 @@ sealed class Screen {
 }
 
 class MainActivity : FragmentActivity() {
+    @Volatile private var appContentReady = false
+
     private val incomingShareUriState = mutableStateOf<android.net.Uri?>(null)
 
     private fun extractSharedUri(intent: android.content.Intent?): android.net.Uri? {
@@ -146,7 +147,12 @@ class MainActivity : FragmentActivity() {
         // launch so there is no 2-3s blank gap before the Compose splash appears.
         com.example.ui.util.CrashReporter.install(applicationContext)
         val lastCrash = com.example.ui.util.CrashReporter.consume(applicationContext)
-        installSplashScreen()
+        // ONE splash only: the system splash stays until the first real frame is drawn
+        // (hard cap 1.2s), then the app appears directly. The old second Compose splash is gone.
+        val splashStartMs = android.os.SystemClock.uptimeMillis()
+        installSplashScreen().setKeepOnScreenCondition {
+            !appContentReady && android.os.SystemClock.uptimeMillis() - splashStartMs < 1200L
+        }
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -179,6 +185,10 @@ class MainActivity : FragmentActivity() {
         val preferences = AppPreferences(applicationContext)
 
         setContent {
+            LaunchedEffect(Unit) {
+                androidx.compose.runtime.withFrameNanos { }
+                appContentReady = true
+            }
             var crashText by remember { mutableStateOf(lastCrash) }
             val crashToShow = crashText
             if (crashToShow != null) {
@@ -270,7 +280,7 @@ fun AuNotesApp(
     var workspaceIsDeepSearch by remember { mutableStateOf(false) }
     val folderScrollPositions = remember { androidx.compose.runtime.mutableStateMapOf<String, Pair<Int, Int>>() }
 
-    var currentScreen by remember { mutableStateOf<Screen>(Screen.Splash) }
+    var currentScreen by remember { mutableStateOf<Screen>(Screen.MainWorkspace()) }
     var screenBeforeRecycleBin by remember { mutableStateOf<Screen>(Screen.MainWorkspace()) }
     var isSidebarOpen by remember { mutableStateOf(false) }
     var pendingDeleteNoteId by remember { mutableStateOf<Long?>(null) }
@@ -445,12 +455,8 @@ fun AuNotesApp(
         ) { screen ->
         when (screen) {
             is Screen.Splash -> {
-                SplashScreen(
-                    isDarkMode = isDarkMode,
-                    onSplashFinished = {
-                        currentScreen = Screen.MainWorkspace(currentFolder)
-                    }
-                )
+                // Compose splash removed (it caused a double splash). Never shown; just go to the workspace.
+                LaunchedEffect(Unit) { currentScreen = Screen.MainWorkspace(currentFolder) }
             }
 
             is Screen.MainWorkspace -> {
