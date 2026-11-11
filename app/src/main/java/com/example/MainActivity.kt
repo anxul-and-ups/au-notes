@@ -545,11 +545,14 @@ fun AuNotesApp(
                         // PIN is only asked for permanent delete in the Recycle Bin
                         doDelete()
                     },
-                    onToggleLock = { noteId, isUnlocked ->
+                    onToggleLock = { noteId, targetLocked ->
                         coroutineScope.launch {
-                            val currentlyLocked = !isUnlocked
-                            repository.toggleLock(noteId, currentlyLocked)
-                            currentScreen = screen.copy(note = screen.note.copy(isLocked = !currentlyLocked))
+                            // NoteRepository.toggleLock(id, currentStatus) sets !currentStatus in Room DB
+                            repository.toggleLock(noteId, !targetLocked)
+                            val cur = currentScreen
+                            if (cur is Screen.ReadNote && cur.note.id == noteId) {
+                                currentScreen = cur.copy(note = cur.note.copy(isLocked = targetLocked))
+                            }
                         }
                     }
                 )

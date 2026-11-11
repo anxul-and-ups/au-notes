@@ -27,37 +27,21 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.CrimsonPrimary
-import com.example.ui.theme.NeuDarkBg
-import com.example.ui.theme.NeuDarkBorder
-import com.example.ui.theme.NeuDarkHighlightBorder
-import com.example.ui.theme.NeuDarkInset
-import com.example.ui.theme.NeuDarkShadow
-import com.example.ui.theme.NeuDarkSurface
-import com.example.ui.theme.NeuDarkSurfaceDark
-import com.example.ui.theme.NeuDarkSurfaceLight
-import com.example.ui.theme.NeuLightBg
-import com.example.ui.theme.NeuLightBorder
-import com.example.ui.theme.NeuLightHighlightBorder
-import com.example.ui.theme.NeuLightInset
-import com.example.ui.theme.NeuLightShadow
-import com.example.ui.theme.NeuLightSurface
-import com.example.ui.theme.NeuLightSurfaceDark
-import com.example.ui.theme.NeuLightSurfaceLight
 
 /**
- * Neumorphic Card Component (replaces GlassCard).
- * Emulates tactile physical extrusions (convex) or debossed wells (concave/inset)
- * matching the surrounding background material.
+ * Unified Editorial Card Component matching AiChatScreen's sleek surface & 1.dp border style.
+ * Supports Day Mode (#FFFFFF card / #EFECE4 inset / #D6D3CB border) and
+ * Dark Mode (#17171B card / #202026 inset / #2C2C34 border).
  */
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(20.dp),
+    shape: Shape = RoundedCornerShape(18.dp),
     isDarkMode: Boolean = true,
     borderWidth: Dp = 1.dp,
     strong: Boolean = false,
     isInset: Boolean = false,
-    elevation: Dp = 6.dp,
+    elevation: Dp = 2.dp,
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit
@@ -65,114 +49,30 @@ fun GlassCard(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
-    // Smooth press feedback: tactile dip when pressed
     val currentElevation by animateDpAsState(
-        targetValue = if (isInset || (onClick != null && isPressed)) 1.dp else elevation,
-        animationSpec = tween(150),
-        label = "neu_card_elevation"
+        targetValue = if (isInset || (onClick != null && isPressed)) 0.dp else elevation.coerceAtMost(4.dp),
+        animationSpec = tween(140),
+        label = "card_elevation"
     )
 
-    // Neumorphic Dual Shadow Colors
-    val shadowSpotColor = if (isDarkMode) NeuDarkShadow else NeuLightShadow
-    val shadowAmbientColor = if (isDarkMode) NeuDarkShadow.copy(alpha = 0.5f) else NeuLightShadow.copy(alpha = 0.4f)
-
-    // Surface convex vs concave fill gradient
-    val surfaceBrush = if (isDarkMode) {
-        if (isInset || (onClick != null && isPressed)) {
-            // Concave / Debossed (darker on top-left, slightly lighter bottom-right)
-            Brush.linearGradient(
-                colors = listOf(
-                    NeuDarkInset,
-                    NeuDarkSurfaceDark,
-                    NeuDarkSurface
-                )
-            )
-        } else if (strong) {
-            // Strong modal / dialog card
-            Brush.linearGradient(
-                colors = listOf(
-                    Color(0xFF2A303D),
-                    NeuDarkSurface,
-                    Color(0xFF191B22)
-                )
-            )
-        } else {
-            // Convex / Extruded (lighter on top-left where light strikes, darker on bottom-right)
-            Brush.linearGradient(
-                colors = listOf(
-                    NeuDarkSurfaceLight,
-                    NeuDarkSurface,
-                    NeuDarkSurfaceDark
-                )
-            )
+    val surfaceColor = if (isDarkMode) {
+        when {
+            isInset || (onClick != null && isPressed) -> Color(0xFF202026)
+            strong -> Color(0xFF1B1B20)
+            else -> Color(0xFF17171B)
         }
     } else {
-        if (isInset || (onClick != null && isPressed)) {
-            // Concave / Debossed
-            Brush.linearGradient(
-                colors = listOf(
-                    NeuLightInset,
-                    NeuLightSurfaceDark,
-                    NeuLightSurface
-                )
-            )
-        } else if (strong) {
-            Brush.linearGradient(
-                colors = listOf(
-                    Color(0xFFFFFFFF),
-                    NeuLightSurfaceLight,
-                    NeuLightSurface
-                )
-            )
-        } else {
-            // Convex / Extruded
-            Brush.linearGradient(
-                colors = listOf(
-                    NeuLightSurfaceLight,
-                    NeuLightSurface,
-                    NeuLightSurfaceDark
-                )
-            )
+        when {
+            isInset || (onClick != null && isPressed) -> Color(0xFFEFECE4)
+            strong -> Color(0xFFFFFFFF)
+            else -> Color(0xFFFFFFFF)
         }
     }
 
-    // Beveled Border: Top-Left specular highlight, Bottom-Right ambient shadow rim
-    val borderBrush = if (isDarkMode) {
-        if (isInset || (onClick != null && isPressed)) {
-            Brush.linearGradient(
-                colors = listOf(
-                    NeuDarkBorder,
-                    Color(0x1A000000),
-                    NeuDarkHighlightBorder.copy(alpha = 0.15f)
-                )
-            )
-        } else {
-            Brush.linearGradient(
-                colors = listOf(
-                    NeuDarkHighlightBorder,
-                    Color(0x1FFFFFFF),
-                    NeuDarkBorder
-                )
-            )
-        }
+    val borderColor = if (isDarkMode) {
+        if (isInset) Color(0xFF282830) else Color(0xFF2A2A32)
     } else {
-        if (isInset || (onClick != null && isPressed)) {
-            Brush.linearGradient(
-                colors = listOf(
-                    NeuLightBorder,
-                    Color(0x14000000),
-                    NeuLightHighlightBorder
-                )
-            )
-        } else {
-            Brush.linearGradient(
-                colors = listOf(
-                    NeuLightHighlightBorder,
-                    Color(0x66FFFFFF),
-                    NeuLightBorder
-                )
-            )
-        }
+        if (isInset) Color(0xFFD6D3CB) else Color(0xFFE2DFD7)
     }
 
     val clickableModifier = if (onClick != null) {
@@ -187,16 +87,20 @@ fun GlassCard(
 
     Box(
         modifier = modifier
-            .shadow(
-                elevation = currentElevation,
-                shape = shape,
-                clip = false,
-                ambientColor = shadowAmbientColor,
-                spotColor = shadowSpotColor
+            .then(
+                if (!isDarkMode && currentElevation > 0.dp) {
+                    Modifier.shadow(
+                        elevation = currentElevation,
+                        shape = shape,
+                        clip = false,
+                        ambientColor = Color(0x1418181B),
+                        spotColor = Color(0x1A18181B)
+                    )
+                } else Modifier
             )
             .clip(shape)
-            .background(surfaceBrush)
-            .border(borderWidth, borderBrush, shape)
+            .background(surfaceColor)
+            .border(borderWidth, borderColor, shape)
             .then(clickableModifier)
     ) {
         content()
@@ -204,38 +108,36 @@ fun GlassCard(
 }
 
 /**
- * Tactile Neumorphic Circular Icon Button with dual shadow and spring press feedback.
+ * Sleek Circular Icon Button matching AiChatScreen's header buttons (#232329 dark / #EEECE6 day with 1.dp border).
  */
 @Composable
 fun NeuIconButton(
     icon: ImageVector,
     contentDescription: String?,
     isDarkMode: Boolean = true,
-    size: Dp = 42.dp,
-    iconSize: Dp = 20.dp,
+    size: Dp = 40.dp,
+    iconSize: Dp = 19.dp,
     tint: Color = CrimsonPrimary,
     shape: Shape = CircleShape,
     onClick: () -> Unit
 ) {
-    GlassCard(
-        modifier = Modifier.size(size),
-        shape = shape,
-        isDarkMode = isDarkMode,
-        elevation = 5.dp,
-        borderWidth = 1.dp,
-        onClick = onClick
+    val btnBg = if (isDarkMode) Color(0xFF232329) else Color(0xFFEFECE4)
+    val btnBorder = if (isDarkMode) Color(0xFF2E2E36) else Color(0xFFD6D3CB)
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(shape)
+            .background(btnBg)
+            .border(1.dp, btnBorder, shape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier.matchParentSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                tint = tint,
-                modifier = Modifier.size(iconSize)
-            )
-        }
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(iconSize)
+        )
     }
 }
 
@@ -244,30 +146,28 @@ fun NeuIconButton(
     painter: androidx.compose.ui.graphics.painter.Painter,
     contentDescription: String?,
     isDarkMode: Boolean = true,
-    size: Dp = 42.dp,
-    iconSize: Dp = 20.dp,
+    size: Dp = 40.dp,
+    iconSize: Dp = 19.dp,
     tint: Color = CrimsonPrimary,
     shape: Shape = CircleShape,
     onClick: () -> Unit
 ) {
-    GlassCard(
-        modifier = Modifier.size(size),
-        shape = shape,
-        isDarkMode = isDarkMode,
-        elevation = 5.dp,
-        borderWidth = 1.dp,
-        onClick = onClick
+    val btnBg = if (isDarkMode) Color(0xFF232329) else Color(0xFFEFECE4)
+    val btnBorder = if (isDarkMode) Color(0xFF2E2E36) else Color(0xFFD6D3CB)
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(shape)
+            .background(btnBg)
+            .border(1.dp, btnBorder, shape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier.matchParentSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                painter = painter,
-                contentDescription = contentDescription,
-                tint = tint,
-                modifier = Modifier.size(iconSize)
-            )
-        }
+        Icon(
+            painter = painter,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(iconSize)
+        )
     }
 }

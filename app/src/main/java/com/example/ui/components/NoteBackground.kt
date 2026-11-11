@@ -7,12 +7,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 
-/** Writing / reading background: a plain deep-dark surface in dark mode (no theme tints or glow), the normal one in day mode. */
+/** Writing / reading background matching AiChatScreen: #0E0E10 in Dark Mode, #FAF8F5 in Day Mode. */
 @Composable
 fun NoteBackground(isDarkMode: Boolean, content: @Composable () -> Unit) {
-    if (isDarkMode) {
-        Box(Modifier.fillMaxSize().background(Color(0xFF06070A))) { content() }
-    } else {
-        GlassBackground(isDarkMode = false) { content() }
+    val bg = if (isDarkMode) Color(0xFF0E0E10) else Color(0xFFFAF8F5)
+    Box(Modifier.fillMaxSize().background(bg)) {
+        val hasPhoto = LocalAppBackdrop.current.image != null
+        if (hasPhoto) {
+            BackdropImage(isDarkMode = isDarkMode, modifier = Modifier.fillMaxSize())
+        }
+        content()
     }
 }

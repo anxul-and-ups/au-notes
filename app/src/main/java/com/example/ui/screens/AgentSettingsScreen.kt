@@ -1,48 +1,43 @@
 package com.example.ui.screens
 
-import android.Manifest
-import android.app.AlarmManager
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.os.Build
-import android.provider.Settings
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
@@ -55,35 +50,32 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.ai.VoiceAssistantManager
+import com.example.data.live.GeminiLiveClient
 import com.example.data.preferences.AppPreferences
-import com.example.ui.components.GlassBackground
-import com.example.ui.components.GlassCard
+import com.example.ui.components.ORB_SWATCHES
+import com.example.ui.components.ORB_THEMES
 import com.example.ui.components.OrbView
+import com.example.ui.components.getOrbBackgroundBrush
 import com.example.ui.theme.CrimsonPrimary
+import kotlinx.coroutines.delay
 
-/**
- * "Phone Control and AGENT Settings": what AU Agent is allowed to do on the phone (every switch here is
- * read by the real tools), the voice adjuster (applied to the real TTS engine), the orb look and the AI memory.
- */
 @Composable
 fun AgentSettingsScreen(
     preferences: AppPreferences,
@@ -91,421 +83,653 @@ fun AgentSettingsScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    BackHandler { onBack() }
+    val fg = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B)
+    val sub = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF636366)
+    val pageBg = if (isDarkMode) Color(0xFF0E0E10) else Color(0xFFFAF8F5)
+    val cardBg = if (isDarkMode) Color(0xFF17171B) else Color(0xFFFFFFFF)
+    val cardBorder = if (isDarkMode) Color(0xFF2C2C34) else Color(0xFFD6D3CB)
+    val pillBg = if (isDarkMode) Color(0xFF232329) else Color(0xFFEFECE4)
+    val warmAccent = Color(0xFFD97757)
 
-    val fg = if (isDarkMode) Color.White else Color(0xFF111111)
-    val sub = if (isDarkMode) Color.White.copy(alpha = 0.65f) else Color(0xFF555555)
-    val accent = Color(0xFF38BDF8)
-
-    val voiceSpeed by preferences.voiceSpeed.collectAsState()
-    val voicePitch by preferences.voicePitch.collectAsState()
-    val voiceVolume by preferences.voiceVolume.collectAsState()
+    val speed by preferences.voiceSpeed.collectAsState()
+    val pitch by preferences.voicePitch.collectAsState()
+    val volume by preferences.voiceVolume.collectAsState()
     val voiceName by preferences.voiceName.collectAsState()
-    val liveEnabled by preferences.liveVoiceEnabled.collectAsState()
-    val liveVoice by preferences.liveVoiceName.collectAsState()
-    val liveModel by preferences.liveModel.collectAsState()
+
     val orbEnabled by preferences.orbEnabled.collectAsState()
     val orbTheme by preferences.orbTheme.collectAsState()
     val orbColor by preferences.orbColor.collectAsState()
     val orbIntensity by preferences.orbIntensity.collectAsState()
-    val memoryEnabled by preferences.memoryEnabled.collectAsState()
-    val memory by preferences.agentMemory.collectAsState()
-    val agentUserName by preferences.agentUserName.collectAsState()
+
+    val liveEnabled by preferences.liveVoiceEnabled.collectAsState()
+    val liveVoice by preferences.liveVoiceName.collectAsState()
+    val liveModel by preferences.liveModel.collectAsState()
+    val detectedModelsMap by preferences.detectedModels.collectAsState()
+    val selectedModel by preferences.selectedModel.collectAsState()
     val noteReaderVoiceMode by preferences.noteReaderVoiceMode.collectAsState()
 
-    var showEditNameDialog by remember { mutableStateOf(false) }
-    var nameDraft by remember(agentUserName) { mutableStateOf(agentUserName) }
+    val memoryEnabled by preferences.memoryEnabled.collectAsState()
+    val memories by preferences.agentMemory.collectAsState()
+    var newFact by remember { mutableStateOf("") }
 
-    // a private engine just for the voice adjuster (so "Test voice" speaks with the real settings)
-    val voiceEngine = remember { VoiceAssistantManager(context) { } }
+    val voiceEngine = remember {
+        VoiceAssistantManager(
+            context = context,
+            onUserSpeechResult = {}
+        )
+    }
+    val availableVoices = remember { mutableStateListOf<Pair<String, String>>() }
+    LaunchedEffect(Unit) {
+        repeat(6) {
+            val list = voiceEngine.availableVoices()
+            if (list.isNotEmpty()) {
+                availableVoices.clear()
+                availableVoices.addAll(list)
+                return@LaunchedEffect
+            }
+            delay(400)
+        }
+    }
     DisposableEffect(Unit) { onDispose { voiceEngine.release() } }
-    var voiceList by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
-    var showVoicePicker by remember { mutableStateOf(false) }
 
-    @Composable
-    fun SectionTitle(text: String) {
-        Text(text, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = accent, letterSpacing = 1.sp,
-            modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
-    }
-
-    @Composable
-    fun SliderRow(label: String, value: Float, range: ClosedFloatingPointRange<Float>, display: String, onChange: (Float) -> Unit) {
-        Column(Modifier.padding(vertical = 4.dp)) {
-            Row(Modifier.fillMaxWidth()) {
-                Text(label, fontSize = 13.sp, color = sub, modifier = Modifier.weight(1f))
-                Text(display, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = fg)
-            }
-            Slider(
-                value = value, onValueChange = onChange, valueRange = range,
-                colors = SliderDefaults.colors(thumbColor = CrimsonPrimary, activeTrackColor = CrimsonPrimary)
-            )
-        }
-    }
-
-    @Composable
-    fun SwitchRow(title: String, desc: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg)
-                Text(desc, fontSize = 12.sp, color = sub)
-            }
-            Switch(checked = checked, onCheckedChange = onChange, colors = SwitchDefaults.colors(checkedTrackColor = CrimsonPrimary))
-        }
-    }
-
-    GlassBackground(isDarkMode = isDarkMode) {
-        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = fg) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(pageBg)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            // Top Header matching AiChatScreen
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(pillBg)
+                        .border(1.dp, cardBorder, CircleShape)
+                        .clickable { onBack() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = fg,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
                 Column {
-                    Text("AGENT Settings", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = fg)
-                    Text("Voice • Orb • AI memory (AU Agent works only inside AU Notes)", fontSize = 11.sp, color = sub)
+                    Text(
+                        text = "AGENT Settings",
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = fg
+                    )
+                    Text(
+                        text = "Voice adjuster, Orb visual & AI memory",
+                        fontSize = 11.5.sp,
+                        color = sub
+                    )
                 }
             }
 
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+            Spacer(Modifier.height(18.dp))
 
-                SectionTitle("PERSONALIZATION")
-                GlassCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    isDarkMode = isDarkMode,
-                    elevation = 2.dp,
-                    onClick = {
-                        nameDraft = agentUserName
-                        showEditNameDialog = true
-                    }
+            // -------- 1. 3D VOICE ORB --------
+            SectionHeader("3D VOICE ORB", warmAccent)
+            EditorialSectionCard(cardBg = cardBg, cardBorder = cardBorder) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Show 3D particle orb in Voice Mode", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = fg)
+                        Text("Animates with your mic and AU Agent's voice", fontSize = 11.sp, color = sub)
+                    }
+                    Switch(
+                        checked = orbEnabled,
+                        onCheckedChange = { preferences.setOrbEnabled(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = warmAccent)
+                    )
+                }
+
+                if (orbEnabled) {
+                    Spacer(Modifier.height(12.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(190.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(getOrbBackgroundBrush(orbTheme, orbColor))
+                            .border(1.dp, cardBorder, RoundedCornerShape(16.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        OrbView(
+                            state = "speaking",
+                            level = { 0.45f },
+                            theme = orbTheme,
+                            customColor = orbColor,
+                            intensity = orbIntensity,
+                            modifier = Modifier.size(175.dp)
+                        )
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Text("Orb Theme", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg)
+                    Spacer(Modifier.height(6.dp))
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ORB_THEMES.forEach { (id, label) ->
+                            val sel = orbTheme == id && orbColor.isBlank()
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (sel) warmAccent else pillBg)
+                                    .border(1.dp, if (sel) warmAccent else cardBorder, RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        preferences.setOrbColor("")
+                                        preferences.setOrbTheme(id)
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                            ) {
+                                Text(
+                                    label,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (sel) Color.White else fg
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Text("Custom Color (overrides theme)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg)
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("What should agent call you?", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg)
-                            Text("Used in chat greetings & voice conversations", fontSize = 11.5.sp, color = sub)
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = agentUserName.ifBlank { "Set name" },
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = CrimsonPrimary
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Icon(Icons.Default.Edit, contentDescription = "Edit Name", tint = CrimsonPrimary, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                }
-
-                SectionTitle("NOTE READER (READ MODE SPEAK)")
-                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
-                    Column(Modifier.padding(14.dp)) {
-                        // 1. Native Voice
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { preferences.setNoteReaderVoiceMode("native") }
-                                .padding(vertical = 8.dp, horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = noteReaderVoiceMode == "native",
-                                onClick = { preferences.setNoteReaderVoiceMode("native") },
-                                colors = RadioButtonDefaults.colors(selectedColor = CrimsonPrimary)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text("Native Voice", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg)
-                                Text(
-                                    "Unlimited offline playback • Does not use any API quota",
-                                    fontSize = 11.5.sp,
-                                    color = fg.copy(alpha = 0.45f)
-                                )
-                            }
-                        }
-
-                        // 2. AI Voice (Default)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { preferences.setNoteReaderVoiceMode("ai") }
-                                .padding(vertical = 8.dp, horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = noteReaderVoiceMode == "ai",
-                                onClick = { preferences.setNoteReaderVoiceMode("ai") },
-                                colors = RadioButtonDefaults.colors(selectedColor = CrimsonPrimary)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Column(Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("AI Voice", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(
-                                        "DEFAULT",
-                                        fontSize = 9.5.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = CrimsonPrimary,
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(6.dp))
-                                            .background(CrimsonPrimary.copy(alpha = 0.14f))
-                                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                                Text(
-                                    "Uses your Gemini API quota / rate limit for natural AI speech (auto-falls back to Native Voice when offline)",
-                                    fontSize = 11.5.sp,
-                                    color = fg.copy(alpha = 0.45f)
-                                )
+                        ORB_SWATCHES.forEach { hex ->
+                            val c = remember(hex) { Color(android.graphics.Color.parseColor(hex)) }
+                            val sel = orbColor.equals(hex, ignoreCase = true)
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(c)
+                                    .border(if (sel) 2.5.dp else 1.dp, if (sel) fg else cardBorder, CircleShape)
+                                    .clickable { preferences.setOrbColor(if (sel) "" else hex) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (sel) Icon(Icons.Default.Check, null, tint = Color.Black, modifier = Modifier.size(16.dp))
                             }
                         }
                     }
-                }
 
-                SectionTitle("REALISTIC LIVE VOICE (GEMINI)")
-                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
-                    Column(Modifier.padding(14.dp)) {
-                        SwitchRow(
-                            "Natural human-like voice",
-                            "Talks with Gemini Live (real-time speech, you can interrupt it, it can run note and phone tools). Needs a Gemini API key in API Room and internet. If it fails, the normal voice below is used.",
-                            liveEnabled
-                        ) { preferences.setLiveVoiceEnabled(it) }
-                        if (liveEnabled) {
-                            Text("Voice", fontSize = 13.sp, color = sub, modifier = Modifier.padding(top = 8.dp))
-                            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                com.example.data.live.GeminiLiveClient.VOICES.forEach { (id, label) ->
-                                    val on = liveVoice == id
-                                    Text(
-                                        label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                                        color = if (on) Color.White else fg,
-                                        modifier = Modifier.clip(RoundedCornerShape(10.dp))
-                                            .background(if (on) CrimsonPrimary else fg.copy(alpha = 0.08f))
-                                            .clickable { preferences.setLiveVoiceName(id) }
-                                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                                    )
-                                }
-                            }
-                            Text("Live model", fontSize = 13.sp, color = sub, modifier = Modifier.padding(top = 10.dp))
-                            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                listOf(
-                                    com.example.data.live.GeminiLiveClient.MODEL_FLASH_LIVE to "3.1 Flash Live",
-                                    com.example.data.live.GeminiLiveClient.MODEL_LIVE_38 to "3.8 Live"
-                                ).forEach { (id, label) ->
-                                    val on = liveModel == id
-                                    Text(
-                                        label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                                        color = if (on) Color.White else fg,
-                                        modifier = Modifier.clip(RoundedCornerShape(10.dp))
-                                            .background(if (on) CrimsonPrimary else fg.copy(alpha = 0.08f))
-                                            .clickable { preferences.setLiveModel(id) }
-                                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                                    )
-                                }
-                            }
-                        }
+                    Spacer(Modifier.height(10.dp))
+                    LabeledSlider(
+                        label = "Glow & Motion Intensity",
+                        valueText = "${(orbIntensity * 100).toInt()}%",
+                        value = orbIntensity,
+                        range = 0.5f..1.8f,
+                        fg = fg,
+                        accent = warmAccent,
+                        onChange = { preferences.setOrbIntensity(it) }
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            // -------- 2. REALISTIC GEMINI LIVE VOICE --------
+            SectionHeader("GEMINI LIVE VOICE", warmAccent)
+            EditorialSectionCard(cardBg = cardBg, cardBorder = cardBorder) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Realistic two-way Gemini Live audio", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = fg)
+                        Text("Streams real-time speech with your Gemini API key; falls back to Normal Voice if unavailable", fontSize = 11.sp, color = sub)
                     }
+                    Switch(
+                        checked = liveEnabled,
+                        onCheckedChange = { preferences.setLiveVoiceEnabled(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = warmAccent)
+                    )
                 }
 
-                SectionTitle("VOICE ADJUSTER (NORMAL VOICE)")
-                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
-                    Column(Modifier.padding(14.dp)) {
-                        Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(accent.copy(alpha = 0.12f))
-                                .clickable { voiceList = voiceEngine.availableVoices(); showVoicePicker = true }.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Voice", fontSize = 12.sp, color = sub)
-                                Text(
-                                    if (voiceName.isBlank()) "Automatic (male voice - Puck style)" else voiceName,
-                                    fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg, maxLines = 1
-                                )
-                            }
-                            Text("Change", color = accent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        SliderRow("Speech speed", voiceSpeed, 0.5f..1.6f, "%.2fx".format(voiceSpeed)) { preferences.setVoiceSpeed(it) }
-                        SliderRow("Pitch", voicePitch, 0.6f..1.6f, "%.2f".format(voicePitch)) { preferences.setVoicePitch(it) }
-                        SliderRow("Volume", voiceVolume, 0f..1f, "${(voiceVolume * 100).toInt()}%") { preferences.setVoiceVolume(it) }
+                if (liveEnabled) {
+                    val geminiDetected = detectedModelsMap["Gemini"].orEmpty()
+                    val candidateLiveModels = remember(geminiDetected, selectedModel, liveModel) {
+                        val list = mutableListOf<String>()
+                        geminiDetected.filter { it.contains("live", ignoreCase = true) || it.contains("flash", ignoreCase = true) }
+                            .forEach { list.add(it.removePrefix("models/")) }
+                        if (selectedModel.isNotBlank()) list.add(selectedModel.removePrefix("models/"))
+                        if (liveModel.isNotBlank()) list.add(liveModel.removePrefix("models/"))
+                        list.distinct()
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+                    Text("Live Model (from API Room)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg)
+                    Spacer(Modifier.height(6.dp))
+                    if (candidateLiveModels.isEmpty()) {
                         Text(
-                            "Test voice", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White,
-                            modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(CrimsonPrimary).clickable {
-                                voiceEngine.applyVoiceSettings(voiceSpeed, voicePitch, voiceVolume, voiceName)
-                                voiceEngine.speak("Hello! This is how I will sound with your current voice settings.")
-                            }.padding(horizontal = 16.dp, vertical = 9.dp)
+                            text = "No models detected yet. Open API Room and tap Model Detector to load models from your API key.",
+                            fontSize = 11.5.sp,
+                            color = sub
+                        )
+                    } else {
+                        val effectiveLive = liveModel.removePrefix("models/").ifBlank { candidateLiveModels.first() }
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            candidateLiveModels.forEach { m ->
+                                val sel = effectiveLive.equals(m, ignoreCase = true)
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(if (sel) warmAccent else pillBg)
+                                        .border(1.dp, if (sel) warmAccent else cardBorder, RoundedCornerShape(10.dp))
+                                        .clickable { preferences.setLiveModel(m) }
+                                        .padding(horizontal = 12.dp, vertical = 7.dp)
+                                ) {
+                                    Text(m, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (sel) Color.White else fg)
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+                    Text("Live Voice Character", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg)
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        GeminiLiveClient.VOICES.forEach { (id, label) ->
+                            val sel = liveVoice == id
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (sel) warmAccent else pillBg)
+                                    .border(1.dp, if (sel) warmAccent else cardBorder, RoundedCornerShape(10.dp))
+                                    .clickable { preferences.setLiveVoiceName(id) }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                            ) {
+                                Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (sel) Color.White else fg)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            // -------- 2B. NOTE READER VOICE MODE --------
+            SectionHeader("NOTE READER (READ ALOUD) VOICE", warmAccent)
+            EditorialSectionCard(cardBg = cardBg, cardBorder = cardBorder) {
+                Text(
+                    "Choose how notes are read aloud when you tap the speaker icon in Note Viewer:",
+                    fontSize = 11.5.sp,
+                    color = sub
+                )
+                Spacer(Modifier.height(10.dp))
+
+                val readerModes = listOf(
+                    Triple(
+                        "ai",
+                        "Realistic AI Voice (Selected Character: $liveVoice)",
+                        "Natural expressive Gemini AI speech • Uses API quota (auto-falls back to Native if quota is full)"
+                    ),
+                    Triple(
+                        "native",
+                        "Native System Voice (Offline TTS)",
+                        "Fast & unlimited offline reading • Zero API quota usage • Uses Voice Adjuster settings below"
+                    )
+                )
+
+                readerModes.forEach { (modeKey, modeTitle, modeSub) ->
+                    val selected = noteReaderVoiceMode == modeKey
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (selected) warmAccent.copy(alpha = 0.14f) else Color.Transparent)
+                            .border(
+                                width = 1.dp,
+                                color = if (selected) warmAccent else cardBorder,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .clickable { preferences.setNoteReaderVoiceMode(modeKey) }
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selected,
+                            onClick = { preferences.setNoteReaderVoiceMode(modeKey) },
+                            colors = RadioButtonDefaults.colors(selectedColor = warmAccent)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(modeTitle, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = fg)
+                            Text(modeSub, fontSize = 11.sp, color = sub)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            // -------- 3. NORMAL TTS VOICE ADJUSTER (WITH RESET BUTTON) --------
+            SectionHeader("VOICE ADJUSTER (NORMAL VOICE)", warmAccent)
+            EditorialSectionCard(cardBg = cardBg, cardBorder = cardBorder) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Fine-tune speed, pitch, volume & voice",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = sub,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            preferences.resetVoiceSettings()
+                            voiceEngine.applyVoiceSettings(1.0f, 1.0f, 1.0f, "")
+                            Toast.makeText(context, "Voice reset to normal", Toast.LENGTH_SHORT).show()
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Reset Voice",
+                            tint = warmAccent,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "Reset",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = warmAccent
                         )
                     }
                 }
 
-                SectionTitle("ORB STYLE")
-                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
-                    Column(Modifier.padding(14.dp)) {
-                        SwitchRow("Show the orb in voice mode", "Off = simple sound-wave bars instead.", orbEnabled) { preferences.setOrbEnabled(it) }
-                        if (orbEnabled) {
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(210.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(com.example.ui.components.getOrbBackgroundBrush(orbTheme, orbColor))
-                            ) {
-                                // preview: gentle demo motion so you can see the style (live voice uses real audio)
-                                val t = remember { mutableStateOf(0f) }
-                                androidx.compose.runtime.LaunchedEffect(Unit) {
-                                    while (true) { kotlinx.coroutines.delay(60); t.value += 0.12f }
-                                }
-                                OrbView(
-                                    state = "listening",
-                                    level = { (0.45f + 0.35f * kotlin.math.sin(t.value)).coerceIn(0f, 1f) },
-                                    theme = orbTheme, customColor = orbColor, intensity = orbIntensity,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
-                            Text("Preview (demo motion — in voice mode it follows your real voice & theme)", fontSize = 10.sp, color = sub, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
-                            Text("Theme", fontSize = 13.sp, color = sub)
-                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                listOf("dark" to "Dark", "light" to "Light", "red" to "Red", "sunset" to "Sunset").forEach { (id, label) ->
-                                    val on = orbTheme == id && orbColor.isBlank()
-                                    Text(
-                                        label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                                        color = if (on) Color.White else fg,
-                                        modifier = Modifier.clip(RoundedCornerShape(10.dp))
-                                            .background(if (on) CrimsonPrimary else fg.copy(alpha = 0.08f))
-                                            .clickable { preferences.setOrbTheme(id); preferences.setOrbColor("") }
-                                            .padding(horizontal = 14.dp, vertical = 8.dp)
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(10.dp))
-                            Text("Custom colour (overrides theme background & orb)", fontSize = 13.sp, color = sub)
-                            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                listOf("#2F6BFF", "#8B5CF6", "#EC4899", "#EF4444", "#F59E0B", "#22C55E", "#06B6D4", "#FFFFFF").forEach { hex ->
-                                    val on = orbColor.equals(hex, ignoreCase = true)
-                                    Box(
-                                        Modifier.size(36.dp).clip(CircleShape).background(Color(android.graphics.Color.parseColor(hex)))
-                                            .border(if (on) 3.dp else 1.dp, if (on) CrimsonPrimary else Color.Gray.copy(alpha = 0.4f), CircleShape)
-                                            .clickable {
-                                                if (on) preferences.setOrbColor("") else preferences.setOrbColor(hex)
-                                            },
-                                        contentAlignment = Alignment.Center
-                                    ) { if (on) Icon(Icons.Default.Check, null, tint = if (hex == "#FFFFFF") Color.Black else Color.White, modifier = Modifier.size(16.dp)) }
-                                }
-                            }
-                            Spacer(Modifier.height(8.dp))
-                            SliderRow("Animation intensity", orbIntensity, 0.4f..1.8f, "%.1fx".format(orbIntensity)) { preferences.setOrbIntensity(it) }
-                        }
+                Spacer(Modifier.height(8.dp))
+
+                LabeledSlider(
+                    label = "Speed",
+                    valueText = String.format("%.2fx", speed),
+                    value = speed,
+                    range = 0.5f..1.8f,
+                    fg = fg,
+                    accent = warmAccent,
+                    onChange = {
+                        preferences.setVoiceSpeed(it)
+                        voiceEngine.applyVoiceSettings(it, pitch, volume, voiceName)
+                    }
+                )
+                LabeledSlider(
+                    label = "Pitch",
+                    valueText = String.format("%.2f", pitch),
+                    value = pitch,
+                    range = 0.6f..1.6f,
+                    fg = fg,
+                    accent = warmAccent,
+                    onChange = {
+                        preferences.setVoicePitch(it)
+                        voiceEngine.applyVoiceSettings(speed, it, volume, voiceName)
+                    }
+                )
+                LabeledSlider(
+                    label = "Volume",
+                    valueText = "${(volume * 100).toInt()}%",
+                    value = volume,
+                    range = 0.1f..1.0f,
+                    fg = fg,
+                    accent = warmAccent,
+                    onChange = {
+                        preferences.setVoiceVolume(it)
+                        voiceEngine.applyVoiceSettings(speed, pitch, it, voiceName)
+                    }
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            voiceEngine.applyVoiceSettings(speed, pitch, volume, voiceName)
+                            voiceEngine.speak("Hello, I am your AU Notes voice assistant. How does this sound?")
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = warmAccent),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.VolumeUp, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Test Voice", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            preferences.resetVoiceSettings()
+                            voiceEngine.applyVoiceSettings(1.0f, 1.0f, 1.0f, "")
+                            Toast.makeText(context, "Voice reset to normal", Toast.LENGTH_SHORT).show()
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Refresh, null, tint = fg, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Reset Voice", color = fg, fontWeight = FontWeight.Bold)
                     }
                 }
 
-                SectionTitle("AI MEMORY")
-                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), isDarkMode = isDarkMode, elevation = 2.dp) {
-                    Column(Modifier.padding(14.dp)) {
-                        SwitchRow(
-                            "Let AU Agent remember things",
-                            "Facts you ask it to remember (\"remember that my name is...\") are stored only on this phone, separate from your notes.",
-                            memoryEnabled
-                        ) { preferences.setMemoryEnabled(it) }
-                        if (memory.isEmpty()) {
-                            Text("Nothing remembered yet.", fontSize = 12.sp, color = sub, modifier = Modifier.padding(top = 6.dp))
-                        } else {
-                            memory.forEach { fact ->
-                                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text("• $fact", fontSize = 13.sp, color = fg, modifier = Modifier.weight(1f))
-                                    IconButton(onClick = { preferences.removeAgentMemory(fact) }, modifier = Modifier.size(32.dp)) {
-                                        Icon(Icons.Default.Delete, "Forget", tint = Color(0xFFEF4444), modifier = Modifier.size(18.dp))
+                if (availableVoices.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider(color = cardBorder)
+                    Spacer(Modifier.height(10.dp))
+                    Text("Installed System Voices", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg)
+                    Spacer(Modifier.height(6.dp))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 220.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        val all = listOf("" to "Automatic (prefer female)") + availableVoices
+                        all.forEach { (id, label) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        preferences.setVoiceName(id)
+                                        voiceEngine.applyVoiceSettings(speed, pitch, volume, id)
                                     }
-                                }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = voiceName == id,
+                                    onClick = {
+                                        preferences.setVoiceName(id)
+                                        voiceEngine.applyVoiceSettings(speed, pitch, volume, id)
+                                    },
+                                    colors = RadioButtonDefaults.colors(selectedColor = warmAccent)
+                                )
+                                Text(label, fontSize = 12.5.sp, color = fg, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
-                            Text(
-                                "Forget everything", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEF4444),
-                                modifier = Modifier.padding(top = 6.dp).clickable { preferences.clearAgentMemory() }
-                            )
                         }
                     }
                 }
             }
-        }
-    }
 
-    if (showVoicePicker) {
-        AlertDialog(
-            onDismissRequest = { showVoicePicker = false },
-            title = { Text("Choose a voice", fontWeight = FontWeight.Bold) },
-            text = {
-                if (voiceList.isEmpty()) {
-                    Text("No voices were reported by the speech engine yet. Try again in a moment.", fontSize = 13.sp)
-                } else {
-                    LazyColumn(Modifier.heightIn(max = 380.dp)) {
-                        item {
-                            Text(
-                                "Automatic (male voice - Puck style)", fontSize = 14.sp, fontWeight = FontWeight.Bold,
-                                modifier = Modifier.fillMaxWidth().clickable { preferences.setVoiceName(""); showVoicePicker = false }.padding(vertical = 10.dp)
-                            )
-                        }
-                        items(voiceList) { (name, label) ->
-                            Text(
-                                label, fontSize = 13.sp,
-                                color = if (name == voiceName) CrimsonPrimary else Color.Unspecified,
-                                fontWeight = if (name == voiceName) FontWeight.Bold else FontWeight.Normal,
-                                modifier = Modifier.fillMaxWidth().clickable {
-                                    preferences.setVoiceName(name)
-                                    voiceEngine.applyVoiceSettings(voiceSpeed, voicePitch, voiceVolume, name)
-                                    showVoicePicker = false
-                                }.padding(vertical = 9.dp)
-                            )
-                        }
+            Spacer(Modifier.height(18.dp))
+
+            // -------- 4. AI MEMORY --------
+            SectionHeader("AI MEMORY", warmAccent)
+            EditorialSectionCard(cardBg = cardBg, cardBorder = cardBorder) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Remember facts across chats", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = fg)
+                        Text("Say 'remember that...' in chat, or add/remove facts below", fontSize = 11.sp, color = sub)
                     }
-                }
-            },
-            confirmButton = { TextButton(onClick = { showVoicePicker = false }) { Text("Close") } }
-        )
-    }
-
-    if (showEditNameDialog) {
-        AlertDialog(
-            onDismissRequest = { showEditNameDialog = false },
-            title = { Text("What should agent call you?", fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    Text(
-                        "Enter the name you'd like AU Agent to use when greeting and talking to you:",
-                        fontSize = 12.5.sp,
-                        color = sub
+                    Switch(
+                        checked = memoryEnabled,
+                        onCheckedChange = { preferences.setMemoryEnabled(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = warmAccent)
                     )
-                    Spacer(Modifier.height(10.dp))
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
-                        value = nameDraft,
-                        onValueChange = { nameDraft = it },
-                        placeholder = { Text("e.g. Boss, Yadav Ji, Anshul...") },
+                        value = newFact,
+                        onValueChange = { newFact = it },
+                        placeholder = { Text("e.g. My exam is on 14 Nov", fontSize = 12.sp) },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = CrimsonPrimary,
-                            focusedLabelColor = CrimsonPrimary
+                            focusedBorderColor = warmAccent,
+                            unfocusedBorderColor = cardBorder,
+                            focusedTextColor = fg,
+                            unfocusedTextColor = fg
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.weight(1f)
                     )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        preferences.setAgentUserName(nameDraft.trim())
-                        preferences.setAgentNamePrompted()
-                        showEditNameDialog = false
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(
+                        onClick = {
+                            if (preferences.addAgentMemory(newFact)) {
+                                newFact = ""
+                            } else {
+                                Toast.makeText(context, "Already saved or empty", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(warmAccent)
+                    ) {
+                        Icon(Icons.Default.Add, "Add memory", tint = Color.White)
                     }
-                ) {
-                    Text("Save", color = CrimsonPrimary, fontWeight = FontWeight.Bold)
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showEditNameDialog = false }) {
-                    Text("Cancel")
+
+                if (memories.isEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("No remembered facts yet.", fontSize = 12.sp, color = sub)
+                } else {
+                    Spacer(Modifier.height(10.dp))
+                    memories.forEach { fact ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(pillBg)
+                                .border(1.dp, cardBorder, RoundedCornerShape(10.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("• $fact", fontSize = 12.5.sp, color = fg, modifier = Modifier.weight(1f))
+                            IconButton(
+                                onClick = { preferences.removeAgentMemory(fact) },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, "Forget", tint = CrimsonPrimary, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                    TextButton(onClick = { preferences.clearAgentMemory() }) {
+                        Text("Clear all (${memories.size})", color = CrimsonPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
-        )
+
+            Spacer(Modifier.height(30.dp))
+        }
     }
+}
+
+@Composable
+private fun SectionHeader(title: String, color: Color = CrimsonPrimary) {
+    Text(
+        text = title,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        color = color,
+        letterSpacing = 1.sp
+    )
+    Spacer(Modifier.height(8.dp))
+}
+
+@Composable
+private fun EditorialSectionCard(
+    cardBg: Color,
+    cardBorder: Color,
+    content: @Composable () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(cardBg)
+            .border(1.dp, cardBorder, RoundedCornerShape(16.dp))
+            .padding(14.dp)
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun LabeledSlider(
+    label: String,
+    valueText: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    fg: Color,
+    accent: Color = CrimsonPrimary,
+    onChange: (Float) -> Unit
+) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = fg)
+        Text(valueText, fontSize = 12.sp, color = accent, fontWeight = FontWeight.Bold)
+    }
+    Slider(
+        value = value,
+        onValueChange = onChange,
+        valueRange = range,
+        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+    )
 }

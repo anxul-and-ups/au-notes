@@ -39,7 +39,7 @@ class AppPreferences(context: Context) {
                 }
             }
         const val DEFAULT_PIN = "1234"
-        const val DEFAULT_MODEL = "gemini-2.0-flash"
+        const val DEFAULT_MODEL = ""
         const val DEFAULT_SECURITY_QUESTION = "Who is the best person in your life?"
 
         // Security Area re-lock behaviour options
@@ -400,6 +400,14 @@ class AppPreferences(context: Context) {
     val voiceName: StateFlow<String> = _voiceName.asStateFlow()
     fun setVoiceName(v: String) { _voiceName.value = v; prefs.edit().putString("agent_voice_name", v).apply() }
 
+    /** Resets normal TTS voice adjuster back to normal defaults. */
+    fun resetVoiceSettings() {
+        setVoiceSpeed(1.0f)
+        setVoicePitch(1.0f)
+        setVoiceVolume(1.0f)
+        setVoiceName("")
+    }
+
     private val _orbTheme = stringFlow("agent_orb_theme", "dark")
     val orbTheme: StateFlow<String> = _orbTheme.asStateFlow()
     fun setOrbTheme(v: String) { _orbTheme.value = v; prefs.edit().putString("agent_orb_theme", v).apply() }
@@ -435,7 +443,7 @@ class AppPreferences(context: Context) {
         prefs.edit().putString("note_reader_voice_mode", clean).apply()
     }
 
-    private val _liveModel = stringFlow("agent_live_model", "models/gemini-3.1-flash-live-preview")
+    private val _liveModel = stringFlow("agent_live_model", "")
     val liveModel: StateFlow<String> = _liveModel.asStateFlow()
     fun setLiveModel(v: String) { _liveModel.value = v; prefs.edit().putString("agent_live_model", v).apply() }
 

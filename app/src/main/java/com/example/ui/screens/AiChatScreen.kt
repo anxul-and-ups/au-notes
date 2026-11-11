@@ -589,7 +589,7 @@ fun AiChatScreen(
                 }
 
                 if (mimeType == "application/pdf" || fileName.endsWith(".pdf", ignoreCase = true)) {
-                    val images = renderPdfPagesToBase64(context, uri, maxPages = 6) { currentPage, totalPages ->
+                    val images = renderPdfPagesToBase64(context, uri, maxPages = 40) { currentPage, totalPages ->
                         val frac = 0.15f + (0.80f * (currentPage.toFloat() / totalPages.toFloat().coerceAtLeast(1f)))
                         val pct = (frac * 100).toInt().coerceIn(15, 95)
                         val remainingPages = (totalPages - currentPage).coerceAtLeast(0)
@@ -686,7 +686,7 @@ fun AiChatScreen(
                             attachedFileName = null
                             Toast.makeText(context, "Could not extract text from $fileName", Toast.LENGTH_SHORT).show()
                         } else {
-                            attachedContent = docxText.take(60000)
+                            attachedContent = docxText
                             sessionAttachmentName = fileName
                             sessionAttachmentText = attachedContent
                             uploadProgressFraction = 1f
@@ -709,7 +709,7 @@ fun AiChatScreen(
                     }
                     val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        attachedContent = text.take(60000)
+                        attachedContent = text
                         sessionAttachmentName = fileName
                         sessionAttachmentText = attachedContent
                         uploadProgressFraction = 1f
@@ -826,7 +826,7 @@ fun AiChatScreen(
     }
 
     fun agentVisible(n: com.example.data.model.NoteEntity) = !n.isLocked && !n.isHidden && !n.isTrash
-    fun snippetOf(n: com.example.data.model.NoteEntity) = n.content.replace("\n", " ").take(80)
+    fun snippetOf(n: com.example.data.model.NoteEntity) = n.content.replace("\n", " ").take(400)
 
     // Runs one tool the model asked for and returns what the MODEL should see.
     // Read-only and create run immediately; move/delete only post a confirmation card.
@@ -1108,7 +1108,7 @@ fun AiChatScreen(
             "read_note" -> {
                 val note = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
                 if (note == null || !agentVisible(note)) ToolOutcome("Note not found or not accessible.")
-                else { trackNote(note); ToolOutcome("Title: ${note.title}\nFolder: ${note.folder}\n\n${note.content.take(15000)}") }
+                else { trackNote(note); ToolOutcome("Title: ${note.title}\nFolder: ${note.folder}\n\n${note.content}") }
             }
             "list_notes" -> {
                 val folder = args.optString("folder", "").trim()
@@ -1277,7 +1277,7 @@ fun AiChatScreen(
             "read_temp_mail" -> ToolOutcome(tempMailSummaryForAgent(context))
             "read_screen" -> ToolOutcome(
                 if (currentNoteTitle.isNullOrBlank() && currentNoteContent.isNullOrBlank()) "No note is open on screen."
-                else "Title: ${currentNoteTitle.orEmpty()}\n\n${currentNoteContent.orEmpty().take(15000)}"
+                else "Title: ${currentNoteTitle.orEmpty()}\n\n${currentNoteContent.orEmpty()}"
             )
             "get_milk_summary" -> {
                 if (milkRepository == null) {
@@ -1466,7 +1466,7 @@ fun AiChatScreen(
                     defaultTitle = titleArg,
                     targetNoteId = noteIdArg,
                     targetTitle = titleArg,
-                    caption = "### 📊 $titleArg"
+                    caption = "### $titleArg"
                 )
             }
             "web_search" -> {
@@ -1475,6 +1475,12 @@ fun AiChatScreen(
                     ToolOutcome("NOT DONE: Search query was empty.")
                 } else {
                     val outcome = aiService.performWebSearch(query)
+                    if (outcome.hits.isNotEmpty()) {
+                        val marker = aiService.buildWebSourcesMarker(outcome.hits)
+                        if (marker.isNotBlank() && !latestArtifactBlocks.contains(marker)) {
+                            latestArtifactBlocks.add(marker)
+                        }
+                    }
                     ToolOutcome(outcome.formattedContext)
                 }
             }
@@ -1609,14 +1615,14 @@ fun AiChatScreen(
                             defaultTitle = title,
                             targetNoteId = noteIdArg,
                             targetTitle = title,
-                            caption = "### 🎞️ $title"
+                            caption = "### $title"
                         )
                         ToolOutcome(
-                            "DONE: Created editorial typography slide deck \"$title\" (${slidesArr.length()} slides) and embedded it live into the note.",
+                            "DONE: Created interactive HTML sliding presentation \"$title\" (${slidesArr.length()} slides) and embedded it live into the note.",
                             noteResults = out.noteResults
                         )
                     } else {
-                        ToolOutcome("DONE: Created editorial typography slide deck \"$title\" (${slidesArr.length()} slides). The interactive slide deck card is displayed in chat.")
+                        ToolOutcome("DONE: Created interactive HTML sliding presentation \"$title\" (${slidesArr.length()} slides). The interactive sliding HTML card is displayed in chat.")
                     }
                 }
             }
@@ -1675,7 +1681,7 @@ fun AiChatScreen(
                             defaultTitle = title,
                             targetNoteId = noteIdArg,
                             targetTitle = title,
-                            caption = "### 📊 $title"
+                            caption = "### $title"
                         )
                     }
                     ToolOutcome(
@@ -1767,7 +1773,7 @@ fun AiChatScreen(
             if (!name.isNullOrBlank()) append("Attached File Name: $name\n")
             if (!txt.isNullOrBlank()) {
                 append("Attached Document Content:\n")
-                append(txt.take(22000)).append("\n")
+                append(txt).append("\n")
             } else if (!imgs.isNullOrEmpty()) {
                 append("Attached Visual Pages / Images in this session: ${imgs.size} image(s) attached and visible to you.\n")
             }
@@ -1780,7 +1786,7 @@ fun AiChatScreen(
         return turns.takeLast(18).joinToString("\n") { m ->
             val who = if (m.sender == "user") "User" else "AU Agent"
             val att = m.attachedFileName?.let { " [Attached: $it]" }.orEmpty()
-            "$who$att: ${m.text.take(800)}"
+            "$who$att: ${m.text.take(4000)}"
         }
     }
 
@@ -1795,7 +1801,7 @@ fun AiChatScreen(
                 timestamp = System.currentTimeMillis(),
                 messages = messages.toList(),
                 attachmentName = sessionAttachmentName,
-                attachmentText = sessionAttachmentText?.take(20000),
+                attachmentText = sessionAttachmentText,
                 attachmentImages = emptyList(),
                 attachmentUri = sessionAttachmentUri?.toString()
             )
@@ -2005,7 +2011,7 @@ fun AiChatScreen(
                     messages.add(
                         ChatMessage(
                             sender = "bot",
-                            text = "⚠️ You're currently offline. Please check your Wi-Fi or mobile data connection."
+                            text = "Error: You're currently offline. Please check your Wi-Fi or mobile data connection."
                         )
                     )
                     return@launch
@@ -2062,7 +2068,7 @@ fun AiChatScreen(
                         val finishedSteps = agentSteps.toList()
                         agentSteps.clear()
                         isLoading = false
-                        val replyMsg = "You are currently in **Chat Mode** (for Q&A and note/document summaries). Please switch to **⚡ Work Mode** at the top to add or edit images in your notes."
+                        val replyMsg = "You are currently in **Chat Mode** (for Q&A and note/document summaries). Please switch to **Work Mode** at the top to add or edit images in your notes."
                         val idx = messages.indexOfFirst { it.id == botMsgId }
                         if (idx != -1) {
                             messages[idx] = messages[idx].copy(text = replyMsg, steps = finishedSteps)
@@ -2082,7 +2088,7 @@ fun AiChatScreen(
                     val replyMsg = if (!toolFailed(out.result)) {
                         "Done! I have inserted the image into your note. You can pinch with 2 fingers to resize it and drag with 1 finger to reposition it in the note editor."
                     } else {
-                        "⚠️ ${out.result}"
+                        "Error: ${out.result}"
                     }
                     val idx = messages.indexOfFirst { it.id == botMsgId }
                     if (idx != -1) {
@@ -2138,6 +2144,12 @@ fun AiChatScreen(
                 if (searchModeEnabled) {
                     stepRunning("Searching the live web")
                     val searchOutcome = aiService.performWebSearch(userMsg)
+                    if (searchOutcome.hits.isNotEmpty()) {
+                        val marker = aiService.buildWebSourcesMarker(searchOutcome.hits)
+                        if (marker.isNotBlank() && !latestArtifactBlocks.contains(marker)) {
+                            latestArtifactBlocks.add(marker)
+                        }
+                    }
                     val sIdx = agentSteps.indexOfLast { it.state == 0 }
                     if (sIdx >= 0) {
                         agentSteps[sIdx] = AgentStep(
@@ -2185,10 +2197,11 @@ fun AiChatScreen(
                         imagesBase64 = images,
                         enableWebSearch = (steps == 0 && searchModeEnabled)
                     )
-                    stepFinish(!reply.startsWith("⚠️"))
-                    val call = if (enabled.isNotEmpty() && !reply.startsWith("⚠️")) AgentTools.parse(reply) else null
+                    val isReplyError = reply.startsWith("Error:") || reply.startsWith("⚠️")
+                    stepFinish(!isReplyError)
+                    val call = if (enabled.isNotEmpty() && !isReplyError) AgentTools.parse(reply) else null
                     if (call == null) { finalText = reply; break }
-                    if (steps >= 6) { finalText = call.textBefore.ifBlank { "Done! I have completed the requested actions." }; break }
+                    if (steps >= 12) { finalText = call.textBefore.ifBlank { "Done! I have completed the requested actions." }; break }
                     steps++
                     stepRunning(toolLabel(call.name))
                     val outcome = try {
@@ -2222,7 +2235,7 @@ fun AiChatScreen(
                 agentSteps.clear()
                 isLoading = false
 
-                // If response contains structured blocks (slides, chart, diagram, organised_file, pdf_artifact, html_artifact), render immediately without word-splitting corruption
+                // If response contains structured blocks (slides, chart, diagram, organised_file, pdf_artifact, html_artifact, web_sources_json), render immediately without word-splitting corruption
                 if (
                     finalText.contains("```slides") ||
                     finalText.contains("```typography_slides") ||
@@ -2231,7 +2244,8 @@ fun AiChatScreen(
                     finalText.contains("```organised_file") ||
                     finalText.contains("```html") ||
                     finalText.contains("[pdf_artifact:") ||
-                    finalText.contains("[html_artifact:")
+                    finalText.contains("[html_artifact:") ||
+                    finalText.contains("[web_sources_json:")
                 ) {
                     val idx = messages.indexOfFirst { it.id == botMsgId }
                     if (idx != -1) messages[idx] = messages[idx].copy(text = finalText, noteResults = results, pendingAction = pending, steps = completedSteps)
@@ -2266,7 +2280,7 @@ fun AiChatScreen(
             } catch (e: Exception) {
                 val idx = messages.indexOfFirst { it.id == botMsgId }
                 if (idx != -1 && messages[idx].text.isBlank()) {
-                    messages[idx] = messages[idx].copy(text = "⚠️ Error: ${e.message}", steps = agentSteps.toList())
+                    messages[idx] = messages[idx].copy(text = "Error: ${e.message}", steps = agentSteps.toList())
                 }
                 agentSteps.clear()
             } finally {
@@ -2440,7 +2454,7 @@ fun AiChatScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = "💬 Chat",
+                                    text = "Chat",
                                     fontSize = 12.sp,
                                     fontWeight = if (!isWorkMode) FontWeight.Bold else FontWeight.Medium,
                                     color = if (!isWorkMode) {
@@ -2468,7 +2482,7 @@ fun AiChatScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = "⚡ Work Mode",
+                                    text = "Work Mode",
                                     fontSize = 12.sp,
                                     fontWeight = if (isWorkMode) FontWeight.Bold else FontWeight.Medium,
                                     color = if (isWorkMode) Color.White else {
@@ -2573,17 +2587,17 @@ fun AiChatScreen(
                         val displayName = userName.trim().ifBlank { "Friend" }
                         val starterChips = if (isWorkMode) {
                             listOf(
-                                "📝 Create Rich Note" to "Create a detailed structured note on Python programming with tables and code blocks",
-                                "✏️ Edit Open Note" to "Format, structure, and improve the note currently open on my screen",
-                                "📊 Slides & Graphs" to "Create a 5-slide editorial presentation on Artificial Intelligence",
-                                "🗂️ Organise .md File" to "Convert my notes and content into a well-organized Markdown (.md) document"
+                                "Create Rich Note" to "Create a detailed structured note on Python programming with tables and code blocks",
+                                "Edit Open Note" to "Format, structure, and improve the note currently open on my screen",
+                                "Slides & Graphs" to "Create a 5-slide editorial presentation on Artificial Intelligence",
+                                "Organise .md File" to "Convert my notes and content into a well-organized Markdown (.md) document"
                             )
                         } else {
                             listOf(
-                                "📋 Summarize My Notes" to "Read my recent notes and give me a concise summary",
-                                "📄 Document Summary" to "Provide a detailed overview, summary, and key takeaways of my attached document",
-                                "💡 Explain a Topic" to "Explain Quantum Computing in simple, easy-to-understand terms",
-                                "🥛 Milk Accounting" to "Show this month's Milk Accounting summary and total balance"
+                                "Summarize My Notes" to "Read my recent notes and give me a concise summary",
+                                "Document Summary" to "Provide a detailed overview, summary, and key takeaways of my attached document",
+                                "Explain a Topic" to "Explain Quantum Computing in simple, easy-to-understand terms",
+                                "Milk Accounting" to "Show this month's Milk Accounting summary and total balance"
                             )
                         }
 
@@ -2617,7 +2631,7 @@ fun AiChatScreen(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = if (isWorkMode) "⚡ Work Mode Active" else "💬 Chat Mode Active",
+                                        text = if (isWorkMode) "Work Mode Active" else "Chat Mode Active",
                                         fontSize = 12.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = if (isWorkMode) Color(0xFFD97757) else (if (isDarkMode) Color(0xFFE4E4E7) else Color(0xFF18181B))
@@ -2849,7 +2863,7 @@ fun AiChatScreen(
                                                                 fenceLang = "slides",
                                                                 blockBody = deckJsonStr,
                                                                 defaultTitle = deck.deckTitle,
-                                                                caption = "### 🎞️ ${deck.deckTitle}"
+                                                                caption = "### ${deck.deckTitle}"
                                                             )
                                                             Toast.makeText(
                                                                 context,
@@ -2865,7 +2879,7 @@ fun AiChatScreen(
                                                                 fenceLang = "chart",
                                                                 blockBody = chartJsonStr,
                                                                 defaultTitle = spec.title,
-                                                                caption = "### 📊 ${spec.title}"
+                                                                caption = "### ${spec.title}"
                                                             )
                                                             Toast.makeText(
                                                                 context,
@@ -2887,7 +2901,7 @@ fun AiChatScreen(
                                                                 isWorkMode = true
                                                                 Toast.makeText(
                                                                     context,
-                                                                    "Switched to ⚡ Work Mode — you can now create & edit notes!",
+                                                                    "Switched to Work Mode — you can now create & edit notes!",
                                                                     Toast.LENGTH_SHORT
                                                                 ).show()
                                                             }
@@ -2896,7 +2910,7 @@ fun AiChatScreen(
                                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                                     ) {
                                                         Text(
-                                                            text = "⚡ Switch to Work Mode",
+                                                            text = "Switch to Work Mode",
                                                             fontSize = 12.sp,
                                                             fontWeight = FontWeight.Bold,
                                                             color = Color.White
@@ -3381,7 +3395,7 @@ fun AiChatScreen(
                                                     preferences.setSearchModeEnabled(next)
                                                     Toast.makeText(
                                                         context,
-                                                        if (next) "🌐 SEARCH Mode ON: Live web search enabled" else "SEARCH Mode OFF: Answering from knowledge & tools",
+                                                        if (next) "SEARCH Mode ON: Live web search enabled" else "SEARCH Mode OFF: Answering from knowledge & tools",
                                                         Toast.LENGTH_SHORT
                                                     ).show()
                                                 }
@@ -3916,7 +3930,7 @@ fun AiChatScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // 2. Primary Action Row: [+ New Chat] & [🔑 API Room]
+                    // 2. Primary Action Row: [+ New Chat] & [API Room] (Direct redirect to ApiRoomScreen)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -3948,242 +3962,29 @@ fun AiChatScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // 3. Setup Your API & Detect Models Card (Zero hardcoded models or other providers)
-                    val savedUserKey by preferences.userApiKey.collectAsState()
-                    var sidebarKeyInput by remember(savedUserKey) { mutableStateOf(savedUserKey) }
-                    var sidebarKeyVisible by remember { mutableStateOf(false) }
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(cardBg)
-                            .border(1.dp, cardBorder, RoundedCornerShape(16.dp))
-                            .padding(14.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                    // Active Model Selector (only when models are already detected in API Room)
+                    if (liveDetected.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(cardBg)
+                                .border(1.dp, cardBorder, RoundedCornerShape(16.dp))
+                                .padding(14.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(30.dp)
-                                        .clip(RoundedCornerShape(9.dp))
-                                        .background(warmAccent.copy(alpha = 0.15f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.Key, contentDescription = null, tint = warmAccent, modifier = Modifier.size(16.dp))
-                                }
-                                Column {
-                                    Text(
-                                        text = "SETUP YOUR API",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        letterSpacing = 0.8.sp,
-                                        color = primaryInk
-                                    )
-                                    Text(
-                                        text = if (liveDetected.isNotEmpty()) "${liveDetected.size} verified models active" else "Enter your Gemini API key",
-                                        fontSize = 10.5.sp,
-                                        color = if (liveDetected.isNotEmpty()) Color(0xFF22C55E) else secondaryInk
-                                    )
-                                }
-                            }
-
-                            if (liveDetected.isNotEmpty()) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(Color(0xFF22C55E).copy(alpha = 0.15f))
-                                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                                ) {
-                                    Text("VERIFIED", fontSize = 9.5.sp, fontWeight = FontWeight.Bold, color = Color(0xFF22C55E))
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        OutlinedTextField(
-                            value = sidebarKeyInput,
-                            onValueChange = {
-                                sidebarKeyInput = it
-                                sidebarApiError = null
-                                preferences.setUseInbuiltApi(false)
-                                preferences.setUserApiKey(it)
-                            },
-                            label = { Text("Gemini API Key (AIza...)", fontSize = 11.sp) },
-                            placeholder = { Text("Paste your API key here", fontSize = 11.sp) },
-                            singleLine = true,
-                            visualTransformation = if (sidebarKeyVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                            trailingIcon = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (sidebarKeyInput.isNotEmpty()) {
-                                        IconButton(
-                                            onClick = {
-                                                sidebarKeyInput = ""
-                                                sidebarApiError = null
-                                                preferences.setUserApiKey("")
-                                                preferences.setDetectedModels("Gemini", emptyList())
-                                            },
-                                            modifier = Modifier.size(28.dp)
-                                        ) {
-                                            Icon(Icons.Default.Close, contentDescription = "Clear key", tint = secondaryInk, modifier = Modifier.size(15.dp))
-                                        }
-                                    }
-                                    IconButton(
-                                        onClick = { sidebarKeyVisible = !sidebarKeyVisible },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(
-                                            if (sidebarKeyVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                            contentDescription = "Toggle key visibility",
-                                            tint = secondaryInk,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                }
-                            },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = warmAccent,
-                                unfocusedBorderColor = cardBorder
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Detect Models Button
-                        Button(
-                            onClick = {
-                                coroutineScope.launch {
-                                    isDetectingSidebarModels = true
-                                    sidebarApiError = null
-                                    preferences.setActiveProvider("Gemini")
-                                    preferences.setUseInbuiltApi(false)
-                                    val cleanKey = sidebarKeyInput.trim()
-                                    preferences.setUserApiKey(cleanKey)
-                                    val res = aiService.listAvailableModels(cleanKey)
-                                    isDetectingSidebarModels = false
-                                    res.fold(
-                                        onSuccess = { list ->
-                                            sidebarApiError = null
-                                            preferences.setDetectedModels("Gemini", list)
-                                            if (list.isNotEmpty() && selectedModelPref.removePrefix("models/") !in list) {
-                                                preferences.setSelectedModel(list.first())
-                                            }
-                                            Toast.makeText(context, "Verified! ${list.size} models loaded.", Toast.LENGTH_SHORT).show()
-                                        },
-                                        onFailure = { err ->
-                                            preferences.setDetectedModels("Gemini", emptyList())
-                                            sidebarApiError = err.message ?: "Invalid API key. Please check or change your API key."
-                                        }
-                                    )
-                                }
-                            },
-                            enabled = !isDetectingSidebarModels,
-                            colors = ButtonDefaults.buttonColors(containerColor = warmAccent),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            if (isDetectingSidebarModels) {
-                                CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 1.8.dp)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Validating API Key & Detecting Models…", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            } else {
-                                Icon(Icons.Default.Refresh, contentDescription = "Detect Models", tint = Color.White, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Detect Models", fontSize = 12.5.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            }
-                        }
-
-                        // Error Banner if API Key is missing or invalid
-                        if (!sidebarApiError.isNullOrBlank()) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0xFFEF4444).copy(alpha = 0.14f))
-                                    .border(1.dp, Color(0xFFEF4444).copy(alpha = 0.45f), RoundedCornerShape(12.dp))
-                                    .padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(16.dp))
-                                    Text(
-                                        text = "API Key Verification Failed",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFEF4444)
-                                    )
-                                }
-                                Text(
-                                    text = sidebarApiError ?: "Please check or change your API key.",
-                                    fontSize = 11.sp,
-                                    lineHeight = 15.sp,
-                                    color = primaryInk
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            sidebarKeyInput = ""
-                                            sidebarApiError = null
-                                            preferences.setUserApiKey("")
-                                            preferences.setDetectedModels("Gemini", emptyList())
-                                        },
-                                        shape = RoundedCornerShape(10.dp),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Change API Key", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = primaryInk)
-                                    }
-                                    OutlinedButton(
-                                        onClick = {
-                                            isAgentSidebarOpen = false
-                                            onOpenApiRoom?.invoke()
-                                        },
-                                        shape = RoundedCornerShape(10.dp),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Open API Room", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = warmAccent)
-                                    }
-                                }
-                            }
-                        }
-
-                        // Live Detected Models List (shown ONLY when API key is valid and models are detected)
-                        if (liveDetected.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            HorizontalDivider(color = cardBorder)
-                            Spacer(modifier = Modifier.height(10.dp))
                             Text(
-                                text = "SELECT ACTIVE MODEL (${liveDetected.size})",
+                                text = "ACTIVE MODEL (${liveDetected.size})",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.8.sp,
                                 color = secondaryInk
                             )
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(max = 210.dp)
+                                    .heightIn(max = 200.dp)
                                     .verticalScroll(rememberScrollState()),
                                 verticalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
@@ -4262,7 +4063,7 @@ fun AiChatScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("🌐 Live Web Search Mode", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = primaryInk)
+                                Text("Live Web Search Mode", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = primaryInk)
                                 Text("Fetch live web & news citations when ON", fontSize = 10.5.sp, color = secondaryInk)
                             }
                             androidx.compose.material3.Switch(
@@ -4280,7 +4081,7 @@ fun AiChatScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("⚡ Autonomous Work Mode", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = primaryInk)
+                                Text("Autonomous Work Mode", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = primaryInk)
                                 Text("Create PDFs, HTML, slides, charts & notes", fontSize = 10.5.sp, color = secondaryInk)
                             }
                             androidx.compose.material3.Switch(
@@ -4528,7 +4329,7 @@ fun AiChatScreen(
                                     .padding(horizontal = 9.dp, vertical = 5.dp)
                             ) {
                                 Text(
-                                    text = "💬 Chat",
+                                    text = "Chat",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (!isWorkMode) Color.White else orbSubFg
@@ -4542,7 +4343,7 @@ fun AiChatScreen(
                                     .padding(horizontal = 9.dp, vertical = 5.dp)
                             ) {
                                 Text(
-                                    text = "⚡ Work",
+                                    text = "Work",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (isWorkMode) Color.White else orbSubFg
@@ -5125,6 +4926,13 @@ private fun RenderAgentRichMessage(
                         title = block.title,
                         filePath = block.filePath,
                         summary = block.summary,
+                        isDarkMode = isDarkMode
+                    )
+                }
+
+                is AgentContentBlock.WebSourcesBlock -> {
+                    com.example.ui.components.WebSourcesFaviconRow(
+                        sources = block.sources,
                         isDarkMode = isDarkMode
                     )
                 }

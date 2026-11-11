@@ -23,6 +23,18 @@ import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
 
+val ORB_THEMES = listOf(
+    "dark" to "Dark",
+    "light" to "Light",
+    "red" to "Crimson",
+    "sunset" to "Sunset"
+)
+
+val ORB_SWATCHES = listOf(
+    "#D97757", "#FF2D55", "#38BDF8", "#22C55E",
+    "#A855F7", "#F59E0B", "#EC4899", "#06B6D4"
+)
+
 data class OrbBgColors(
     val bgCenter: Color,
     val bgMid: Color,

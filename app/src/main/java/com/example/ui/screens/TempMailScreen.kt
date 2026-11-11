@@ -1456,7 +1456,7 @@ private fun FullScreenMailView(
                                 modifier = Modifier.clickable { viewMode = "rich" }
                             ) {
                                 Text(
-                                    "🎨 Rich HTML",
+                                    "Rich HTML",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (viewMode == "rich") MaterialTheme.colorScheme.onPrimary else fg.copy(alpha = 0.7f),
@@ -1470,7 +1470,7 @@ private fun FullScreenMailView(
                                 modifier = Modifier.clickable { viewMode = "text" }
                             ) {
                                 Text(
-                                    "📄 Plain Text",
+                                    "Plain Text",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (viewMode == "text") MaterialTheme.colorScheme.onPrimary else fg.copy(alpha = 0.7f),

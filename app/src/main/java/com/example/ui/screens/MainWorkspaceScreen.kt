@@ -1484,12 +1484,12 @@ fun CompactNoteCard(
 
                     if (note.isLocked) {
                         Icon(
-                            imageVector = Icons.Default.Lock,
+                            painter = painterResource(R.drawable.ic_svg_lock),
                             contentDescription = "Locked",
-                            tint = Color(0xFFFF5252),
+                            tint = Color(0xFF22C55E),
                             modifier = Modifier.size(13.dp)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
                     }
 
                     Text(

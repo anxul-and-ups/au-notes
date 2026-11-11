@@ -4,214 +4,254 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-/**
- * Item 26: Model Detector — makes a REAL request to the provider's API using
- * the user's key and reports back what actually happened (active/inactive,
- * connection status, available models), rather than a hardcoded "ACTIVE".
- */
-data class ConnectivityResult(
-    val isActive: Boolean,
-    val statusMessage: String,
-    val availableModels: List<String> = emptyList(),
-    val rawInfo: String = ""
+data class ProviderCheckResult(
+    val ok: Boolean,
+    val statusCode: Int,
+    val message: String,
+    val models: List<String> = emptyList()
 )
 
+/**
+ * Real HTTP connectivity & model detection for every provider in the API Room.
+ * Strictly queries the live provider endpoints with zero hardcoded model lists.
+ */
 object ApiConnectivityChecker {
+
     private val client = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
-    @Suppress("DEPRECATION")
     fun isOnline(context: android.content.Context): Boolean {
         return try {
             val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
                 ?: return true
-            val net = cm.activeNetwork
-            if (net != null) {
-                val caps = cm.getNetworkCapabilities(net)
-                if (caps != null && (
-                        caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
-                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
-                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ||
-                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
-                    )
-                ) {
-                    return true
-                }
-            }
-            val legacyInfo = cm.activeNetworkInfo
-            legacyInfo?.isConnectedOrConnecting == true
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
         } catch (_: Exception) {
             true
         }
     }
 
-    /** Pulls the provider's own error text out of a JSON error body when there is one. */
-    private fun errorText(body: String): String = try {
-        val o = JSONObject(body)
-        val e = o.opt("error")
-        when (e) {
-            is JSONObject -> e.optString("message")
-            is String -> e
-            else -> o.optString("message")
+    suspend fun check(
+        providerName: String,
+        apiKey: String,
+        baseUrl: String = ""
+    ): ProviderCheckResult = withContext(Dispatchers.IO) {
+        val cleanKey = apiKey.trim().replace(Regex("\\s+"), "")
+        if (cleanKey.isBlank()) {
+            return@withContext ProviderCheckResult(false, 0, "API key is empty. Paste a valid API key first.")
         }
-    } catch (ex: Exception) { "" }
 
-    suspend fun check(providerNameRaw: String, apiKeyRaw: String, baseUrlRaw: String = "", model: String = ""): ConnectivityResult =
-        withContext(Dispatchers.IO) {
-            val providerName = providerNameRaw
-            val apiKey = apiKeyRaw.trim()
-            var baseUrl = baseUrlRaw.trim()
-            if (baseUrl.isNotBlank() && !baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
-                baseUrl = "https://$baseUrl"
-            }
-            if (apiKey.isBlank() || apiKey == "YOUR_API_KEY_HERE" || apiKey == "MY_GEMINI_API_KEY" || apiKey == "your_api_key_here") {
-                return@withContext ConnectivityResult(false, "API key is empty. Please enter a valid Gemini API key and try again.")
-            }
-            try {
-                when (providerName) {
-                    "Gemini" -> checkGemini(apiKey)
-                    "OpenAI" -> checkOpenAiCompatible("https://api.openai.com/v1/models", apiKey)
-                    "DeepSeek" -> {
-                        val res = checkOpenAiCompatible("https://api.deepseek.com/models", apiKey)
-                        if (!res.isActive) checkOpenAiCompatible("https://api.deepseek.com/v1/models", apiKey) else res
+        try {
+            when (providerName.trim().lowercase()) {
+                "gemini", "google", "google gemini" -> checkGemini(cleanKey)
+                "openai", "chatgpt" -> checkBearerModels("https://api.openai.com/v1/models", cleanKey)
+                "deepseek" -> checkBearerModels("https://api.deepseek.com/models", cleanKey)
+                "grok", "xai", "grok (xai)" -> checkBearerModels("https://api.x.ai/v1/models", cleanKey)
+                "groq" -> checkBearerModels("https://api.groq.com/openai/v1/models", cleanKey)
+                "openrouter" -> checkBearerModels("https://openrouter.ai/api/v1/models", cleanKey)
+                "claude", "anthropic", "claude (anthropic)" -> checkAnthropic(cleanKey)
+                else -> {
+                    val cleanBase = baseUrl.trim().trimEnd('/')
+                    if (cleanBase.isBlank()) {
+                        ProviderCheckResult(false, 0, "Base URL is required for custom provider '$providerName'.")
+                    } else {
+                        val endpoint = if (cleanBase.endsWith("/models")) cleanBase else "$cleanBase/models"
+                        checkBearerModels(endpoint, cleanKey)
                     }
-                    "Kimi" -> checkOpenAiCompatible("https://api.moonshot.cn/v1/models", apiKey)
-                    "Anthropic" -> checkAnthropic(apiKey)
-                    "Hugging Face" -> checkHuggingFace(apiKey)
-                    "OpenCode", "Custom" -> {
-                        if (baseUrl.isBlank()) {
-                            ConnectivityResult(false, "Enter a base URL / endpoint (e.g. https://api.openai.com/v1) to test this provider.")
-                        } else {
-                            val cleanBase = baseUrl.trimEnd('/')
-                            val url = if (cleanBase.endsWith("/models")) cleanBase else "$cleanBase/models"
-                            checkOpenAiCompatible(url, apiKey)
+                }
+            }
+        } catch (e: java.net.UnknownHostException) {
+            ProviderCheckResult(false, 0, "No internet connection or host unreachable (${e.message}).")
+        } catch (e: java.net.SocketTimeoutException) {
+            ProviderCheckResult(false, 0, "Connection timed out. Check your internet connection.")
+        } catch (e: Exception) {
+            ProviderCheckResult(false, 0, "Network error: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    private fun checkGemini(apiKey: String): ProviderCheckResult {
+        val allModels = mutableListOf<String>()
+        var nextPageToken = ""
+        var lastCode = 200
+
+        while (true) {
+            val url = buildString {
+                append("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=")
+                append(apiKey)
+                if (nextPageToken.isNotBlank()) {
+                    append("&pageToken=").append(nextPageToken)
+                }
+            }
+            val req = Request.Builder()
+                .url(url)
+                .header("x-goog-api-key", apiKey)
+                .get()
+                .build()
+
+            client.newCall(req).execute().use { resp ->
+                lastCode = resp.code
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    val errMsg = try {
+                        JSONObject(body).optJSONObject("error")?.optString("message").orEmpty()
+                    } catch (_: Exception) { "" }
+                    return ProviderCheckResult(
+                        ok = false,
+                        statusCode = resp.code,
+                        message = if (errMsg.isNotBlank()) "Google rejected the key (HTTP ${resp.code}): $errMsg"
+                        else "Google rejected the key (HTTP ${resp.code}). Verify the key in Google AI Studio."
+                    )
+                }
+
+                val json = try { JSONObject(body) } catch (_: Exception) { JSONObject() }
+                val arr = json.optJSONArray("models")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val rawName = obj.optString("name", "").removePrefix("models/").trim()
+                        if (rawName.isBlank()) continue
+                        val methods = obj.optJSONArray("supportedGenerationMethods")
+                        var supportsGen = methods == null || methods.length() == 0
+                        if (methods != null) {
+                            for (m in 0 until methods.length()) {
+                                val method = methods.optString(m, "")
+                                if (
+                                    method.equals("generateContent", ignoreCase = true) ||
+                                    method.equals("streamGenerateContent", ignoreCase = true) ||
+                                    method.equals("bidiGenerateContent", ignoreCase = true)
+                                ) {
+                                    supportsGen = true
+                                    break
+                                }
+                            }
+                        }
+                        if (supportsGen) {
+                            allModels.add(rawName)
                         }
                     }
-                    else -> ConnectivityResult(false, "Unknown provider.")
                 }
-            } catch (e: Exception) {
-                ConnectivityResult(false, "Connection failed: ${e.message ?: e.javaClass.simpleName}")
+                nextPageToken = json.optString("nextPageToken", "").trim()
+                if (nextPageToken.isBlank()) break
             }
         }
 
-    private fun checkGemini(apiKey: String): ConnectivityResult {
-        if (!apiKey.startsWith("AIza") || apiKey.length < 30) {
-            return ConnectivityResult(false, "Invalid Gemini API key format. Please check or change your API key.")
-        }
-        val request = Request.Builder()
-            .url("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=$apiKey")
-            .get()
-            .build()
-        client.newCall(request).execute().use { resp ->
-            val body = resp.body?.string() ?: ""
-            if (!resp.isSuccessful) {
-                return ConnectivityResult(false, "Invalid API key (HTTP ${resp.code}). Please check or change your API key. ${errorText(body)}".trim(), rawInfo = body.take(300))
-            }
-            val models = try {
-                val arr = JSONObject(body).optJSONArray("models") ?: JSONArray()
-                (0 until arr.length()).mapNotNull { i ->
-                    val m = arr.optJSONObject(i) ?: return@mapNotNull null
-                    val methods = m.optJSONArray("supportedGenerationMethods")
-                    val canGenerate = methods == null || (0 until methods.length()).any { methods.optString(it) == "generateContent" }
-                    if (canGenerate) m.optString("name").removePrefix("models/") else null
-                }.filter { it.isNotBlank() }
-            } catch (e: Exception) { emptyList() }
-            if (models.isEmpty()) {
-                return ConnectivityResult(false, "No models returned for this API key. Please check or change your API key.")
-            }
-            return ConnectivityResult(true, "API key verified! ${models.size} live models loaded.", models)
+        val distinctModels = allModels
+            .distinct()
+            .sortedWith(
+                compareByDescending<String> { it.startsWith("gemini-", ignoreCase = true) }
+                    .thenByDescending { it.contains("pro", ignoreCase = true) || it.contains("flash", ignoreCase = true) }
+                    .thenByDescending { it }
+            )
+
+        return if (distinctModels.isEmpty()) {
+            ProviderCheckResult(false, lastCode, "Key responded (HTTP $lastCode) but returned 0 models.")
+        } else {
+            ProviderCheckResult(
+                ok = true,
+                statusCode = lastCode,
+                message = "Connected (HTTP $lastCode) - ${distinctModels.size} models detected.",
+                models = distinctModels
+            )
         }
     }
 
-    /** Works for any OpenAI-compatible /v1/models endpoint: OpenAI itself,
-     * DeepSeek, Moonshot/Kimi, and any custom OpenAI-compatible base URL. */
-    private fun checkOpenAiCompatible(modelsUrl: String, apiKey: String): ConnectivityResult {
-        val request = Request.Builder()
-            .url(modelsUrl)
-            .header("Authorization", "Bearer $apiKey")
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+    private fun checkBearerModels(url: String, apiKey: String): ProviderCheckResult {
+        val req = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Accept", "application/json")
             .get()
             .build()
-        client.newCall(request).execute().use { resp ->
-            val body = resp.body?.string() ?: ""
+
+        client.newCall(req).execute().use { resp ->
+            val body = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) {
-                val err = errorText(body)
-                val msg = when (resp.code) {
-                    401 -> "Invalid API Key or unauthorized (HTTP 401). $err"
-                    429 -> "Rate limit / Quota exceeded (HTTP 429). Ensure your account balance is > $0. $err"
-                    403 -> "Forbidden (HTTP 403). Check model permissions. $err"
-                    404 -> "Models endpoint not found (HTTP 404). Check Base URL. $err"
-                    else -> "Request rejected (HTTP ${resp.code}). ${err.ifBlank { "Check API key & balance." }}"
-                }
-                return ConnectivityResult(false, msg.trim(), rawInfo = body.take(300))
+                val errMsg = try {
+                    JSONObject(body).optJSONObject("error")?.optString("message").orEmpty()
+                } catch (_: Exception) { "" }
+                return ProviderCheckResult(
+                    ok = false,
+                    statusCode = resp.code,
+                    message = if (errMsg.isNotBlank()) "Rejected (HTTP ${resp.code}): $errMsg"
+                    else "Rejected by server (HTTP ${resp.code}). Check that the API key is valid."
+                )
             }
-            val models = try {
-                val arr = JSONObject(body).optJSONArray("data") ?: JSONArray()
-                (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.optString("id") }
-            } catch (e: Exception) { emptyList() }
-            return ConnectivityResult(true, "Connected successfully.", models)
+
+            val models = mutableListOf<String>()
+            try {
+                val arr = JSONObject(body).optJSONArray("data")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val id = arr.optJSONObject(i)?.optString("id").orEmpty().trim()
+                        if (id.isNotBlank()) models.add(id)
+                    }
+                }
+            } catch (_: Exception) { }
+
+            val distinct = models.distinct().sorted()
+            return if (distinct.isEmpty()) {
+                ProviderCheckResult(false, resp.code, "Server returned HTTP ${resp.code} but no model list.")
+            } else {
+                ProviderCheckResult(
+                    ok = true,
+                    statusCode = resp.code,
+                    message = "Connected (HTTP ${resp.code}) - ${distinct.size} models detected.",
+                    models = distinct
+                )
+            }
         }
     }
 
-    private fun checkAnthropic(apiKey: String): ConnectivityResult {
-        val request = Request.Builder()
-            .url("https://api.anthropic.com/v1/models?limit=1000")
-            .header("x-api-key", apiKey)
-            .header("anthropic-version", "2023-06-01")
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+    private fun checkAnthropic(apiKey: String): ProviderCheckResult {
+        val req = Request.Builder()
+            .url("https://api.anthropic.com/v1/models")
+            .addHeader("x-api-key", apiKey)
+            .addHeader("anthropic-version", "2023-06-01")
             .get()
             .build()
-        client.newCall(request).execute().use { resp ->
-            val body = resp.body?.string() ?: ""
-            if (!resp.isSuccessful) {
-                val err = errorText(body)
-                val msg = when (resp.code) {
-                    401 -> "Anthropic rejected the key (HTTP 401). $err"
-                    429 -> "Anthropic quota exceeded (HTTP 429). Check credit balance. $err"
-                    else -> "Anthropic error (HTTP ${resp.code}). $err"
-                }
-                return ConnectivityResult(false, msg.trim(), rawInfo = body.take(300))
-            }
-            val models = try {
-                val arr = JSONObject(body).optJSONArray("data") ?: JSONArray()
-                (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.optString("id") }
-            } catch (e: Exception) { emptyList() }
-            return ConnectivityResult(true, "Anthropic API is active.", models)
-        }
-    }
 
-    private fun checkHuggingFace(apiKey: String): ConnectivityResult {
-        // Hugging Face has no single "list my models" endpoint; whoami-v2
-        // is the standard way to verify a token actually works.
-        val request = Request.Builder()
-            .url("https://huggingface.co/api/whoami-v2")
-            .header("Authorization", "Bearer $apiKey")
-            .get()
-            .build()
-        client.newCall(request).execute().use { resp ->
-            val body = resp.body?.string() ?: ""
+        client.newCall(req).execute().use { resp ->
+            val body = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) {
-                return ConnectivityResult(false, "Hugging Face rejected the token (HTTP ${resp.code}).", rawInfo = body.take(300))
+                val errMsg = try {
+                    JSONObject(body).optJSONObject("error")?.optString("message").orEmpty()
+                } catch (_: Exception) { "" }
+                return ProviderCheckResult(
+                    ok = false,
+                    statusCode = resp.code,
+                    message = if (errMsg.isNotBlank()) "Anthropic rejected key (HTTP ${resp.code}): $errMsg"
+                    else "Anthropic rejected key (HTTP ${resp.code})."
+                )
             }
-            val name = try { JSONObject(body).optString("name", "verified account") } catch (e: Exception) { "verified account" }
-            // Token works — also pull real, popular text-generation models from the Hub.
-            val models = try {
-                val listReq = Request.Builder()
-                    .url("https://huggingface.co/api/models?pipeline_tag=text-generation&sort=downloads&direction=-1&limit=40")
-                    .header("Authorization", "Bearer $apiKey")
-                    .get().build()
-                client.newCall(listReq).execute().use { r ->
-                    val arr = JSONArray(r.body?.string() ?: "[]")
-                    (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.optString("id") }
+
+            val models = mutableListOf<String>()
+            try {
+                val arr = JSONObject(body).optJSONArray("data")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val id = arr.optJSONObject(i)?.optString("id").orEmpty().trim()
+                        if (id.isNotBlank()) models.add(id)
+                    }
                 }
-            } catch (e: Exception) { emptyList() }
-            return ConnectivityResult(true, "Token is valid — authenticated as $name.", models)
+            } catch (_: Exception) { }
+
+            val distinct = models.distinct()
+            return if (distinct.isEmpty()) {
+                ProviderCheckResult(false, resp.code, "Anthropic returned HTTP ${resp.code} but 0 models.")
+            } else {
+                ProviderCheckResult(
+                    ok = true,
+                    statusCode = resp.code,
+                    message = "Connected (HTTP ${resp.code}) - ${distinct.size} Claude models detected.",
+                    models = distinct
+                )
+            }
         }
     }
 }

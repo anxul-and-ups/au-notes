@@ -22,7 +22,8 @@ data class WebSearchHit(
     val title: String,
     val url: String,
     val snippet: String,
-    val source: String = ""
+    val source: String = "",
+    val domain: String = AiService.extractDomain(url)
 )
 
 data class WebSearchOutcome(
@@ -46,10 +47,27 @@ sealed class AiActionResult {
  * document/image analysis, and app tool calling.
  */
 class AiService {
+    companion object {
+        fun extractDomain(rawUrl: String): String {
+            return try {
+                val host = java.net.URI(rawUrl.trim()).host?.lowercase().orEmpty()
+                host.removePrefix("www.")
+            } catch (_: Exception) {
+                rawUrl.trim()
+                    .removePrefix("https://")
+                    .removePrefix("http://")
+                    .removePrefix("www.")
+                    .substringBefore("/")
+                    .substringBefore("?")
+                    .lowercase()
+            }
+        }
+    }
+
     private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(25, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(90, TimeUnit.SECONDS)
         .build()
 
     private class ApiFailure(
@@ -71,22 +89,20 @@ class AiService {
           Address the user respectfully as 'Ok sir'.
           Always use masculine Hindi/Hinglish grammar for yourself (e.g., 'main kar dunga', 'main abhi update kar deta hoon', 'kar raha hoon' — never 'kar dungi' or 'kar rahi hoon').
           Do NOT sound rigid, scripted, robotic, or hyper. Maintain a composed, reliable, focused, and conversational tone.
+          Do NOT use emojis anywhere in your responses, headings, callouts, or labels.
           Important boundary: AI image generation has been permanently removed from this app. Do not offer to generate AI photos; instead, offer and generate rich SVG vector diagrams, typography slide decks, structured charts, HTML pages, and PDF documents.
-        - Up-to-Date AI Model Knowledge & Verification:
-          • Confirmed modern AI models include:
-            - Google Gemini: Gemini 2.5 Pro (`gemini-2.5-pro`), Gemini 2.5 Flash (`gemini-2.5-flash`), Gemini 2.0 Flash (`gemini-2.0-flash`), Gemini 1.5 Pro/Flash, and Gemini 3.x preview builds.
-            - Anthropic Claude: Claude 3.5 Sonnet/Haiku, Claude 3.7 Sonnet (hybrid reasoning), Claude 4 Sonnet (`claude-sonnet-4`), Claude 4 Opus (`claude-opus-4`).
-            - OpenAI: GPT-4o, GPT-4o mini, GPT-4.1, GPT-4.5, o1, o3, o3-mini, o4-mini.
-            - DeepSeek: DeepSeek-V3 (`deepseek-chat`) and DeepSeek-R1 (`deepseek-reasoner`).
-          • Strict Verification for Unfamiliar or Rumored Models (e.g., "Claude Mythos", "Claude Fable 5", etc.):
-            - NEVER invent benchmark scores, release dates, or capabilities for an unverified or rumored model name.
-            - If live web search results are provided, verify whether the model is an official vendor release or an unconfirmed rumor/codename/hoax, and cite your sources clearly.
+        - Fact Verification & Deep Research:
+          • NEVER invent benchmark scores, release dates, or capabilities for an unverified or rumored model/topic.
+          • If live web search results are provided, verify all facts and dates carefully and use the extracted webpage content to give comprehensive, deeply detailed answers.
+          • Do NOT dump raw scattered URLs inside your paragraphs. Refer to websites cleanly by their name (e.g., "According to Wikipedia" or "Reuters reported"), as the app automatically renders interactive Website Source Cards with favicons below your message.
+        - Detailed Notes & PDF Generation (Zero Data Truncation):
+          • Whenever the user asks for detailed notes, an in-depth study guide, or a PDF on any topic, write an exhaustive, comprehensive, multi-section document covering every aspect in full detail (overview, history/background, core concepts, architecture/mechanisms, step-by-step details, real-world examples, comparison tables, and key takeaways). Never write a short or superficial summary.
         - Rich Note & Artifact Formatting:
           1. Headings: Start with '# Title', followed by '## Section Heading' and '### Subheading'.
           2. Highlights: Highlight core definitions and key concepts using '==highlighted key phrase==' and '**bold terminology**'.
           3. Tables: Organize comparisons, syntax sheets, or structured data into Markdown Tables.
           4. Interactive Checkboxes: Include actionable checklists using '[ ] Task to do', '[x] Completed task'.
-          5. Callout Boxes: Use '> 💡 Key Concept: ...' or '> ⚠️ Pro-Tip: ...'.
+          5. Callout Boxes: Use '> Key Concept: ...' or '> Pro-Tip: ...' (without emojis).
           6. Editorial Warm-Paper Typography Slides (`slides` block):
              Use warm paper `#EFECE4` background, `#18181B` ink, and a strong topic accent (`#EA580C` orange, `#3F6212` olive, `#CA8A04` gold, `#15803D` green, `#DC2626` red):
              ```slides
@@ -94,11 +110,26 @@ class AiService {
              ```
           7. Warm-Paper Charts (`chart` block):
              ```chart
-             {"type":"bar","title":"BENCHMARK COMPARISON","unit":"%","max":100,"data":[{"label":"Model A","value":74.2,"color":"#EA580C","icon":"sparkle"},{"label":"Model B","value":70.0,"color":"#DC2626","icon":"whale"}]}
+             {"type":"bar","title":"BENCHMARK COMPARISON","unit":"%","max":100,"data":[{"label":"Item A","value":74.2,"color":"#EA580C","icon":"sparkle"},{"label":"Item B","value":70.0,"color":"#DC2626","icon":"whale"}]}
              ```
           8. Vector Diagrams (`diagram` block):
              Output a clean `<svg viewBox="0 0 680 400" xmlns="http://www.w3.org/2000/svg">...</svg>` with warm cream background `#EFECE4`, `#18181B` 3px borders, and high-contrast labels.
     """.trimIndent()
+
+    private suspend fun resolveDynamicModel(
+        provider: String,
+        apiKey: String,
+        baseUrl: String = "",
+        requestedModel: String = ""
+    ): String {
+        val cleanReq = requestedModel.removePrefix("models/").trim()
+        if (cleanReq.isNotBlank()) return cleanReq
+        val check = ApiConnectivityChecker.check(provider, apiKey, baseUrl)
+        if (check.ok && check.models.isNotEmpty()) {
+            return check.models.first().removePrefix("models/").trim()
+        }
+        throw ApiFailure("No active model selected. Open API Room and tap Model Detector to detect models from your API key.", false)
+    }
 
     private fun textContent(role: String, text: String) = JSONObject().apply {
         put("role", role)
@@ -108,7 +139,7 @@ class AiService {
     /** Gemini needs alternating roles starting with "user"; merge consecutive same-role turns. */
     private fun buildContents(history: List<ConversationTurn>, latest: JSONObject): JSONArray {
         val cleaned = mutableListOf<Pair<String, String>>()
-        for (turn in history.takeLast(24)) {
+        for (turn in history.takeLast(30)) {
             if (turn.content.isBlank()) continue
             val role = if (turn.role == "bot" || turn.role == "model") "model" else "user"
             if (cleaned.isNotEmpty() && cleaned.last().first == role) {
@@ -127,11 +158,11 @@ class AiService {
         val apiMsg = try { JSONObject(body ?: "").optJSONObject("error")?.optString("message") } catch (_: Exception) { null }
         return when (code) {
             400 -> if (apiMsg?.contains("API key", ignoreCase = true) == true)
-                ApiFailure("Your Gemini API key looks invalid. Open Settings → API Room and check the key.", false)
+                ApiFailure("Your Gemini API key looks invalid. Open Settings -> API Room and check the key.", false)
             else ApiFailure("Gemini could not process this request. ${apiMsg.orEmpty()}".trim(), false)
-            401, 403 -> ApiFailure("Gemini rejected your API key (or it has no access to this model). Open Settings → API Room and check the key.", false)
-            404 -> ApiFailure("The selected model isn't available for your key.", false, modelMissing = true)
-            429 -> ApiFailure("Gemini rate limit / free quota reached. Wait a minute and try again, or switch model in the Sidebar.", true)
+            401, 403 -> ApiFailure("Gemini rejected your API key (or it has no access to this model). Open Settings -> API Room and check the key.", false)
+            404 -> ApiFailure("The selected model isn't available for your key. Open API Room and tap Model Detector.", false, modelMissing = true)
+            429 -> ApiFailure("Gemini rate limit / free quota reached. Wait a minute and try again, or switch model in API Room.", true)
             500, 502, 503, 504 -> ApiFailure("Gemini is busy right now. Please try again in a moment.", true)
             else -> ApiFailure("Gemini error (HTTP $code). ${apiMsg.orEmpty()}".trim(), false)
         }
@@ -139,77 +170,111 @@ class AiService {
 
     /** One HTTP call to Gemini, returning both content parts and any groundingMetadata web chunks. */
     private fun callGeminiWithMetadata(model: String, apiKey: String, body: JSONObject): GeminiCallResponse {
-        val cleanModel = model.removePrefix("models/").trim().ifBlank { "gemini-2.0-flash" }
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$cleanModel:generateContent"
-        val request = Request.Builder()
-            .url(url)
-            .header("x-goog-api-key", apiKey)
-            .post(body.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-        val response = try {
-            client.newCall(request).execute()
-        } catch (_: java.io.IOException) {
-            throw ApiFailure("Couldn't reach Gemini. Check your internet connection and try again.", true)
+        val cleanModel = model.removePrefix("models/").trim()
+        if (cleanModel.isBlank()) {
+            throw ApiFailure("No active model selected. Open API Room and tap Model Detector.", false)
         }
-        response.use { resp ->
-            val text = resp.body?.string()
-            if (!resp.isSuccessful) throw describeHttpError(resp.code, text)
-            if (text.isNullOrBlank()) throw ApiFailure("Gemini returned an empty response.", true)
-            val json = JSONObject(text)
-            val candidates = json.optJSONArray("candidates")
-            if (candidates == null || candidates.length() == 0) {
-                val block = json.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty()
-                throw ApiFailure(
-                    if (block.isNotBlank()) "Gemini blocked this request ($block). Try rephrasing." else "Gemini didn't return an answer. Try again.",
-                    false
-                )
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$cleanModel:generateContent?key=$apiKey"
+
+        for (tokenCap in listOf(65536, 8192, 0)) {
+            val attemptBody = JSONObject(body.toString())
+            val genCfg = attemptBody.optJSONObject("generationConfig") ?: JSONObject()
+            if (tokenCap > 0) {
+                genCfg.put("maxOutputTokens", tokenCap)
+            } else {
+                genCfg.remove("maxOutputTokens")
             }
-            val cand = candidates.getJSONObject(0)
-            val parts = cand.optJSONObject("content")?.optJSONArray("parts")
-            if (parts == null || parts.length() == 0) {
-                val reason = cand.optString("finishReason")
-                throw ApiFailure(
-                    if (reason == "SAFETY") "Gemini's safety filter stopped this answer. Try rephrasing." else "Gemini sent an empty answer. Try again.",
-                    reason != "SAFETY"
-                )
+            attemptBody.put("generationConfig", genCfg)
+
+            val request = Request.Builder()
+                .url(url)
+                .header("x-goog-api-key", apiKey)
+                .post(attemptBody.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            val response = try {
+                client.newCall(request).execute()
+            } catch (_: java.io.IOException) {
+                throw ApiFailure("Couldn't reach Gemini. Check your internet connection and try again.", true)
             }
-            val groundingHits = mutableListOf<WebSearchHit>()
-            val groundingMeta = cand.optJSONObject("groundingMetadata")
-            val chunks = groundingMeta?.optJSONArray("groundingChunks")
-            if (chunks != null) {
-                for (i in 0 until chunks.length()) {
-                    val web = chunks.optJSONObject(i)?.optJSONObject("web") ?: continue
-                    val uri = web.optString("uri").trim()
-                    val title = web.optString("title").trim().ifBlank { uri }
-                    if (uri.isNotBlank()) {
-                        groundingHits.add(WebSearchHit(title = title, url = uri, snippet = "", source = "Google Grounding"))
+            response.use { resp ->
+                val text = resp.body?.string()
+                if (!resp.isSuccessful) {
+                    if (resp.code == 400 && tokenCap > 0 && text?.contains("maxOutputTokens", ignoreCase = true) == true) {
+                        return@use
+                    }
+                    throw describeHttpError(resp.code, text)
+                }
+                if (text.isNullOrBlank()) throw ApiFailure("Gemini returned an empty response.", true)
+                val json = JSONObject(text)
+                val candidates = json.optJSONArray("candidates")
+                if (candidates == null || candidates.length() == 0) {
+                    val block = json.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty()
+                    throw ApiFailure(
+                        if (block.isNotBlank()) "Gemini blocked this request ($block). Try rephrasing." else "Gemini didn't return an answer. Try again.",
+                        false
+                    )
+                }
+                val cand = candidates.getJSONObject(0)
+                val parts = cand.optJSONObject("content")?.optJSONArray("parts")
+                if (parts == null || parts.length() == 0) {
+                    val reason = cand.optString("finishReason")
+                    throw ApiFailure(
+                        if (reason == "SAFETY") "Gemini's safety filter stopped this answer. Try rephrasing." else "Gemini sent an empty answer. Try again.",
+                        reason != "SAFETY"
+                    )
+                }
+                val groundingHits = mutableListOf<WebSearchHit>()
+                val groundingMeta = cand.optJSONObject("groundingMetadata")
+                val chunks = groundingMeta?.optJSONArray("groundingChunks")
+                if (chunks != null) {
+                    for (i in 0 until chunks.length()) {
+                        val web = chunks.optJSONObject(i)?.optJSONObject("web") ?: continue
+                        val uri = web.optString("uri").trim()
+                        val title = web.optString("title").trim().ifBlank { uri }
+                        if (uri.isNotBlank()) {
+                            groundingHits.add(
+                                WebSearchHit(
+                                    title = title,
+                                    url = uri,
+                                    snippet = "",
+                                    source = extractDomain(uri),
+                                    domain = extractDomain(uri)
+                                )
+                            )
+                        }
                     }
                 }
+                return GeminiCallResponse(parts = parts, groundingHits = groundingHits.distinctBy { it.url })
             }
-            return GeminiCallResponse(parts = parts, groundingHits = groundingHits.distinctBy { it.url })
         }
+        throw ApiFailure("Gemini could not process this request.", false)
     }
 
-    /** Calls Gemini with retry on transient errors and fallback when the chosen model isn't available. */
+    /** Calls Gemini with retry on transient errors and dynamic model resolution when model is blank or missing. */
     private suspend fun generateWithMeta(apiKey: String, model: String, body: JSONObject): GeminiCallResponse {
         val key = apiKey.trim()
-        if (key.isBlank()) throw ApiFailure("No API key set. Open Settings → API Room and add your Gemini API key.", false)
-        val cleanModel = model.removePrefix("models/").trim().ifBlank { "gemini-2.0-flash" }
-        val candidatesModels = listOf(cleanModel, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash").distinct()
+        if (key.isBlank()) throw ApiFailure("No API key set. Open Settings -> API Room and add your Gemini API key.", false)
+        val primaryModel = resolveDynamicModel("Gemini", key, "", model)
         var lastFailure: ApiFailure? = null
-        for (m in candidatesModels) {
-            var attempt = 0
-            while (attempt < 3) {
-                try {
-                    return callGeminiWithMetadata(m, key, body)
-                } catch (f: ApiFailure) {
-                    lastFailure = f
-                    if (f.modelMissing) break // try next model
-                    if (!f.retryable) throw f
-                    attempt++
-                    if (attempt < 3) delay(1200L * attempt)
-                    else throw f
+        var attempt = 0
+        while (attempt < 3) {
+            try {
+                return callGeminiWithMetadata(primaryModel, key, body)
+            } catch (f: ApiFailure) {
+                lastFailure = f
+                if (f.modelMissing) {
+                    // Query live models from the user's API key if the previously saved model is no longer available
+                    val check = ApiConnectivityChecker.check("Gemini", key, "")
+                    val fallbackLive = check.models.firstOrNull { !it.equals(primaryModel, ignoreCase = true) }
+                    if (!fallbackLive.isNullOrBlank()) {
+                        return callGeminiWithMetadata(fallbackLive, key, body)
+                    }
+                    throw f
                 }
+                if (!f.retryable) throw f
+                attempt++
+                if (attempt < 3) delay(1200L * attempt)
+                else throw f
             }
         }
         throw lastFailure ?: ApiFailure("Something went wrong talking to Gemini.", true)
@@ -230,17 +295,15 @@ class AiService {
     }
 
     /**
-     * Live Multi-Source Web Search Engine:
-     * Queries DuckDuckGo HTML/Lite, Google News RSS, and Wikipedia API in parallel/sequence
-     * so that when `SEARCH` mode is ON (or `web_search` tool is called), the agent always gets
-     * real, live web results, snippets, publication dates, and URLs across ALL models & providers.
+     * Live Multi-Source Web Search Engine with Deep Page Extraction (no artificial truncation):
+     * Queries DuckDuckGo HTML, Google News RSS, and Wikipedia API, and extracts readable article text
+     * from top web pages so detailed notes and PDFs have comprehensive factual depth.
      */
     suspend fun performWebSearch(rawQuery: String): WebSearchOutcome = withContext(Dispatchers.IO) {
         val query = rawQuery
             .replace(Regex("^(search|google|find|look up|pata karo|search karo|tell me about)\\s+", RegexOption.IGNORE_CASE), "")
             .trim()
-            .take(180)
-            .ifBlank { rawQuery.take(180) }
+            .ifBlank { rawQuery.trim() }
 
         val hits = mutableListOf<WebSearchHit>()
 
@@ -262,20 +325,21 @@ class AiService {
                         RegexOption.IGNORE_CASE
                     )
                     for (m in blockRegex.findAll(html)) {
-                        if (hits.size >= 6) break
+                        if (hits.size >= 10) break
                         val rawHref = m.groupValues[1]
                         val cleanUrl = extractRealUrlFromDdg(rawHref)
                         val title = stripHtmlTags(m.groupValues[2])
                         val snippet = stripHtmlTags(m.groupValues[3].ifBlank { m.groupValues[4] })
                         if (title.isNotBlank() && cleanUrl.startsWith("http")) {
-                            hits.add(WebSearchHit(title = title, url = cleanUrl, snippet = snippet, source = "Web"))
+                            val dom = extractDomain(cleanUrl)
+                            hits.add(WebSearchHit(title = title, url = cleanUrl, snippet = snippet, source = dom, domain = dom))
                         }
                     }
                 }
             }
         }
 
-        // 2. Google News RSS for dated news & official announcements (especially useful for AI model releases & current events)
+        // 2. Google News RSS for dated news & official announcements
         runCatching {
             val encoded = URLEncoder.encode(query, "UTF-8")
             val newsUrl = "https://news.google.com/rss/search?q=$encoded&hl=en-US&gl=US&ceid=US:en"
@@ -288,13 +352,15 @@ class AiService {
                 val xml = resp.body?.string().orEmpty()
                 if (resp.isSuccessful && xml.isNotBlank()) {
                     val itemRegex = Regex("<item>([\\s\\S]*?)</item>", RegexOption.IGNORE_CASE)
+                    val sourceUrlRegex = Regex("<source[^>]*url=\"([^\"]+)\"[^>]*>", RegexOption.IGNORE_CASE)
                     for (m in itemRegex.findAll(xml)) {
-                        if (hits.size >= 9) break
+                        if (hits.size >= 15) break
                         val itemXml = m.groupValues[1]
                         val title = extractXmlTag(itemXml, "title")
                         val link = extractXmlTag(itemXml, "link")
                         val pubDate = extractXmlTag(itemXml, "pubDate")
                         val source = extractXmlTag(itemXml, "source")
+                        val srcUrl = sourceUrlRegex.find(itemXml)?.groupValues?.getOrNull(1).orEmpty()
                         val desc = stripHtmlTags(extractXmlTag(itemXml, "description"))
                         if (title.isNotBlank() && link.isNotBlank()) {
                             val snippet = buildString {
@@ -302,7 +368,8 @@ class AiService {
                                 if (pubDate.isNotBlank()) append("Published: $pubDate. ")
                                 if (desc.isNotBlank() && !desc.equals(title, ignoreCase = true)) append(desc)
                             }.trim()
-                            hits.add(WebSearchHit(title = title, url = link, snippet = snippet, source = source.ifBlank { "Google News" }))
+                            val dom = if (srcUrl.isNotBlank()) extractDomain(srcUrl) else extractDomain(link)
+                            hits.add(WebSearchHit(title = title, url = link, snippet = snippet, source = source.ifBlank { dom }, domain = dom))
                         }
                     }
                 }
@@ -310,28 +377,34 @@ class AiService {
         }
 
         // 3. Wikipedia Search API for encyclopedic / factual grounding
-        if (hits.size < 5) {
-            runCatching {
-                val encoded = URLEncoder.encode(query, "UTF-8")
-                val wikiUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&utf8=&format=json&srlimit=3"
-                val req = Request.Builder()
-                    .url(wikiUrl)
-                    .header("User-Agent", "AUNotesAndroid/1.0 (https://aistudio.google.com)")
-                    .get()
-                    .build()
-                client.newCall(req).execute().use { resp ->
-                    val body = resp.body?.string().orEmpty()
-                    if (resp.isSuccessful && body.isNotBlank()) {
-                        val searchArr = JSONObject(body).optJSONObject("query")?.optJSONArray("search")
-                        if (searchArr != null) {
-                            for (i in 0 until searchArr.length()) {
-                                val item = searchArr.getJSONObject(i)
-                                val title = item.optString("title")
-                                val snippet = stripHtmlTags(item.optString("snippet"))
-                                if (title.isNotBlank()) {
-                                    val pageUrl = "https://en.wikipedia.org/wiki/${URLEncoder.encode(title.replace(' ', '_'), "UTF-8")}"
-                                    hits.add(WebSearchHit(title = "$title — Wikipedia", url = pageUrl, snippet = snippet, source = "Wikipedia"))
-                                }
+        runCatching {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val wikiUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&utf8=&format=json&srlimit=5"
+            val req = Request.Builder()
+                .url(wikiUrl)
+                .header("User-Agent", "AUNotesAndroid/1.0")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (resp.isSuccessful && body.isNotBlank()) {
+                    val searchArr = JSONObject(body).optJSONObject("query")?.optJSONArray("search")
+                    if (searchArr != null) {
+                        for (i in 0 until searchArr.length()) {
+                            val item = searchArr.getJSONObject(i)
+                            val title = item.optString("title")
+                            val snippet = stripHtmlTags(item.optString("snippet"))
+                            if (title.isNotBlank()) {
+                                val pageUrl = "https://en.wikipedia.org/wiki/${URLEncoder.encode(title.replace(' ', '_'), "UTF-8")}"
+                                hits.add(
+                                    WebSearchHit(
+                                        title = "$title — Wikipedia",
+                                        url = pageUrl,
+                                        snippet = snippet,
+                                        source = "en.wikipedia.org",
+                                        domain = "en.wikipedia.org"
+                                    )
+                                )
                             }
                         }
                     }
@@ -339,24 +412,88 @@ class AiService {
             }
         }
 
-        val uniqueHits = hits.distinctBy { it.title.lowercase().take(45) }.take(8)
+        val uniqueHits = hits.distinctBy { it.url }.take(15)
+
+        // 4. Deep readable article text extraction from top 4 web hits (up to 10,000 chars each)
+        val deepExcerpts = mutableListOf<Pair<String, String>>()
+        for (hit in uniqueHits.filter { !it.url.contains("news.google.com") }.take(4)) {
+            val pageText = fetchReadablePageContent(hit.url, maxChars = 10000)
+            if (pageText.length > 140) {
+                deepExcerpts.add("${hit.title} (${hit.domain})" to pageText)
+            }
+        }
+
         val formatted = if (uniqueHits.isEmpty()) {
-            "[LIVE WEB SEARCH RESULTS for \"$query\"]\nNo exact web pages matched \"$query\". If the user is asking about a specific model name or claim (such as \"$query\"), note that no official public web announcement was found for that exact name."
+            "[LIVE WEB SEARCH RESULTS for \"$query\"]\nNo direct web pages matched \"$query\"."
         } else {
             buildString {
                 append("[LIVE WEB SEARCH RESULTS for \"$query\"]\n")
                 uniqueHits.forEachIndexed { idx, hit ->
-                    append("${idx + 1}. **${hit.title}**\n")
+                    append("${idx + 1}. **${hit.title}** (${hit.domain})\n")
                     append("   URL: ${hit.url}\n")
                     if (hit.snippet.isNotBlank()) {
-                        append("   Snippet: ${hit.snippet}\n")
+                        append("   Summary: ${hit.snippet}\n")
                     }
                 }
-                append("\nUse these live web results to answer accurately. Cite relevant sources with markdown links `[Source Title](URL)` at the end of your response.")
+                if (deepExcerpts.isNotEmpty()) {
+                    append("\n--- DEEP EXTRACTED ARTICLE CONTENT FROM TOP WEBSITES ---\n")
+                    deepExcerpts.forEach { (sourceLabel, content) ->
+                        append("### Source: $sourceLabel\n$content\n\n")
+                    }
+                }
+                append("\nUse these verified web results to provide an exhaustive, comprehensive, well-structured response. Do NOT paste raw URLs inside your sentences; the app automatically attaches interactive Website Source Cards with favicons.")
+                val sourcesTag = buildWebSourcesMarker(uniqueHits)
+                if (sourcesTag.isNotBlank()) {
+                    append("\n").append(sourcesTag)
+                }
             }
         }
 
         WebSearchOutcome(query = query, hits = uniqueHits, formattedContext = formatted)
+    }
+
+    private fun fetchReadablePageContent(url: String, maxChars: Int = 10000): String {
+        return try {
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return ""
+                val html = resp.body?.string().orEmpty()
+                if (html.isBlank()) return ""
+                val withoutScripts = html
+                    .replace(Regex("<script[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("<style[\\s\\S]*?</style>", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("<nav[\\s\\S]*?</nav>", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("<footer[\\s\\S]*?</footer>", RegexOption.IGNORE_CASE), " ")
+                val plain = stripHtmlTags(withoutScripts)
+                if (plain.length > maxChars) plain.substring(0, maxChars) else plain
+            }
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    fun buildWebSourcesMarker(hits: List<WebSearchHit>): String {
+        if (hits.isEmpty()) return ""
+        val arr = JSONArray()
+        hits.take(10).forEach { h ->
+            if (h.url.startsWith("http")) {
+                arr.put(
+                    JSONObject().apply {
+                        put("title", h.title.ifBlank { h.domain })
+                        put("url", h.url)
+                        put("domain", h.domain.ifBlank { extractDomain(h.url) })
+                        put("snippet", h.snippet)
+                    }
+                )
+            }
+        }
+        if (arr.length() == 0) return ""
+        val b64 = android.util.Base64.encodeToString(arr.toString().toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+        return "[web_sources_json:$b64]"
     }
 
     private fun extractRealUrlFromDdg(rawHref: String): String {
@@ -402,7 +539,7 @@ class AiService {
     suspend fun generateWithTools(
         prompt: String,
         apiKey: String,
-        model: String = "gemini-2.0-flash",
+        model: String = "",
         noteContext: String? = null,
         history: List<ConversationTurn> = emptyList(),
         allowEditCurrentNote: Boolean = false,
@@ -424,7 +561,7 @@ class AiService {
                 append("\nYou are also running INSIDE the active note in [Current Note Context]. When the user asks to edit or update THIS active note, call edit_current_note or edit_note with the note's COMPLETE new text.")
             }
             if (!noteContext.isNullOrBlank()) {
-                append("\n\n[Current Note Context]\n").append(noteContext.take(30000))
+                append("\n\n[Current Note Context]\n").append(noteContext)
             }
             if (webOutcome != null) {
                 append("\n\n").append(webOutcome.formattedContext)
@@ -432,14 +569,17 @@ class AiService {
         }
 
         if (provider != "Gemini") {
-            onStatus?.invoke("Connecting to $provider ($model)...")
             return@withContext try {
-                val responseText = if (provider == "Anthropic") {
-                    callAnthropic(apiKey, model.ifBlank { "claude-3-5-sonnet-20241022" }, system, history, prompt)
+                val chosenModel = resolveDynamicModel(provider, apiKey, customBaseUrl, model)
+                onStatus?.invoke("Connecting to $provider ($chosenModel)...")
+                val responseText = if (provider == "Anthropic" || provider == "Claude") {
+                    callAnthropic(apiKey, chosenModel, system, history, prompt)
                 } else {
                     val base = when (provider) {
                         "DeepSeek" -> "https://api.deepseek.com"
                         "OpenAI" -> "https://api.openai.com/v1"
+                        "Groq" -> "https://api.groq.com/openai/v1"
+                        "OpenRouter" -> "https://api.openrouter.ai/api/v1"
                         "Kimi" -> "https://api.moonshot.cn/v1"
                         else -> {
                             var b = customBaseUrl.trim()
@@ -447,17 +587,11 @@ class AiService {
                             b.ifBlank { "https://api.openai.com/v1" }
                         }
                     }
-                    val chosenModel = when {
-                        model.isNotBlank() -> model
-                        provider == "DeepSeek" -> "deepseek-chat"
-                        provider == "OpenAI" -> "gpt-4o-mini"
-                        else -> "gpt-4o-mini"
-                    }
                     callOpenAiCompatible(base, apiKey, chosenModel, system, history, prompt)
                 }
                 AiActionResult.Text(appendSourcesIfMissing(responseText, webOutcome?.hits.orEmpty()))
             } catch (e: Exception) {
-                AiActionResult.Text("⚠️ $provider error: ${e.message ?: "Failed to generate response. Check API key and account balance in API Room."}")
+                AiActionResult.Text("Error ($provider): ${e.message ?: "Failed to generate response. Check API key and account balance in API Room."}")
             }
         }
 
@@ -504,7 +638,7 @@ class AiService {
             put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             put("contents", buildContents(history, textContent("user", prompt)))
             put("tools", JSONArray().put(JSONObject().put("functionDeclarations", functionDeclarations)))
-            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 8192))
+            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 65536))
         }
 
         try {
@@ -523,9 +657,9 @@ class AiService {
             )
             AiActionResult.Text(finalReply)
         } catch (f: ApiFailure) {
-            AiActionResult.Text("⚠️ ${f.userMessage}")
+            AiActionResult.Text("Error: ${f.userMessage}")
         } catch (e: Exception) {
-            AiActionResult.Text("⚠️ Something went wrong: ${e.message ?: "unknown error"}")
+            AiActionResult.Text("Error: ${e.message ?: "unknown error"}")
         }
     }
 
@@ -546,36 +680,32 @@ class AiService {
 
     /**
      * Heuristic detector used only when explicitly requested by callers that don't have a toggle.
-     * In AiChatScreen, the dedicated `SEARCH` toggle controls web search directly.
      */
     fun shouldUseWebSearch(prompt: String): Boolean {
         val q = prompt.trim().lowercase()
         if (q.length < 6) return false
         val localNoteVerbs = listOf("create_note", "edit_note", "delete_note", "move_note", "open_folder", "note me", "note mein", "folder bana")
-        if (localNoteVerbs.any { q.contains(it) } && !q.contains("search") && !q.contains("latest") && !q.contains("news")) {
+        if (localNoteVerbs.any { q.contains(it) } && !q.contains("search") && !q.contains("latest") && !q.contains("news") && !q.contains("detail") && !q.contains("pdf")) {
             return false
         }
         val webTriggers = listOf(
             "search", "google", "web", "internet", "online", "latest", "current", "today", "aaj",
             "news", "khabar", "price", "rate", "stock", "weather", "score", "match", "who is",
             "what is the latest", "2025", "2026", "update", "release", "repo", "github", "url", "website", "link",
-            "kaun hai", "kab hua", "kahaan hai", "pata karo", "search karo", "dhundo", "mythos", "fable"
+            "kaun hai", "kab hua", "kahaan hai", "pata karo", "search karo", "dhundo", "mythos", "fable",
+            "detail", "detailed", "pdf", "report", "guide", "research"
         )
         return webTriggers.any { q.contains(it) }
     }
 
-    private fun appendSourcesIfMissing(reply: String, hits: List<WebSearchHit>): String {
-        if (hits.isEmpty() || reply.startsWith("⚠️") || reply.contains("<tool_call>")) return reply
-        // Don't append if the model already included markdown URLs from the hits
-        val hasUrlAlready = hits.any { h -> reply.contains(h.url.take(35), ignoreCase = true) }
-        if (hasUrlAlready) return reply
-        val topHits = hits.take(4)
+    fun appendSourcesIfMissing(reply: String, hits: List<WebSearchHit>): String {
+        if (hits.isEmpty() || reply.startsWith("Error:") || reply.contains("<tool_call>")) return reply
+        if (reply.contains("[web_sources_json:")) return reply
+        val marker = buildWebSourcesMarker(hits)
+        if (marker.isBlank()) return reply
         return buildString {
             append(reply.trimEnd())
-            append("\n\n---\n**🌐 Web Sources:**\n")
-            topHits.forEach { h ->
-                append("- [${h.title.take(75)}](${h.url})\n")
-            }
+            append("\n\n").append(marker)
         }.trim()
     }
 
@@ -591,9 +721,12 @@ class AiService {
         enableWebSearch: Boolean = false
     ): String = withContext(Dispatchers.IO) {
         try {
-            // When SEARCH mode is ON (and we're not just feeding back an internal [TOOL RESULT]),
-            // fetch live web search results so every model/provider gets real grounded web context.
             val isToolResultTurn = prompt.trimStart().startsWith("[TOOL RESULT")
+            // Also extract any [web_sources_json:...] embedded inside a [TOOL RESULT] from web_search tool
+            val toolWebSourcesMarker = if (isToolResultTurn && prompt.contains("[web_sources_json:")) {
+                Regex("\\[web_sources_json:[^\\]]+\\]").find(prompt)?.value
+            } else null
+
             val liveWebOutcome = if (enableWebSearch && !isToolResultTurn) {
                 runCatching { performWebSearch(prompt) }.getOrNull()
             } else null
@@ -608,7 +741,7 @@ class AiService {
                 val latest = JSONObject().apply {
                     put("role", "user")
                     val parts = JSONArray().put(JSONObject().put("text", prompt))
-                    for (img in imagesBase64.take(8)) {
+                    for (img in imagesBase64.take(10)) {
                         parts.put(
                             JSONObject().put(
                                 "inline_data",
@@ -623,7 +756,7 @@ class AiService {
                 val baseBody = JSONObject().apply {
                     put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", effectiveSystem))))
                     put("contents", buildContents(history, latest))
-                    put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 8192))
+                    put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 65536))
                 }
                 if (enableWebSearch && !isToolResultTurn) {
                     val searchBody = JSONObject(baseBody.toString()).apply {
@@ -637,26 +770,37 @@ class AiService {
                             return@withContext appendSourcesIfMissing(txt, combinedHits)
                         }
                     } catch (_: Exception) {
-                        // Fall back cleanly to standard generation (which already has liveWebOutcome in effectiveSystem!)
+                        // Fall back cleanly to standard generation (which already has liveWebOutcome in effectiveSystem)
                     }
                 }
                 val rawText = joinText(generate(apiKey, model, baseBody)).ifBlank {
                     "I couldn't come up with an answer. Could you rephrase that?"
                 }
-                appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
-            } else if (provider == "Anthropic") {
+                var withSources = appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
+                if (toolWebSourcesMarker != null && !withSources.contains("[web_sources_json:") && !withSources.contains("<tool_call>")) {
+                    withSources = withSources.trimEnd() + "\n\n" + toolWebSourcesMarker
+                }
+                withSources
+            } else if (provider == "Anthropic" || provider == "Claude") {
+                val activeModel = resolveDynamicModel(provider, apiKey, baseUrl, model)
                 val rawText = callAnthropic(
                     apiKey,
-                    model.ifBlank { "claude-3-5-sonnet-20241022" },
+                    activeModel,
                     effectiveSystem,
                     normalizeTurns(history),
                     prompt
                 )
-                appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
+                var withSources = appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
+                if (toolWebSourcesMarker != null && !withSources.contains("[web_sources_json:") && !withSources.contains("<tool_call>")) {
+                    withSources = withSources.trimEnd() + "\n\n" + toolWebSourcesMarker
+                }
+                withSources
             } else {
                 val base = when (provider) {
                     "DeepSeek" -> "https://api.deepseek.com"
                     "OpenAI" -> "https://api.openai.com/v1"
+                    "Groq" -> "https://api.groq.com/openai/v1"
+                    "OpenRouter" -> "https://openrouter.ai/api/v1"
                     "Kimi" -> "https://api.moonshot.cn/v1"
                     else -> {
                         var b = baseUrl.trim()
@@ -664,20 +808,18 @@ class AiService {
                         b.ifBlank { "https://api.openai.com/v1" }
                     }
                 }
-                val chosen = model.ifBlank {
-                    when (provider) {
-                        "DeepSeek" -> "deepseek-chat"
-                        "OpenAI" -> "gpt-4o-mini"
-                        else -> "gpt-4o-mini"
-                    }
-                }
+                val chosen = resolveDynamicModel(provider, apiKey, base, model)
                 val rawText = callOpenAiCompatible(base, apiKey, chosen, effectiveSystem, normalizeTurns(history), prompt)
-                appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
+                var withSources = appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
+                if (toolWebSourcesMarker != null && !withSources.contains("[web_sources_json:") && !withSources.contains("<tool_call>")) {
+                    withSources = withSources.trimEnd() + "\n\n" + toolWebSourcesMarker
+                }
+                withSources
             }
         } catch (f: ApiFailure) {
-            "⚠️ ${f.userMessage}"
+            "Error: ${f.userMessage}"
         } catch (e: Exception) {
-            "⚠️ $provider error: ${e.message ?: "Failed to generate response. Check API key in API Room."}"
+            "Error ($provider): ${e.message ?: "Failed to generate response. Check API key in API Room."}"
         }
     }
 
@@ -710,7 +852,7 @@ class AiService {
     suspend fun generateResponse(
         prompt: String,
         apiKey: String,
-        model: String = "gemini-2.0-flash",
+        model: String = "",
         noteContext: String? = null,
         attachmentContent: String? = null,
         history: List<ConversationTurn> = emptyList(),
@@ -718,12 +860,12 @@ class AiService {
     ): String = withContext(Dispatchers.IO) {
         val system = buildString {
             append(baseSystemPrompt())
-            if (!noteContext.isNullOrBlank()) append("\n\n[Current Note Context]\n").append(noteContext.take(30000))
+            if (!noteContext.isNullOrBlank()) append("\n\n[Current Note Context]\n").append(noteContext)
         }
 
         val latestText = buildString {
             if (!attachmentContent.isNullOrBlank()) {
-                append("The user attached this document. Read it fully and use it to answer.\n")
+                append("The user attached this document. Read it fully and use it to answer thoroughly.\n")
                 append("=== DOCUMENT START ===\n").append(attachmentContent).append("\n=== DOCUMENT END ===\n\n")
             } else if (attachmentImagesBase64.isNotEmpty()) {
                 append("The user attached ${attachmentImagesBase64.size} image(s)/page(s). Look at them carefully (read any text in them) and use them to answer.\n\n")
@@ -734,7 +876,7 @@ class AiService {
         val latest = JSONObject().apply {
             put("role", "user")
             val parts = JSONArray().put(JSONObject().put("text", latestText))
-            for (img in attachmentImagesBase64.take(8)) {
+            for (img in attachmentImagesBase64.take(12)) {
                 parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", "image/png").put("data", img)))
             }
             put("parts", parts)
@@ -743,16 +885,16 @@ class AiService {
         val body = JSONObject().apply {
             put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             put("contents", buildContents(history, latest))
-            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 8192))
+            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 65536))
         }
 
         try {
             val text = joinText(generate(apiKey, model, body))
             text.ifBlank { "I couldn't come up with an answer. Could you rephrase that?" }
         } catch (f: ApiFailure) {
-            "⚠️ ${f.userMessage}"
+            "Error: ${f.userMessage}"
         } catch (e: Exception) {
-            "⚠️ Something went wrong: ${e.message ?: "unknown error"}"
+            "Error: ${e.message ?: "unknown error"}"
         }
     }
 
@@ -763,10 +905,10 @@ class AiService {
     suspend fun listAvailableModels(apiKey: String): Result<List<String>> = withContext(Dispatchers.IO) {
         val cleanKey = apiKey.trim()
         val res = ApiConnectivityChecker.check("Gemini", cleanKey)
-        if (res.isActive && res.availableModels.isNotEmpty()) {
-            Result.success(res.availableModels.distinct())
+        if (res.ok && res.models.isNotEmpty()) {
+            Result.success(res.models.distinct())
         } else {
-            Result.failure(Exception(res.statusMessage.ifBlank { "Invalid API key. Please check or change your API key." }))
+            Result.failure(Exception(res.message.ifBlank { "Invalid API key. Please check or change your API key." }))
         }
     }
 
@@ -775,7 +917,12 @@ class AiService {
         apiKey: String,
         baseUrl: String = ""
     ): Result<List<String>> = withContext(Dispatchers.IO) {
-        listAvailableModels(apiKey)
+        val res = ApiConnectivityChecker.check(provider, apiKey.trim(), baseUrl)
+        if (res.ok && res.models.isNotEmpty()) {
+            Result.success(res.models.distinct())
+        } else {
+            Result.failure(Exception(res.message.ifBlank { "Failed to detect models for $provider." }))
+        }
     }
 
     private fun callOpenAiCompatible(
@@ -793,7 +940,7 @@ class AiService {
             put("role", "system")
             put("content", systemPrompt)
         })
-        for (turn in history.takeLast(16)) {
+        for (turn in history.takeLast(24)) {
             if (turn.content.isNotBlank()) {
                 val r = if (turn.role == "bot" || turn.role == "model") "assistant" else "user"
                 messages.put(JSONObject().apply {
@@ -851,7 +998,7 @@ class AiService {
         userPrompt: String
     ): String {
         val messages = JSONArray()
-        for (turn in history.takeLast(16)) {
+        for (turn in history.takeLast(24)) {
             if (turn.content.isNotBlank()) {
                 val r = if (turn.role == "bot" || turn.role == "model") "assistant" else "user"
                 messages.put(JSONObject().apply {
@@ -867,7 +1014,7 @@ class AiService {
 
         val reqBody = JSONObject().apply {
             put("model", model)
-            put("max_tokens", 4096)
+            put("max_tokens", 8192)
             put("system", systemPrompt)
             put("messages", messages)
         }
@@ -919,7 +1066,10 @@ class AiService {
             .take(3500)
         if (cleanText.isBlank()) return@withContext Result.failure(Exception("Nothing to speak"))
 
-        val ttsModels = listOf("gemini-2.5-flash-preview-tts", "gemini-2.0-flash-exp", "gemini-2.0-flash")
+        val detectedRes = ApiConnectivityChecker.check("Gemini", cleanKey, "")
+        val ttsModels = detectedRes.models.filter {
+            it.contains("tts", ignoreCase = true) || it.contains("flash", ignoreCase = true)
+        }.ifEmpty { detectedRes.models }
         val chosenVoice = voiceName.ifBlank { "Puck" }
 
         for (m in ttsModels) {

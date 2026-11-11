@@ -195,6 +195,10 @@ object NoteExporter {
 
     private fun htmlEscape(s: String) = xmlEscape(s).replace("\n", "<br/>")
 
+    private val slideFenceRegex = Regex("```(?:[\\w ]*,)?(?:slides|slide_deck|typography_slides)\\s*\\n([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
+    private val chartFenceRegex = Regex("```(?:[\\w ]*,)?(?:chart|graph)\\s*\\n([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
+    private val webSourcesMarkerRegex = Regex("\\[web_sources_json:([^\\]]+)\\]")
+
     private fun buildHtml(note: NoteEntity): String {
         // If the note content is already a raw HTML document (or fenced ```html block), return it cleanly without wrapping!
         val rawTrimmed = note.content.trim().let { t ->
@@ -210,10 +214,18 @@ object NoteExporter {
         ) {
             return rawTrimmed
         }
+        // If the note is primarily a slide deck, export the full interactive sliding HTML presentation directly
+        val allSlideDecks = slideFenceRegex.findAll(note.content).mapNotNull { m ->
+            com.example.ui.components.AgentVisualsParser.parseSlideDeck(m.groupValues[1])
+        }.toList()
+        val nonSlideText = note.content.replace(slideFenceRegex, "").replace(webSourcesMarkerRegex, "").trim()
+        if (allSlideDecks.size == 1 && nonSlideText.isEmpty()) {
+            return com.example.ui.components.AgentVisualsParser.buildSlidingHtmlArtifact(allSlideDecks.first())
+        }
+
         val spans = RichTextFormatter.deserializeSpans(note.styleSpansJson)
         val body = StringBuilder()
         val text = ImageMarkers.blank(note.content)
-        // Split at every span boundary so styles nest correctly per segment.
         val cuts = (spans.flatMap { listOf(it.start, it.end) } + listOf(0, text.length))
             .map { it.coerceIn(0, text.length) }.distinct().sorted()
         for (i in 0 until cuts.size - 1) {
@@ -231,7 +243,21 @@ object NoteExporter {
                     "color" -> it.value?.let { c -> css += "color:$c;" }
                 }
             }
-            body.append("<span style=\"$css\">").append(htmlEscape(text.substring(s, e))).append("</span>")
+            val chunk = text.substring(s, e)
+                .replace(slideFenceRegex, "")
+                .replace(webSourcesMarkerRegex, "")
+            if (chunk.isNotEmpty()) {
+                body.append("<span style=\"$css\">").append(htmlEscape(chunk)).append("</span>")
+            }
+        }
+        val slidesEmbed = StringBuilder()
+        allSlideDecks.forEach { deck ->
+            val deckHtml = com.example.ui.components.AgentVisualsParser.buildSlidingHtmlArtifact(deck)
+            val b64 = Base64.encodeToString(deckHtml.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            slidesEmbed.append(
+                "<div style=\"margin:18px 0;\"><h3 style=\"margin:0 0 8px 0;\">${xmlEscape(deck.deckTitle)}</h3>" +
+                    "<iframe style=\"width:100%;height:420px;border:2px solid #18181B;border-radius:14px;\" src=\"data:text/html;base64,$b64\"></iframe></div>"
+            )
         }
         val tbl = StringBuilder()
         val rows = tableRows(note)
@@ -258,7 +284,7 @@ object NoteExporter {
         }
         return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
             "<title>${xmlEscape(note.title)}</title></head><body style=\"font-family:sans-serif;max-width:800px;margin:24px auto;padding:0 12px\">" +
-            "<div>$body</div>$tbl$imgs</body></html>"
+            "<div>$body</div>$slidesEmbed$tbl$imgs</body></html>"
     }
 
     // ---------------------------------------------------------------- images
@@ -562,19 +588,36 @@ object NoteExporter {
         }
         val allAtts = RichTextFormatter.deserializeAttachments(note.attachmentsJson)
         val placedInline = HashSet<String>()
-        if (note.content.isNotEmpty()) {
-            val body = buildSpannable(note)
-            if (note.isCodeFormat) body.setSpan(TypefaceSpan("monospace"), 0, body.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+        // Extract embedded slide decks and chart blocks so we render them visually instead of raw JSON
+        val embeddedSlideDecks = slideFenceRegex.findAll(note.content).mapNotNull { m ->
+            com.example.ui.components.AgentVisualsParser.parseSlideDeck(m.groupValues[1])
+        }.toList()
+        val embeddedCharts = chartFenceRegex.findAll(note.content).mapNotNull { m ->
+            com.example.ui.components.AgentVisualsParser.parseChart(m.groupValues[1])
+        }.toList()
+        val cleanedNoteForPdf = if (embeddedSlideDecks.isNotEmpty() || embeddedCharts.isNotEmpty() || note.content.contains("[web_sources_json:")) {
+            note.copy(
+                content = note.content
+                    .replace(slideFenceRegex, "")
+                    .replace(chartFenceRegex, "")
+                    .replace(webSourcesMarkerRegex, "")
+                    .trim(),
+                styleSpansJson = if (embeddedSlideDecks.isNotEmpty() || embeddedCharts.isNotEmpty()) "" else note.styleSpansJson
+            )
+        } else {
+            note
+        }
 
-            // Walk the note line by line: ordinary text is drawn as one block (styles kept), every
-            // "[img:id]" line draws its picture HERE, so the PDF mirrors the editor's order.
-            val lines = note.content.split("\n")
+        if (cleanedNoteForPdf.content.isNotEmpty()) {
+            val body = buildSpannable(cleanedNoteForPdf)
+            if (cleanedNoteForPdf.isCodeFormat) body.setSpan(TypefaceSpan("monospace"), 0, body.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+
+            val lines = cleanedNoteForPdf.content.split("\n")
             var offset = 0
             var segStart = 0
             fun flushText(endExclusive: Int) {
                 var a = segStart
                 var b = endExclusive
-                // trim the line break that separated text from the image
                 if (b > a && b <= body.length && body[b - 1] == '\n') b--
                 if (b > a) drawLayout(pager, makeLayout(body.subSequence(a, b), bodyPaint, cw), MARGIN)
             }
@@ -595,6 +638,53 @@ object NoteExporter {
             }
         }
 
+        // Render embedded Slide Decks visually in the PDF
+        embeddedSlideDecks.forEach { deck ->
+            deck.slides.forEachIndexed { idx, slide ->
+                val bmp = com.example.ui.components.AgentVisualsParser.renderSlideBitmap(
+                    deck = deck,
+                    slide = slide,
+                    slideIndex = idx,
+                    totalSlides = deck.slides.size,
+                    width = 1080,
+                    height = 1440
+                )
+                val targetW = pager.contentW
+                val targetH = targetW * (1440f / 1080f)
+                val maxH = pager.bottom - MARGIN
+                val drawW = if (targetH > maxH) targetW * (maxH / targetH) else targetW
+                val drawH = if (targetH > maxH) maxH else targetH
+                pager.y += 10f
+                pager.ensure(drawH)
+                val left = MARGIN + (pager.contentW - drawW) / 2f
+                pager.canvas!!.drawBitmap(
+                    bmp,
+                    null,
+                    android.graphics.RectF(left, pager.y, left + drawW, pager.y + drawH),
+                    Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+                )
+                pager.y += drawH + 12f
+                bmp.recycle()
+            }
+        }
+
+        // Render embedded Charts visually in the PDF
+        embeddedCharts.forEach { chartSpec ->
+            val bmp = com.example.ui.components.AgentVisualsParser.renderChartBitmap(chartSpec, 1200, 820)
+            val drawW = pager.contentW
+            val drawH = drawW * (820f / 1200f)
+            pager.y += 10f
+            pager.ensure(drawH)
+            pager.canvas!!.drawBitmap(
+                bmp,
+                null,
+                android.graphics.RectF(MARGIN, pager.y, MARGIN + drawW, pager.y + drawH),
+                Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+            )
+            pager.y += drawH + 12f
+            bmp.recycle()
+        }
+
         // Table
         val rows = tableRows(note)
         if (rows.isNotEmpty()) {
@@ -605,7 +695,6 @@ object NoteExporter {
         // Remaining attachments (legacy notes without inline position, or non-image files).
         allAtts.forEach { att ->
             if (att.id.isNotBlank() && att.mimeType.startsWith("image/")) {
-                // inline images without a marker line (deleted from the text) are not exported
                 return@forEach
             }
             pager.y += 12f

@@ -482,30 +482,26 @@ object AgentTools {
             ).append("\n")
         }
 
-        // Up-to-date AI Model Knowledge & Verification Rules (Requirement #7)
+        // Verification & Research Rules
         append(
             """
             
-            [AI MODEL KNOWLEDGE & STRICT VERIFICATION RULES]
-            1. Confirmed Modern AI Model Landscape (Baseline Knowledge):
-               - **Google Gemini**: Gemini 2.5 Pro (`gemini-2.5-pro`), Gemini 2.5 Flash (`gemini-2.5-flash`), Gemini 2.5 Flash-Lite, Gemini 2.0 Flash (`gemini-2.0-flash`), Gemini 1.5 Pro/Flash. (Plus experimental/preview builds such as Gemini 3.x preview series when available in API).
-               - **Anthropic Claude**: Claude 3.5 Sonnet, Claude 3.5 Haiku, Claude 3.7 Sonnet (hybrid reasoning model), Claude 4 Sonnet / Claude Sonnet 4, Claude 4 Opus / Claude Opus 4.
-               - **OpenAI**: GPT-4o, GPT-4o mini, GPT-4.1 / GPT-4.1 mini / nano, GPT-4.5 (Orion preview), o1, o1-mini, o3, o3-mini, o4-mini.
-               - **DeepSeek**: DeepSeek-V3 (671B MoE), DeepSeek-R1 (open-weights reasoning model).
-               - **Meta / Others**: Llama 3.3, Llama 4 (Scout / Maverick), Qwen 2.5 / Qwen 3, Mistral Large 2, Kimi k1.5 / k2.
-            2. Strict Rule for Unfamiliar, Codenamed, or Rumored Models (e.g., "Claude Mythos", "Claude Fable", etc.):
-               - NEVER fabricate benchmark numbers, parameter counts, or release dates for an unfamiliar or rumored model name.
-               - NEVER blindly agree that a rumored/codenamed model is an officially released product without verification, AND never blindly dismiss a brand-new release without checking if Search Mode / `web_search` is available.
-               - If `SEARCH` mode is ON (or `web_search` tool is enabled):
-                 1) Search the web for the exact model name (e.g. `"Claude Mythos" Anthropic official release OR rumor`).
-                 2) Check official vendor announcements (Anthropic, Google, OpenAI, DeepSeek) vs. community rumors/leaks.
-                 3) Clearly distinguish between **officially released models** and **unconfirmed codenames, rumors, or fictional names**, citing the retrieved web sources and dates.
-               - If `SEARCH` mode is OFF and the user asks about an unverified or rumored model name not in confirmed official releases:
-                 State clearly that the name is not a confirmed official public release in your verified baseline (it may be an internal codename, rumor, or very recent announcement) and offer to verify it live if they enable `SEARCH` mode (or call `web_search` if enabled).
+            [VERIFICATION & DEEP RESEARCH RULES]
+            1. Fact Verification:
+               - NEVER fabricate benchmark numbers, parameter counts, or release dates.
+               - When `SEARCH` mode is ON or `web_search` tool is enabled, search the web for the exact topic to gather real, up-to-date facts, dates, statistics, and official sources before answering or writing notes/PDFs.
+            2. DETAILED NOTES & PDF GENERATION (NO LENGTH OR DATA LIMITS):
+               - Whenever the user asks for detailed notes, an in-depth study guide, a report, or a PDF on any topic (`create_note`, `edit_note`, `edit_current_note`, or `create_pdf_document`), you MUST first call `web_search` (if enabled) to gather comprehensive facts, and then write an **exhaustive, long-form, deeply detailed document** with:
+                 • Multiple structured `#`, `##`, and `###` sections covering every aspect of the topic in depth
+                 • Complete explanations, historical context, key statistics, real-world examples, and step-by-step breakdowns
+                 • Markdown comparison tables (`| Col 1 | Col 2 |`) and key definitions wrapped in `==highlight==`
+               - NEVER cut short, summarize briefly, or omit details when creating notes or PDFs. Write as much thorough, well-organized detail as the topic deserves.
+            3. SLIDES IN INTERACTIVE SLIDING HTML ARTIFACT STYLE:
+               - Whenever the user asks for slides or a presentation, call `create_slide_deck` (or output a ```slides block). The app automatically renders it as an interactive horizontal sliding HTML artifact that the user can swipe through, add directly into their Notes, and export to PDF.
             """.trimIndent()
         ).append("\n")
 
-        // Editorial Warm-Paper Typography Slides, Charts, SVG & HTML Design System (Requirement #1 & Guide)
+        // Editorial Warm-Paper Typography Slides, Charts, SVG & HTML Design System
         append(
             """
             
@@ -526,68 +522,19 @@ object AgentTools {
                  • `section`: Uppercase category label for the top-right index bar (e.g., `"INDIAN ARMY"`, `"CONCEPT"`, `"TIMELINE"`, `"RANKS"`, `"BENCHMARK"`).
                  • `title`: Bold uppercase condensed display phrase (e.g., `"INDIAN"`, `"WARS THAT"`, `"OFFICER"`, `"TRAINED ON"`, `"2023"`).
                  • `accentTitle`: Italic serif accent word(s) rendered in the accent color right alongside or below the title (e.g., `"Army"`, `"shaped"`, `"ranks"`, `"text"`, `"breakout"`).
-                 • `subtitle` or `highlightText`: Concise 1–2 sentence takeaway; wrap key phrase in `==highlight==` to render an inline accent highlight box (e.g. `"==ChatGPT== made LLMs popular and showed how versatile AI can be."`).
+                 • `subtitle` or `highlightText`: Concise 1–2 sentence takeaway; wrap key phrase in `==highlight==` to render an inline accent highlight box.
                  • `layout`: Choose the best visual form for each slide so a deck has variety:
                    - `"cover"`: Hero title + italic accent + motto/subtitle + `"stats"` array (`[{"value":"1.2M+","label":"active troops"},{"value":"960K+","label":"reserve troops"},{"value":"7","label":"operational commands"}]`).
                    - `"timeline"`: Chronological or structured rows (`"rows":[{"year":"1947–48","title":"First Kashmir War","detail":"Line of Control established"},{"year":"1971","title":"Bangladesh Liberation","detail":"93,000 Pakistani troops surrendered"}]`).
                    - `"pyramid"`: Hierarchy or rank pyramid from top to bottom (`"pyramid":["Field Marshal","General (COAS)","Lieutenant General","Major General","Brigadier","Colonel","Lt Colonel","Major","Captain","Lieutenant"]`).
-                   - `"bars"`: Vertical benchmark bar chart with thick borders and icon badges (`"chartItems":[{"label":"Gemini 3","value":74.2,"color":"#EA580C","icon":"sparkle"},{"label":"DeepSeek","value":70.0,"color":"#DC2626","icon":"whale"}]`).
-                   - `"line"`: Growth curve / trend line with milestone callouts (`"chartItems":[{"label":"2017","value":12,"subtitle":"Transformer"},{"label":"2023","value":92,"subtitle":"ChatGPT"}]`).
+                   - `"bars"`: Vertical benchmark bar chart with thick borders and icon badges (`"chartItems":[{"label":"Model A","value":74.2,"color":"#EA580C","icon":"sparkle"},{"label":"Model B","value":70.0,"color":"#DC2626","icon":"whale"}]`).
+                   - `"line"`: Growth curve / trend line with milestone callouts (`"chartItems":[{"label":"2017","value":12,"subtitle":"Transformer"},{"label":"2023","value":92,"subtitle":"Breakout"}]`).
                    - `"diagram"`: Flow / architecture / neural network diagram (`"diagramNodes":["Books","Articles","Websites"]`, `"diagramCenter":"NEURAL NETWORK"`, `"diagramOutput":"LANGUAGE PATTERNS"`).
                    - `"bullets"`: Clean editorial key points (`"bullets":["Point 1","Point 2"]`).
-                 • `footnote`: Optional bottom note (e.g., `"Only two Field Marshals: K. M. Cariappa and Sam Manekshaw."`).
-               - Example `slides` block:
-                 ```slides
-                 {
-                   "title": "Indian Army — Typography Slides",
-                   "bgStartHex": "#EFECE4",
-                   "bgEndHex": "#E7E2D8",
-                   "textColorHex": "#18181B",
-                   "accentColorHex": "#3F6212",
-                   "secondaryAccentHex": "#CA8A04",
-                   "slides": [
-                     {
-                       "section": "INDIAN ARMY",
-                       "layout": "cover",
-                       "title": "INDIAN",
-                       "accentTitle": "Army",
-                       "subtitle": "==Seva Paramo Dharma== — Service Before Self. Founded 1 April 1895, New Delhi.",
-                       "stats": [
-                         {"value": "1.2M+", "label": "active troops"},
-                         {"value": "960K+", "label": "reserve troops"},
-                         {"value": "7", "label": "operational commands"}
-                       ]
-                     },
-                     {
-                       "section": "TIMELINE",
-                       "layout": "timeline",
-                       "title": "WARS THAT",
-                       "accentTitle": "shaped",
-                       "subtitle": "IT",
-                       "rows": [
-                         {"year": "1947–48", "title": "First Kashmir War", "detail": "Line of Control established"},
-                         {"year": "1971", "title": "Bangladesh Liberation", "detail": "93,000 troops surrendered"},
-                         {"year": "1999", "title": "Kargil War (Op Vijay)", "detail": "High-altitude peaks recaptured"}
-                       ]
-                     },
-                     {
-                       "section": "RANKS",
-                       "layout": "pyramid",
-                       "title": "OFFICER",
-                       "accentTitle": "ranks",
-                       "pyramid": ["Field Marshal", "General (COAS)", "Lieutenant General", "Major General", "Brigadier", "Colonel", "Lt Colonel", "Major", "Captain", "Lieutenant"],
-                       "footnote": "Only two Field Marshals: K. M. Cariappa and Sam Manekshaw."
-                     }
-                   ]
-                 }
-                 ```
+                 • `footnote`: Optional bottom note.
             3. **Charts & Built-in SVG Icons (`add_chart` or ```chart)**:
                - Supported `chart_type` / `type`: `"bar"`, `"pie"`, `"line"`, `"blocks"`, `"timeline"`, `"pyramid"`, `"table"`.
                - Supported built-in `icon` names on chart items: `"sparkle"`, `"gemini"`, `"whale"`, `"deepseek"`, `"claude"`, `"openai"`, `"cpu"`, `"code"`, `"star"`, `"check"`, `"trend"`, `"shield"`, `"book"`, `"bolt"`, `"globe"`.
-               - Example `chart` block:
-                 ```chart
-                 {"type":"bar","title":"SWE-BENCH VERIFIED","unit":"%","max":100,"data":[{"label":"Gemini 3","value":74.2,"color":"#EA580C","icon":"sparkle"},{"label":"DeepSeek R1","value":70.0,"color":"#DC2626","icon":"whale"},{"label":"Claude 3.7","value":72.5,"color":"#CA8A04","icon":"claude"}]}
-                 ```
             4. **Vector Diagrams (`diagram` block / `<svg>`)**:
                - Use `viewBox="0 0 680 400"`, warm paper background `<rect width="680" height="400" rx="18" fill="#EFECE4" stroke="#18181B" stroke-width="3"/>`, crisp `#18181B` strokes (`stroke-width="2.5"`), accent fills (`#EA580C`, `#3F6212`, `#CA8A04`), and clear typography labels so diagrams look like hand-crafted editorial illustrations.
             """.trimIndent()
@@ -602,15 +549,14 @@ object AgentTools {
                - Chat mode and Voice mode are ONE single continuous conversation.
                - You have full awareness of all previous messages in this chat session, open notes, and any uploaded files/images.
             2. DOCUMENT & IMAGE UPLOADS:
-               - When a document (PDF, DOCX, TXT, MD, etc.) is attached—even if the user didn't type a specific question—immediately provide a complete, structured analysis: (a) Document Overview, (b) Concise Summary, and (c) Key Points / Actionable Takeaways.
+               - When a document (PDF, DOCX, TXT, MD, etc.) is attached—even if the user didn't type a specific question—immediately provide a complete, structured analysis: (a) Document Overview, (b) Detailed Summary, and (c) Key Points / Actionable Takeaways.
                - When the user attaches an image and asks to insert it into a note, call `insert_image_to_note`.
                - When the user wants a REAL photo/picture in a note and did NOT attach one, call `add_image_to_note` with a specific 3-8 word `query`; the app downloads it and inserts it.
-               - IMAGES IN HTML ARTIFACTS (`create_html_page`): NEVER write remote image URLs (src="http..."). For every photo or real-world picture write `<img data-q="specific 3-8 word search query" alt="short description">`. The app finds, DOWNLOADS and embeds the images BEFORE the artifact is shown. Max 6 images, placed next to the text they illustrate, with CSS so a missing image never breaks the layout. Charts, graphs, icons and diagrams must be inline SVG, never images.
-               - If the tool result says some images were skipped, tell the user which ones and offer to retry with a different query.
+               - IMAGES IN HTML ARTIFACTS (`create_html_page`): NEVER write remote image URLs (src="http..."). For every photo or real-world picture write `<img data-q="specific 3-8 word search query" alt="short description">`. The app finds, DOWNLOADS and embeds the images BEFORE the artifact is shown.
             3. ADAPTIVE PROMPT WRITING:
-               - Small/simple need → output a **short, crisp prompt (2–3 lines only)** without fluff.
-               - Complex/detailed need → output a **structured long prompt** (Role, Context, Task, Constraints, Output Format).
-            4. LONG INPUT → ORGANISED `.md` FILE — FULL CONTEXT PRESERVATION:
+               - Small/simple need -> output a **short, crisp prompt (2–3 lines only)** without fluff.
+               - Complex/detailed need -> output a **structured long prompt** (Role, Context, Task, Constraints, Output Format).
+            4. LONG INPUT -> ORGANISED `.md` FILE — FULL CONTEXT PRESERVATION:
                - Preserve 100% of the user's actual context, details, instructions, and points! Never truncate or drop points.
                - Put any uncategorized items under `## Misc / Others`.
                - End with: `Input me N points the, output me N included.`
@@ -629,13 +575,13 @@ object AgentTools {
             append("\n[Notes touched in this chat session]\n").append(sessionNotes).append("\n")
         }
         if (!openNoteContext.isNullOrBlank()) {
-            append("\n[Note currently open on the user's screen]\n").append(openNoteContext.take(16000)).append("\n")
+            append("\n[Note currently open on the user's screen]\n").append(openNoteContext).append("\n")
         }
         if (!attachmentContext.isNullOrBlank()) {
-            append("\n[Uploaded Document / Image Context in this Session]\n").append(attachmentContext.take(24000)).append("\n")
+            append("\n[Uploaded Document / Image Context in this Session]\n").append(attachmentContext).append("\n")
         }
         if (!recentChatTranscript.isNullOrBlank()) {
-            append("\n[Conversation History in this Session]\n").append(recentChatTranscript.takeLast(14000)).append("\n")
+            append("\n[Conversation History in this Session]\n").append(recentChatTranscript).append("\n")
         }
         if (enabled.isNotEmpty() && !nativeTools) {
             append("\nWhen the user asks you to search the web, create a PDF document, create an HTML page, create a slide deck, add/update a chart, or search/read/create/edit/move/delete/open/export a note, call the matching tool using a <tool_call> block:\n")

@@ -59,14 +59,14 @@ Welcome to AU Notes — your smart, glassmorphism-powered workspace!
 
 AU Notes is designed to combine elegant aesthetic design with high-productivity tools for notes, code snippets, API keys, and documents.
 
-✨ Key Features:
+Key Features:
 • Rich Note Editor: Format text with bold, italic, custom colors, checklists, and interactive tables.
 • Floating AU AI Assistant: Summarize documents, analyze code, and generate structured notes.
 • Storage File Explorer: View PDFs, open text and code files, and save edits directly.
 • Universal Export: Export your notes to PDF, DOCX, HTML, TXT, PY, and JSON with formatting alerts.
 • Security Vault: Protect folders and private notes with a 4-digit PIN and security question recovery.
 
-👨‍💻 Developer Note:
+Developer Note:
 AU Notes was crafted by Anshul (@anxul_ydv), a student developer passionate about building sleek, functional, and modern Android applications.
                     """.trimIndent(),
                     category = "General",

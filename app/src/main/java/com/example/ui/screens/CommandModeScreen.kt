@@ -351,7 +351,7 @@ fun CommandModeScreen(
                             enableWebSearch = searchOn
                         )
 
-                        if ((wantsPdf || wantsNote) && !reply.startsWith("⚠️")) {
+                        if ((wantsPdf || wantsNote) && !reply.startsWith("Error:") && !reply.startsWith("Network Error")) {
                             val titleLine = reply.lineSequence().firstOrNull { it.trim().startsWith("#") }
                                 ?.replace(Regex("^#+\\s*"), "")?.trim()
                                 ?.takeIf { it.isNotBlank() }

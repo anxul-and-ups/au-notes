@@ -1,17 +1,25 @@
 package com.example.ui.util
 
+import android.net.Uri
 import androidx.compose.ui.graphics.Color
 import com.example.data.model.NoteEntity
 import org.json.JSONArray
 import org.json.JSONObject
 
+data class WebSourceItem(
+    val title: String,
+    val url: String,
+    val domain: String,
+    val snippet: String = ""
+)
+
 /**
  * Autonomous Agent Parser & Rich Note Converter:
  * Parses AI Markdown output (`#`, `##`, `###`, `**bold**`, `*italic*`, `==highlight==`,
  * `[ ]` / `[x]` tasks, markdown tables, code blocks, slides, charts, diagrams, organised files,
- * and Generated Images) into:
- * 1) Structured UI segments for `AiChatScreen` rendering.
- * 2) Native `NoteEntity` with `RichTextFormatter.TextSpan` JSON and `TableFormat` data for the Note Writer!
+ * web sources, and HTML/PDF artifacts) into:
+ * 1) Structured UI segments for `AiChatScreen` & `ReadNoteScreen` rendering.
+ * 2) Native `NoteEntity` with `RichTextFormatter.TextSpan` JSON, `TableFormat` data, and embedded `slides` blocks.
  */
 object NoteAgentFormatter {
 
@@ -29,6 +37,66 @@ object NoteAgentFormatter {
         data class OrganisedFileBlock(val rawJson: String) : ChatSegment()
         data class HtmlArtifactBlock(val title: String, val htmlCode: String) : ChatSegment()
         data class PdfArtifactBlock(val title: String, val filePath: String, val summary: String) : ChatSegment()
+        data class WebSourcesBlock(val sources: List<WebSourceItem>) : ChatSegment()
+    }
+
+    private val markdownLinkRegex = Regex("""\[([^\]]+)]\(\s*(https?://[^\s)]+)\s*\)""")
+    private val bareUrlRegex = Regex("""(?<!\()https?://[^\s)<>\]]+""")
+
+    fun extractDomain(url: String): String {
+        return runCatching {
+            val host = Uri.parse(url).host.orEmpty().removePrefix("www.")
+            if (host.isNotBlank()) host else url.substringAfter("://").substringBefore("/").removePrefix("www.")
+        }.getOrDefault(url.substringAfter("://").substringBefore("/").removePrefix("www."))
+    }
+
+    private fun extractLinksFromLine(line: String, outSources: MutableList<WebSourceItem>): String {
+        var cleaned = line
+        markdownLinkRegex.findAll(line).forEach { match ->
+            val label = match.groupValues[1].trim()
+            val url = match.groupValues[2].trim()
+            val domain = extractDomain(url)
+            if (url.startsWith("http") && outSources.none { it.url == url }) {
+                outSources.add(
+                    WebSourceItem(
+                        title = label.ifBlank { domain },
+                        url = url,
+                        domain = domain
+                    )
+                )
+            }
+        }
+        // Replace [Title](url) with **Title** (domain) so inline text is clean and not cluttered with raw URLs
+        cleaned = markdownLinkRegex.replace(cleaned) { match ->
+            val label = match.groupValues[1].trim()
+            val url = match.groupValues[2].trim()
+            val domain = extractDomain(url)
+            if (label.equals(url, ignoreCase = true) || label.startsWith("http")) {
+                "**$domain**"
+            } else {
+                "**$label**"
+            }
+        }
+        // Also extract any remaining bare URLs
+        bareUrlRegex.findAll(cleaned).forEach { match ->
+            val url = match.value.trimEnd('.', ',', ';', ')', ']')
+            val domain = extractDomain(url)
+            if (url.startsWith("http") && outSources.none { it.url == url }) {
+                outSources.add(
+                    WebSourceItem(
+                        title = domain,
+                        url = url,
+                        domain = domain
+                    )
+                )
+            }
+        }
+        cleaned = bareUrlRegex.replace(cleaned) { match ->
+            val url = match.value.trimEnd('.', ',', ';', ')', ']')
+            val domain = extractDomain(url)
+            domain
+        }
+        return cleaned.trim()
     }
 
     /**
@@ -36,6 +104,8 @@ object NoteAgentFormatter {
      */
     fun parseIntoSegments(markdown: String): List<ChatSegment> {
         val segments = mutableListOf<ChatSegment>()
+        val explicitWebSources = mutableListOf<WebSourceItem>()
+        val inlineExtractedSources = mutableListOf<WebSourceItem>()
         val lines = markdown.lines()
         var i = 0
 
@@ -43,7 +113,28 @@ object NoteAgentFormatter {
             val line = lines[i]
             val trimmed = line.trim()
 
-            // 0a. PDF Artifact Marker: [pdf_artifact:title|filePath|summary]
+            // 0a. Web Sources Marker: [web_sources_json:base64Json]
+            if (trimmed.startsWith("[web_sources_json:") && trimmed.endsWith("]")) {
+                val b64 = trimmed.removePrefix("[web_sources_json:").removeSuffix("]").trim()
+                runCatching {
+                    val jsonStr = String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT), Charsets.UTF_8)
+                    val arr = JSONArray(jsonStr)
+                    for (idx in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(idx) ?: continue
+                        val url = obj.optString("url").trim()
+                        if (url.isNotBlank() && explicitWebSources.none { it.url == url }) {
+                            val domain = obj.optString("domain").ifBlank { extractDomain(url) }
+                            val title = obj.optString("title").ifBlank { domain }
+                            val snippet = obj.optString("snippet", "")
+                            explicitWebSources.add(WebSourceItem(title = title, url = url, domain = domain, snippet = snippet))
+                        }
+                    }
+                }
+                i++
+                continue
+            }
+
+            // 0b. PDF Artifact Marker: [pdf_artifact:title|filePath|summary]
             if (trimmed.startsWith("[pdf_artifact:") && trimmed.endsWith("]")) {
                 val payload = trimmed.removePrefix("[pdf_artifact:").removeSuffix("]")
                 val parts = payload.split("|", limit = 3)
@@ -57,7 +148,7 @@ object NoteAgentFormatter {
                 continue
             }
 
-            // 0b. HTML Artifact Marker: [html_artifact:title|base64Html]
+            // 0c. HTML Artifact Marker: [html_artifact:title|base64Html]
             if (trimmed.startsWith("[html_artifact:") && trimmed.endsWith("]")) {
                 val payload = trimmed.removePrefix("[html_artifact:").removeSuffix("]")
                 val sep = payload.indexOf('|')
@@ -75,7 +166,8 @@ object NoteAgentFormatter {
 
             // 1. Fenced Block: ```lang (including slides, chart, diagram/svg, html_artifact/html, organised_file, or code)
             if (trimmed.startsWith("```")) {
-                val lang = trimmed.removePrefix("```").trim().lowercase().ifEmpty { "code" }
+                val rawFenceTag = trimmed.removePrefix("```").trim()
+                val lang = rawFenceTag.substringAfterLast(',').trim().lowercase().ifEmpty { "code" }
                 val codeLines = mutableListOf<String>()
                 i++
                 while (i < lines.size && !lines[i].trim().startsWith("```")) {
@@ -96,11 +188,10 @@ object NoteAgentFormatter {
                         segments.add(ChatSegment.HtmlArtifactBlock(extractedTitle, blockBody))
                     }
                     else -> {
-                        // Also auto-detect if a ```json block is actually a slides or chart block, or ```html is a full standalone HTML document
                         val tBody = blockBody.trim()
-                        if (lang == "json" && tBody.startsWith("{") && tBody.contains("\"slides\"")) {
+                        if ((lang == "json" || lang == "code") && tBody.startsWith("{") && tBody.contains("\"slides\"")) {
                             segments.add(ChatSegment.SlideDeckBlock(blockBody))
-                        } else if (lang == "json" && tBody.startsWith("{") && (tBody.contains("\"chart_type\"") || (tBody.contains("\"type\"") && (tBody.contains("\"data\"") || tBody.contains("\"items\"") || tBody.contains("\"steps\""))))) {
+                        } else if ((lang == "json" || lang == "code") && tBody.startsWith("{") && (tBody.contains("\"chart_type\"") || (tBody.contains("\"type\"") && (tBody.contains("\"data\"") || tBody.contains("\"items\"") || tBody.contains("\"steps\""))))) {
                             segments.add(ChatSegment.ChartBlock(blockBody))
                         } else if (tBody.startsWith("<svg", ignoreCase = true)) {
                             segments.add(ChatSegment.DiagramBlock(blockBody))
@@ -188,8 +279,13 @@ object NoteAgentFormatter {
 
             // 6. Bullet item: - or * or •
             if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("• ")) {
-                val bulletText = trimmed.drop(2).trim()
-                segments.add(ChatSegment.BulletItem(bulletText))
+                val rawBullet = trimmed.drop(2).trim()
+                val cleanedBullet = extractLinksFromLine(rawBullet, inlineExtractedSources)
+                // If the bullet was purely a bare URL or link with no other commentary, skip adding a noisy line
+                val strippedForCheck = rawBullet.replace(markdownLinkRegex, "").replace(bareUrlRegex, "").trim(' ', '-', ':', '•', '(', ')')
+                if (strippedForCheck.isNotEmpty() || cleanedBullet.length > 3) {
+                    segments.add(ChatSegment.BulletItem(cleanedBullet))
+                }
                 i++
                 continue
             }
@@ -201,8 +297,20 @@ object NoteAgentFormatter {
             }
 
             // 8. Normal / Rich Paragraph
-            segments.add(ChatSegment.RichParagraph(trimmed))
+            val cleanedParagraph = extractLinksFromLine(trimmed, inlineExtractedSources)
+            if (cleanedParagraph.isNotBlank()) {
+                segments.add(ChatSegment.RichParagraph(cleanedParagraph))
+            }
             i++
+        }
+
+        val combinedSources = (explicitWebSources + inlineExtractedSources)
+            .distinctBy { it.url }
+            .take(12)
+
+        if (combinedSources.isNotEmpty()) {
+            // Put WebSourcesBlock at the top of the response (like modern search engines) so favicons are immediately visible
+            segments.add(0, ChatSegment.WebSourcesBlock(combinedSources))
         }
 
         return segments
@@ -237,6 +345,7 @@ object NoteAgentFormatter {
      * Converts raw AI Markdown into a fully formatted `NoteEntity` with:
      * - Extracted Title
      * - Clean text body with `[ ]` / `[x]` interactive checkboxes
+     * - Embedded ` ```slides\n...\n``` ` blocks preserved so slides render interactively in Notes and export to PDF
      * - `styleSpansJson` (Bold, Italic, Code, FontSize for headings, Highlights for key definitions)
      * - `tableData` serialized via `TableFormat`
      */
@@ -322,8 +431,10 @@ object NoteAgentFormatter {
         for ((index, seg) in segments.withIndex()) {
             when (seg) {
                 is ChatSegment.Heading -> {
-                    if (index == 0 && seg.level == 1 && defaultTitle == "AI Generated Note") {
-                        extractedTitle = seg.text.take(60)
+                    if ((index == 0 || (index == 1 && segments[0] is ChatSegment.WebSourcesBlock)) &&
+                        seg.level == 1 && defaultTitle == "AI Generated Note"
+                    ) {
+                        extractedTitle = seg.text.take(80)
                     }
                     if (sb.isNotEmpty()) sb.append("\n")
                     val size = when (seg.level) {
@@ -351,7 +462,7 @@ object NoteAgentFormatter {
                     }
                 }
                 is ChatSegment.CalloutBox -> {
-                    appendStyledSegment("💡 ${seg.text}", forceBold = true, forceHighlightHex = "#00BCD4@35")
+                    appendStyledSegment("Note: ${seg.text}", forceBold = true, forceHighlightHex = "#00BCD4@35")
                     sb.append("\n")
                 }
                 is ChatSegment.CodeBlock -> {
@@ -379,25 +490,19 @@ object NoteAgentFormatter {
                 is ChatSegment.SlideDeckBlock -> {
                     val deck = com.example.ui.components.AgentVisualsParser.parseSlideDeck(seg.rawJson)
                     if (deck != null) {
-                        appendStyledSegment("Slides: ${deck.deckTitle}", isHeading = true, headingFontSize = 20)
-                        sb.append("\n")
-                        deck.slides.forEachIndexed { idx, s ->
-                            appendStyledSegment("Slide ${idx + 1}: ${s.title}", forceBold = true)
-                            sb.append("\n")
-                            s.bullets.forEach { b ->
-                                sb.append("• ").append(b).append("\n")
-                            }
-                        }
+                        if (sb.isNotEmpty() && !sb.endsWith("\n")) sb.append("\n")
+                        sb.append("```slides\n")
+                        sb.append(com.example.ui.components.AgentVisualsParser.slideDeckToJson(deck).trim()).append("\n")
+                        sb.append("```\n")
                     }
                 }
                 is ChatSegment.ChartBlock -> {
                     val chart = com.example.ui.components.AgentVisualsParser.parseChart(seg.rawJson)
                     if (chart != null) {
-                        appendStyledSegment("Graph: ${chart.title}", forceBold = true)
-                        sb.append("\n")
-                        chart.items.forEach { item ->
-                            sb.append("• ${item.label}: ${item.value}${chart.unit}\n")
-                        }
+                        if (sb.isNotEmpty() && !sb.endsWith("\n")) sb.append("\n")
+                        sb.append("```chart\n")
+                        sb.append(com.example.ui.components.AgentVisualsParser.chartSpecToJson(chart).trim()).append("\n")
+                        sb.append("```\n")
                     }
                 }
                 is ChatSegment.DiagramBlock -> {
@@ -411,12 +516,31 @@ object NoteAgentFormatter {
                     }
                 }
                 is ChatSegment.HtmlArtifactBlock -> {
-                    appendStyledSegment("HTML Page: ${seg.title}", forceBold = true)
+                    appendStyledSegment("HTML Artifact: ${seg.title}", forceBold = true)
                     sb.append("\n")
                 }
                 is ChatSegment.PdfArtifactBlock -> {
                     appendStyledSegment("PDF Document: ${seg.title} (${seg.summary})", forceBold = true)
                     sb.append("\n")
+                }
+                is ChatSegment.WebSourcesBlock -> {
+                    // Encode web sources marker at the end or keep clean references
+                    if (seg.sources.isNotEmpty()) {
+                        val arr = JSONArray()
+                        seg.sources.forEach { s ->
+                            arr.put(JSONObject().apply {
+                                put("title", s.title)
+                                put("url", s.url)
+                                put("domain", s.domain)
+                                put("snippet", s.snippet)
+                            })
+                        }
+                        val b64 = android.util.Base64.encodeToString(
+                            arr.toString().toByteArray(Charsets.UTF_8),
+                            android.util.Base64.NO_WRAP
+                        )
+                        sb.append("[web_sources_json:$b64]\n")
+                    }
                 }
             }
         }
@@ -448,11 +572,14 @@ object NoteAgentFormatter {
         return segments.map { seg ->
             when (seg) {
                 is ChatSegment.Heading -> AgentContentBlock.Heading(seg.text, seg.level)
-                is ChatSegment.CalloutBox -> AgentContentBlock.Callout(
-                    icon = if (seg.text.contains("⚠️")) "⚠️" else "💡",
-                    text = seg.text.removePrefix("⚠️").removePrefix("💡").trim(),
-                    isWarning = seg.text.contains("⚠️")
-                )
+                is ChatSegment.CalloutBox -> {
+                    val isWarn = seg.text.contains("warning", ignoreCase = true) || seg.text.contains("error", ignoreCase = true)
+                    AgentContentBlock.Callout(
+                        icon = if (isWarn) "!" else "i",
+                        text = seg.text.trim(),
+                        isWarning = isWarn
+                    )
+                }
                 is ChatSegment.TableBlock -> {
                     val allRows = if (seg.headers.isNotEmpty()) listOf(seg.headers) + seg.rows else seg.rows
                     AgentContentBlock.Table(allRows)
@@ -467,6 +594,7 @@ object NoteAgentFormatter {
                 is ChatSegment.OrganisedFileBlock -> AgentContentBlock.OrganisedFileBlock(seg.rawJson)
                 is ChatSegment.HtmlArtifactBlock -> AgentContentBlock.HtmlArtifactBlock(seg.title, seg.htmlCode)
                 is ChatSegment.PdfArtifactBlock -> AgentContentBlock.PdfArtifactBlock(seg.title, seg.filePath, seg.summary)
+                is ChatSegment.WebSourcesBlock -> AgentContentBlock.WebSourcesBlock(seg.sources)
                 is ChatSegment.BulletItem -> AgentContentBlock.Paragraph("• ${seg.text}")
                 is ChatSegment.RichParagraph -> AgentContentBlock.Paragraph(seg.text)
             }
@@ -528,7 +656,7 @@ object NoteAgentFormatter {
                                 androidx.compose.ui.text.SpanStyle(
                                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                     background = if (isDarkMode) Color(0x33FFFFFF) else Color(0x14000000),
-                                    color = Color(0xFFFF2D55)
+                                    color = Color(0xFFD97757)
                                 )
                             )
                             append(" $content ")
@@ -564,5 +692,5 @@ sealed class AgentContentBlock {
     data class OrganisedFileBlock(val json: String) : AgentContentBlock()
     data class HtmlArtifactBlock(val title: String, val htmlCode: String) : AgentContentBlock()
     data class PdfArtifactBlock(val title: String, val filePath: String, val summary: String) : AgentContentBlock()
+    data class WebSourcesBlock(val sources: List<WebSourceItem>) : AgentContentBlock()
 }
-

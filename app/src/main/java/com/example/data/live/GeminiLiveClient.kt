@@ -37,8 +37,6 @@ class GeminiLiveClient(
     }
 
     companion object {
-        const val MODEL_FLASH_LIVE = "models/gemini-3.1-flash-live-preview"
-        const val MODEL_LIVE_38 = "models/gemini-3.8-live"
         val VOICES = listOf(
             "Puck" to "Puck (male)", "Charon" to "Charon (male)", "Fenrir" to "Fenrir (male)", "Orus" to "Orus (male)",
             "Aoede" to "Aoede (female)", "Kore" to "Kore (female)", "Leda" to "Leda (female)", "Zephyr" to "Zephyr (female)"
@@ -59,6 +57,7 @@ class GeminiLiveClient(
 
     fun connect() {
         if (apiKey.isBlank()) { listener.onError("Gemini API key is missing. Add it in API Room.", true); return }
+        if (model.isBlank()) { listener.onError("No active model selected. Detect models in API Room first.", true); return }
         closedByUs.set(false)
         ws = client.newWebSocket(Request.Builder().url("$URL?key=$apiKey").build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) { sendSetup(webSocket) }
@@ -92,8 +91,9 @@ class GeminiLiveClient(
     }
 
     private fun sendSetup(socket: WebSocket) {
+        val fullModel = if (model.startsWith("models/")) model else "models/$model"
         val setup = JSONObject().apply {
-            put("model", model)
+            put("model", fullModel)
             put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt))))
             put("generation_config", JSONObject().apply {
                 put("response_modalities", JSONArray().put("AUDIO"))

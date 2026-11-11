@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -59,9 +60,12 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Share
+import coil.compose.AsyncImage
+import com.example.ui.util.WebSourceItem
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -694,6 +698,349 @@ object AgentVisualsParser {
             put("values", valuesArr)
             put("items", itemsArr)
         }.toString(2)
+    }
+
+    private fun htmlEsc(raw: String): String =
+        raw.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+
+    private fun formatHtmlHighlights(raw: String, accentHex: String): String {
+        var escaped = htmlEsc(raw)
+        escaped = Regex("==(.*?)==").replace(escaped) { m ->
+            "<span class=\"hl\" style=\"background:$accentHex;color:#fff;\">${m.groupValues[1]}</span>"
+        }
+        escaped = Regex("\\*\\*(.*?)\\*\\*").replace(escaped) { m ->
+            "<strong>${m.groupValues[1]}</strong>"
+        }
+        return escaped
+    }
+
+    /**
+     * Generates a self-contained, interactive HTML5 Sliding Presentation Artifact
+     * with horizontal CSS translateX sliding transitions, touch-swipe gestures,
+     * Prev/Next controls, slide counter, and clickable progress dots.
+     */
+    fun buildSlidingHtmlArtifact(deck: SlideDeckData): String {
+        val bgHex = sanitizeHexColor(deck.bgStartHex, "#EFECE4")
+        val inkHex = sanitizeHexColor(deck.textColorHex, "#18181B")
+        val accentHex = sanitizeHexColor(deck.accentColorHex, "#EA580C")
+        val goldHex = sanitizeHexColor(deck.secondaryAccentHex, "#CA8A04")
+        val total = deck.slides.size.coerceAtLeast(1)
+
+        val slidesHtml = StringBuilder()
+        deck.slides.forEachIndexed { idx, slide ->
+            val numStr = String.format(Locale.US, "%02d", idx + 1)
+            val secStr = htmlEsc(slide.section.ifBlank { deck.deckTitle.uppercase().take(20) })
+            val titleHtml = buildString {
+                append("<span class=\"t-main\">${htmlEsc(slide.title.uppercase())}</span>")
+                if (slide.accentTitle.isNotBlank()) {
+                    append(" <span class=\"t-accent\" style=\"color:$accentHex;\">${htmlEsc(slide.accentTitle)}</span>")
+                }
+            }
+            val subHtml = if (slide.subtitle.isNotBlank()) {
+                "<div class=\"subtitle\">${formatHtmlHighlights(slide.subtitle, accentHex)}</div>"
+            } else ""
+
+            val bodyHtml = when {
+                slide.pyramid.isNotEmpty() -> {
+                    buildString {
+                        append("<div class=\"pyramid\">")
+                        val items = slide.pyramid.take(8)
+                        items.forEachIndexed { pIdx, rank ->
+                            val wPct = (38 + (60 * pIdx / (items.size - 1).coerceAtLeast(1))).coerceIn(38, 98)
+                            val bg = if (pIdx == 0) goldHex else "#FAF8F3"
+                            val fw = if (pIdx == 0) "700" else "600"
+                            append("<div class=\"pyr-row\" style=\"width:${wPct}%;background:$bg;font-weight:$fw;\">${htmlEsc(rank)}</div>")
+                        }
+                        append("</div>")
+                    }
+                }
+                slide.rows.isNotEmpty() -> {
+                    buildString {
+                        append("<div class=\"timeline\">")
+                        slide.rows.take(6).forEach { r ->
+                            append("<div class=\"tl-row\">")
+                            append("<div class=\"tl-yr\" style=\"color:$accentHex;\">${htmlEsc(r.year)}</div>")
+                            append("<div class=\"tl-body\"><div class=\"tl-title\">${htmlEsc(r.title)}</div>")
+                            if (r.detail.isNotBlank()) {
+                                append("<div class=\"tl-det\">${htmlEsc(r.detail)}</div>")
+                            }
+                            append("</div></div>")
+                        }
+                        append("</div>")
+                    }
+                }
+                slide.chartItems.isNotEmpty() -> {
+                    val maxV = (slide.chartItems.maxOfOrNull { it.value } ?: 100f).coerceAtLeast(1f)
+                    buildString {
+                        append("<div class=\"bars\">")
+                        slide.chartItems.take(6).forEachIndexed { cIdx, c ->
+                            val pct = ((c.value / maxV) * 100f).toInt().coerceIn(8, 100)
+                            val col = sanitizeHexColor(c.colorHex, editorialAccentPalette[cIdx % editorialAccentPalette.size])
+                            append("<div class=\"bar-row\">")
+                            append("<div class=\"bar-lbl\">${htmlEsc(c.label)}</div>")
+                            append("<div class=\"bar-track\"><div class=\"bar-fill\" style=\"width:${pct}%;background:$col;\">${c.value.toInt()}%</div></div>")
+                            append("</div>")
+                        }
+                        append("</div>")
+                    }
+                }
+                slide.stats.isNotEmpty() -> {
+                    buildString {
+                        if (slide.bullets.isNotEmpty()) {
+                            append("<ul class=\"bullets\">")
+                            slide.bullets.take(4).forEach { b ->
+                                append("<li><span class=\"sq\" style=\"background:$accentHex;\"></span><span>${formatHtmlHighlights(b, accentHex)}</span></li>")
+                            }
+                            append("</ul>")
+                        }
+                        append("<div class=\"stats-grid\">")
+                        slide.stats.take(3).forEach { st ->
+                            append("<div class=\"stat-box\"><div class=\"stat-val\">${htmlEsc(st.value)}</div><div class=\"stat-lbl\">${htmlEsc(st.label)}</div></div>")
+                        }
+                        append("</div>")
+                    }
+                }
+                else -> {
+                    buildString {
+                        append("<ul class=\"bullets\">")
+                        slide.bullets.take(6).forEach { b ->
+                            append("<li><span class=\"sq\" style=\"background:$accentHex;\"></span><span>${formatHtmlHighlights(b, accentHex)}</span></li>")
+                        }
+                        append("</ul>")
+                    }
+                }
+            }
+
+            val fnHtml = if (slide.footnote.isNotBlank()) {
+                "<div class=\"footnote\">${htmlEsc(slide.footnote)}</div>"
+            } else ""
+
+            slidesHtml.append(
+                """
+                <section class="slide" data-index="$idx">
+                  <div class="slide-top">
+                    <span class="idx">$numStr</span>
+                    <span class="sec">$secStr</span>
+                  </div>
+                  <div class="rule"></div>
+                  <div class="slide-center">
+                    <h1 class="title ${if (slide.layout == "cover") "cover-title" else ""}">$titleHtml</h1>
+                    $subHtml
+                    <div class="visual-area">$bodyHtml</div>
+                    $fnHtml
+                  </div>
+                  <div class="slide-bottom">
+                    <span>${idx + 1} / $total</span>
+                    <span class="swipe-hint">SLIDE  &larr;  &rarr;</span>
+                  </div>
+                </section>
+                """.trimIndent()
+            )
+        }
+
+        val dotsHtml = (0 until total).joinToString("") { idx ->
+            "<button class=\"dot ${if (idx == 0) "active" else ""}\" onclick=\"goToSlide($idx)\" aria-label=\"Slide ${idx + 1}\"></button>"
+        }
+
+        return """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <title>${htmlEsc(deck.deckTitle)}</title>
+        <style>
+          * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+          html, body {
+            width: 100%; height: 100%; overflow: hidden;
+            background: $bgHex; color: $inkHex;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            user-select: none;
+          }
+          .deck-viewport {
+            position: relative; width: 100%; height: 100%;
+            overflow: hidden; display: flex; flex-direction: column;
+          }
+          .slides-track {
+            display: flex; width: 100%; flex: 1;
+            transition: transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+            will-change: transform;
+          }
+          .slide {
+            min-width: 100%; max-width: 100%; height: 100%;
+            padding: 16px 20px 12px 20px;
+            display: flex; flex-direction: column; justify-content: space-between;
+            overflow-y: auto;
+          }
+          .slide-top {
+            display: flex; justify-content: space-between; align-items: center;
+            font-family: monospace; font-weight: 700; font-size: 11px; letter-spacing: 2px;
+          }
+          .rule {
+            width: 100%; height: 2.5px; background: $inkHex; margin: 6px 0 10px 0;
+          }
+          .slide-center {
+            flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 10px;
+          }
+          .title {
+            font-size: 22px; line-height: 1.12; letter-spacing: 0.4px;
+          }
+          .cover-title { font-size: 27px; }
+          .t-main {
+            font-family: Impact, 'Arial Narrow', sans-serif; font-weight: 900; text-transform: uppercase;
+          }
+          .t-accent {
+            font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-weight: 700;
+          }
+          .subtitle {
+            font-size: 13px; line-height: 1.45; color: $inkHex;
+          }
+          .hl {
+            padding: 1px 6px; font-weight: 700; border-radius: 3px;
+          }
+          .bullets {
+            list-style: none; display: flex; flex-direction: column; gap: 7px;
+          }
+          .bullets li {
+            display: flex; align-items: flex-start; gap: 9px; font-size: 12.5px; line-height: 1.42;
+          }
+          .sq {
+            width: 7px; height: 7px; min-width: 7px; margin-top: 5px; border: 1px solid $inkHex;
+          }
+          .stats-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 10px; margin-top: 6px;
+          }
+          .stat-box {
+            border-top: 2.5px solid $inkHex; padding-top: 5px;
+          }
+          .stat-val {
+            font-family: Impact, sans-serif; font-size: 20px; font-weight: 800;
+          }
+          .stat-lbl {
+            font-size: 10.5px; color: #52525B;
+          }
+          .timeline {
+            display: flex; flex-direction: column; gap: 6px;
+          }
+          .tl-row {
+            display: flex; gap: 10px; padding-bottom: 5px; border-bottom: 1px solid rgba(24,24,27,0.15);
+          }
+          .tl-yr {
+            min-width: 68px; font-family: Impact, sans-serif; font-weight: 800; font-size: 13px;
+          }
+          .tl-title { font-size: 12px; font-weight: 700; }
+          .tl-det { font-size: 10.5px; color: #52525B; }
+          .pyramid {
+            display: flex; flex-direction: column; align-items: center; gap: 4px;
+          }
+          .pyr-row {
+            padding: 4px 8px; border: 1.5px solid $inkHex; text-align: center; font-size: 11px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+          }
+          .bars {
+            display: flex; flex-direction: column; gap: 6px;
+          }
+          .bar-row { display: flex; align-items: center; gap: 8px; }
+          .bar-lbl { width: 78px; font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+          .bar-track { flex: 1; height: 20px; background: #FAF8F3; border: 1.5px solid $inkHex; }
+          .bar-fill { height: 100%; color: #fff; font-size: 10px; font-weight: 700; display: flex; align-items: center; padding-left: 6px; }
+          .footnote { font-size: 10.5px; color: #52525B; margin-top: 4px; }
+          .slide-bottom {
+            display: flex; justify-content: space-between; align-items: center;
+            font-family: monospace; font-size: 10px; font-weight: 700; color: #52525B;
+            padding-top: 6px;
+          }
+          .nav-bar {
+            height: 38px; background: rgba(24,24,27,0.06); border-top: 1.5px solid rgba(24,24,27,0.16);
+            display: flex; align-items: center; justify-content: space-between; padding: 0 12px;
+          }
+          .nav-btn {
+            background: $inkHex; color: #FAF8F5; border: none; border-radius: 6px;
+            padding: 5px 11px; font-size: 11px; font-weight: 700; cursor: pointer;
+          }
+          .nav-btn:disabled { opacity: 0.3; }
+          .dots { display: flex; align-items: center; gap: 5px; }
+          .dot {
+            width: 7px; height: 7px; border-radius: 99px; border: none;
+            background: rgba(24,24,27,0.25); transition: all 0.25s ease; cursor: pointer;
+          }
+          .dot.active { width: 18px; background: $accentHex; }
+        </style>
+        </head>
+        <body>
+          <div class="deck-viewport" id="viewport">
+            <div class="slides-track" id="track">
+              $slidesHtml
+            </div>
+            <div class="nav-bar">
+              <button class="nav-btn" id="prevBtn" onclick="stepSlide(-1)">Prev</button>
+              <div class="dots" id="dots">$dotsHtml</div>
+              <button class="nav-btn" id="nextBtn" onclick="stepSlide(1)">Next</button>
+            </div>
+          </div>
+          <script>
+            var currentIdx = 0;
+            var totalSlides = $total;
+            var track = document.getElementById('track');
+            var dots = document.querySelectorAll('.dot');
+            var prevBtn = document.getElementById('prevBtn');
+            var nextBtn = document.getElementById('nextBtn');
+
+            function updateCarousel() {
+              track.style.transform = 'translateX(-' + (currentIdx * 100) + '%)';
+              for (var i = 0; i < dots.length; i++) {
+                if (i === currentIdx) dots[i].classList.add('active');
+                else dots[i].classList.remove('active');
+              }
+              prevBtn.disabled = (currentIdx <= 0);
+              nextBtn.disabled = (currentIdx >= totalSlides - 1);
+            }
+
+            function goToSlide(idx) {
+              if (idx < 0) idx = 0;
+              if (idx >= totalSlides) idx = totalSlides - 1;
+              currentIdx = idx;
+              updateCarousel();
+            }
+
+            function stepSlide(delta) {
+              goToSlide(currentIdx + delta);
+            }
+
+            var startX = 0;
+            var startY = 0;
+            var vp = document.getElementById('viewport');
+            vp.addEventListener('touchstart', function(e) {
+              if (e.touches.length > 0) {
+                startX = e.touches[0].clientX;
+                startY = e.touches[0].clientY;
+              }
+            }, {passive: true});
+
+            vp.addEventListener('touchend', function(e) {
+              if (e.changedTouches.length > 0) {
+                var dx = e.changedTouches[0].clientX - startX;
+                var dy = e.changedTouches[0].clientY - startY;
+                if (Math.abs(dx) > 36 && Math.abs(dx) > Math.abs(dy)) {
+                  if (dx < 0) stepSlide(1);
+                  else stepSlide(-1);
+                }
+              }
+            }, {passive: true});
+
+            document.addEventListener('keydown', function(e) {
+              if (e.key === 'ArrowRight') stepSlide(1);
+              if (e.key === 'ArrowLeft') stepSlide(-1);
+            });
+
+            updateCarousel();
+          </script>
+        </body>
+        </html>
+        """.trimIndent()
     }
 
     /**
@@ -1819,6 +2166,11 @@ fun SlidesMakerCard(
     var exportingPdf by remember { mutableStateOf(false) }
     var savingImages by remember { mutableStateOf(false) }
 
+    val slidingHtml = remember(currentDeck) {
+        AgentVisualsParser.buildSlidingHtmlArtifact(currentDeck)
+    }
+    var inlineWebView by remember { mutableStateOf<WebView?>(null) }
+
     val cardBg = if (isDarkMode) Color(0xFF17171B) else Color(0xFFFAF8F5)
     val borderCol = if (isDarkMode) Color(0xFF2C2C34) else Color(0xFFD6D3CB)
     val fg = if (isDarkMode) Color(0xFFF4F1EA) else Color(0xFF18181B)
@@ -1832,7 +2184,7 @@ fun SlidesMakerCard(
             .border(1.dp, borderCol, RoundedCornerShape(16.dp))
             .padding(12.dp)
     ) {
-        // Claude-style Artifact Header Row (tappable to open Full-Screen Viewer!)
+        // Sliding HTML Artifact Header Row (tappable to open Full-Screen Viewer!)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1866,7 +2218,7 @@ fun SlidesMakerCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "Artifact • ${slidesState.size} Typography Slides • Tap for Fullscreen",
+                        text = "HTML Sliding Presentation • ${slidesState.size} Slides • Swipe Left/Right",
                         fontSize = 11.sp,
                         color = fg.copy(alpha = 0.62f)
                     )
@@ -1874,7 +2226,7 @@ fun SlidesMakerCard(
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 IconButton(
-                    onClick = { editingSlideIndex = pagerState.currentPage },
+                    onClick = { editingSlideIndex = pagerState.currentPage.coerceIn(0, (slidesState.size - 1).coerceAtLeast(0)) },
                     modifier = Modifier.size(32.dp)
                 ) {
                     Icon(Icons.Default.Edit, contentDescription = "Edit slide", tint = fg.copy(alpha = 0.75f), modifier = Modifier.size(16.dp))
@@ -1890,80 +2242,41 @@ fun SlidesMakerCard(
 
         Spacer(Modifier.height(10.dp))
 
-        // Interactive Editorial Warm-Paper Slide Pager
-        HorizontalPager(
-            state = pagerState,
+        // Interactive HTML Sliding Artifact WebView (supports touch swipe, Prev/Next buttons, and dot indicators)
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(295.dp)
+                .height(325.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .border(2.5.dp, Color(0xFF18181B), RoundedCornerShape(14.dp))
-                .clickable { showFullScreenViewer = true }
-        ) { pageIndex ->
-            val slide = slidesState[pageIndex]
-            EditorialSlideSurface(
-                deck = currentDeck,
-                slide = slide,
-                slideIndex = pageIndex,
-                totalSlides = slidesState.size,
-                isFullScreen = false,
-                modifier = Modifier.fillMaxSize()
+        ) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.loadWithOverviewMode = true
+                        settings.useWideViewPort = true
+                        webViewClient = WebViewClient()
+                        tag = slidingHtml
+                        loadDataWithBaseURL("https://aunotes.local/", slidingHtml, "text/html", "UTF-8", null)
+                        inlineWebView = this
+                    }
+                },
+                update = { wv ->
+                    inlineWebView = wv
+                    if (wv.tag != slidingHtml) {
+                        wv.tag = slidingHtml
+                        wv.loadDataWithBaseURL("https://aunotes.local/", slidingHtml, "text/html", "UTF-8", null)
+                    }
+                }
             )
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
 
-        // Pager Navigation Row (Prev / Dots / Next)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = {
-                    if (pagerState.currentPage > 0) {
-                        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
-                    }
-                },
-                enabled = pagerState.currentPage > 0,
-                modifier = Modifier.size(30.dp)
-            ) {
-                Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Previous Slide", tint = fg)
-            }
-
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                slidesState.forEachIndexed { idx, _ ->
-                    val active = idx == pagerState.currentPage
-                    Box(
-                        modifier = Modifier
-                            .height(6.dp)
-                            .width(if (active) 18.dp else 6.dp)
-                            .clip(CircleShape)
-                            .background(if (active) Color(0xFFEA580C) else fg.copy(alpha = 0.25f))
-                            .clickable { scope.launch { pagerState.animateScrollToPage(idx) } }
-                    )
-                }
-            }
-
-            IconButton(
-                onClick = {
-                    if (pagerState.currentPage < slidesState.lastIndex) {
-                        scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
-                    }
-                },
-                enabled = pagerState.currentPage < slidesState.lastIndex,
-                modifier = Modifier.size(30.dp)
-            ) {
-                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Next Slide", tint = fg)
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        // Export Action Buttons: 1. Export PDF | 2. Save All to Gallery (PNG)
+        // Action Row 1: Export PDF | Save HTML Slide Deck | Save PNGs
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1996,10 +2309,10 @@ fun SlidesMakerCard(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.PictureAsPdf, null, tint = Color(0xFFFAF8F3), modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(6.dp))
+                    Spacer(Modifier.width(5.dp))
                     Text(
-                        text = if (exportingPdf) "Exporting…" else "Export PDF",
-                        fontSize = 12.sp,
+                        text = if (exportingPdf) "Exporting..." else "Export PDF",
+                        fontSize = 11.5.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFFFAF8F3)
                     )
@@ -2008,10 +2321,47 @@ fun SlidesMakerCard(
 
             Box(
                 modifier = Modifier
-                    .weight(1.1f)
+                    .weight(1f)
                     .height(40.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(Color(0xFFEA580C))
+                    .clickable {
+                        scope.launch(Dispatchers.IO) {
+                            val safeName = deckTitle.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "slides" } + ".html"
+                            val tmp = File(context.cacheDir, safeName)
+                            tmp.writeText(slidingHtml)
+                            val saved = NoteExporter.saveToDevice(context, tmp, safeName, "text/html")
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    context,
+                                    if (saved != null) "Saved HTML Slides to ${saved.displayPath}"
+                                    else "Could not save HTML Slides",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Code, null, tint = Color.White, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = "Save .html",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(0.95f)
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(fg.copy(alpha = 0.08f))
+                    .border(1.dp, borderCol, RoundedCornerShape(10.dp))
                     .clickable(enabled = !savingImages) {
                         savingImages = true
                         scope.launch(Dispatchers.IO) {
@@ -2030,45 +2380,42 @@ fun SlidesMakerCard(
                 contentAlignment = Alignment.Center
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Collections, null, tint = Color.White, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Default.Collections, null, tint = fg, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
                     Text(
-                        text = if (savingImages) "Saving…" else "Save PNGs",
-                        fontSize = 12.sp,
+                        text = if (savingImages) "Saving..." else "Save PNGs",
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        color = fg
                     )
                 }
             }
         }
 
         if (onAddSlideDeckToNote != null) {
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(8.dp))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(34.dp)
+                    .height(38.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(fg.copy(alpha = 0.07f))
+                    .background(Color(0xFFEA580C).copy(alpha = 0.14f))
+                    .border(1.dp, Color(0xFFEA580C).copy(alpha = 0.45f), RoundedCornerShape(10.dp))
                     .clickable { onAddSlideDeckToNote(currentDeck) },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "Add Interactive Slides to Note",
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    text = "Add Sliding HTML Presentation to Note",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
                     color = Color(0xFFEA580C)
                 )
             }
         }
     }
 
-    // FULL-SCREEN SWIPEABLE VIEWER DIALOG (Matching Screenshot_20261110_090155.jpg / 090200.jpg / 090204.jpg)
+    // FULL-SCREEN SLIDING HTML ARTIFACT VIEWER DIALOG
     if (showFullScreenViewer) {
-        val fullPagerState = rememberPagerState(
-            initialPage = pagerState.currentPage,
-            pageCount = { slidesState.size }
-        )
         Dialog(
             onDismissRequest = { showFullScreenViewer = false },
             properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
@@ -2081,7 +2428,6 @@ fun SlidesMakerCard(
                 shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    // Top Sheet Handle + Header Bar (✕ on left, Deck Title centered, Share/Export on right)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -2117,45 +2463,54 @@ fun SlidesMakerCard(
                                     .weight(1f)
                                     .padding(horizontal = 8.dp)
                             )
-                            IconButton(
-                                onClick = {
-                                    scope.launch(Dispatchers.IO) {
-                                        val saved = runCatching {
-                                            AgentVisualsParser.exportSlidesToPdf(context, currentDeck)
-                                        }.getOrNull()
-                                        withContext(Dispatchers.Main) {
-                                            Toast.makeText(
-                                                context,
-                                                if (saved != null) "Exported PDF to ${saved.displayPath}" else "Could not export PDF",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (onAddSlideDeckToNote != null) {
+                                    TextButton(onClick = {
+                                        onAddSlideDeckToNote(currentDeck)
+                                        Toast.makeText(context, "Added Slides to Note", Toast.LENGTH_SHORT).show()
+                                    }) {
+                                        Text("Add to Note", color = Color(0xFFEA580C), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
                                 }
-                            ) {
-                                Icon(Icons.Default.Share, contentDescription = "Export / Share", tint = Color(0xFF18181B))
+                                IconButton(
+                                    onClick = {
+                                        scope.launch(Dispatchers.IO) {
+                                            val saved = runCatching {
+                                                AgentVisualsParser.exportSlidesToPdf(context, currentDeck)
+                                            }.getOrNull()
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(
+                                                    context,
+                                                    if (saved != null) "Exported PDF to ${saved.displayPath}" else "Could not export PDF",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Icon(Icons.Default.PictureAsPdf, contentDescription = "Export PDF", tint = Color(0xFF18181B))
+                                }
                             }
                         }
                     }
 
                     HorizontalDivider(color = Color(0xFFE4E4E7), thickness = 1.dp)
 
-                    // Full-height Swipeable Editorial Slide Canvas
-                    HorizontalPager(
-                        state = fullPagerState,
+                    AndroidView(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .weight(1f)
-                    ) { pageIdx ->
-                        EditorialSlideSurface(
-                            deck = currentDeck,
-                            slide = slidesState[pageIdx],
-                            slideIndex = pageIdx,
-                            totalSlides = slidesState.size,
-                            isFullScreen = true,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
+                            .weight(1f),
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.loadWithOverviewMode = true
+                                settings.useWideViewPort = true
+                                webViewClient = WebViewClient()
+                                loadDataWithBaseURL("https://aunotes.local/", slidingHtml, "text/html", "UTF-8", null)
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -3263,6 +3618,152 @@ fun OrganisedFileCard(
                     Icon(Icons.Default.Download, null, tint = Color.White, modifier = Modifier.size(15.dp))
                     Spacer(Modifier.width(5.dp))
                     Text("Download ${spec.fileName}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================================
+// WEB SEARCH SOURCES FAVICON ROW (SHOWS WEBSITE FAVICONS + CLEAN CLICKABLE SOURCE CARDS)
+// =============================================================================================
+
+@Composable
+fun WebSourcesFaviconRow(
+    sources: List<WebSourceItem>,
+    isDarkMode: Boolean
+) {
+    if (sources.isEmpty()) return
+    val context = LocalContext.current
+    val cardBg = if (isDarkMode) Color(0xFF17171B) else Color(0xFFFFFFFF)
+    val pillBg = if (isDarkMode) Color(0xFF232329) else Color(0xFFEFECE4)
+    val borderCol = if (isDarkMode) Color(0xFF2C2C34) else Color(0xFFD6D3CB)
+    val textPrimary = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B)
+    val textSecondary = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF636366)
+    val accent = Color(0xFFD97757)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(cardBg)
+            .border(1.dp, borderCol, RoundedCornerShape(14.dp))
+            .padding(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Language,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(15.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "WEB SOURCES (${sources.size})",
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.8.sp,
+                    color = textSecondary
+                )
+            }
+            // Overlapping mini favicons preview
+            Row(horizontalArrangement = Arrangement.spacedBy((-4).dp), verticalAlignment = Alignment.CenterVertically) {
+                sources.take(5).forEach { src ->
+                    Box(
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clip(CircleShape)
+                            .background(pillBg)
+                            .border(1.dp, borderCol, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AsyncImage(
+                            model = "https://www.google.com/s2/favicons?domain=${src.domain}&sz=64",
+                            contentDescription = src.domain,
+                            modifier = Modifier
+                                .size(13.dp)
+                                .clip(CircleShape)
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            sources.forEach { src ->
+                Column(
+                    modifier = Modifier
+                        .width(195.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(pillBg)
+                        .border(1.dp, borderCol, RoundedCornerShape(11.dp))
+                        .clickable {
+                            runCatching {
+                                val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(src.url)).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                            }
+                        }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(cardBg)
+                                .border(1.dp, borderCol, RoundedCornerShape(6.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Language,
+                                contentDescription = null,
+                                tint = textSecondary.copy(alpha = 0.5f),
+                                modifier = Modifier.size(13.dp)
+                            )
+                            AsyncImage(
+                                model = "https://www.google.com/s2/favicons?domain=${src.domain}&sz=64",
+                                contentDescription = src.domain,
+                                modifier = Modifier
+                                    .size(15.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                            )
+                        }
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            text = src.domain,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = accent,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Text(
+                        text = src.title.ifBlank { src.domain },
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textPrimary,
+                        maxLines = 2,
+                        lineHeight = 15.sp,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }

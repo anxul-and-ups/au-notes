@@ -15,9 +15,8 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 
 /**
- * Neumorphic Canvas Background.
- * If hazeState is provided, marks this as the SOURCE for Haze blur —
- * meaning any HazeGlassCard placed on top will blur this background.
+ * Editorial & Obsidian Canvas Background matching AiChatScreen aesthetic.
+ * Supports both Day Mode (#FAF8F5 warm paper) and Dark Mode (#0E0E10 obsidian).
  */
 @Composable
 fun GlassBackground(
@@ -49,56 +48,44 @@ fun GlassBackground(
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            Color(0x18FFFFFF),
-                            Color(0x0AFFFFFF),
+                            Color(0x12D97757),
+                            Color(0x05D97757),
                             Color.Transparent
                         ),
-                        center = Offset(width * 0.15f, height * 0.1f),
-                        radius = width * 1.1f
+                        center = Offset(width * 0.85f, height * 0.12f),
+                        radius = width * 0.95f
                     )
                 )
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            Color(0x16FF2D55),
-                            Color(0x08FF2D55),
+                            Color(0x0DFFFFFF),
                             Color.Transparent
                         ),
-                        center = Offset(width * 0.85f, height * 0.85f),
+                        center = Offset(width * 0.15f, height * 0.85f),
                         radius = width * 0.9f
-                    )
-                )
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color(0x220A0C0F)
-                        ),
-                        startY = height * 0.7f,
-                        endY = height
                     )
                 )
             } else {
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            Color(0x55FFFFFF),
-                            Color(0x20FFFFFF),
+                            Color(0x14D97757),
+                            Color(0x05D97757),
                             Color.Transparent
                         ),
-                        center = Offset(width * 0.15f, height * 0.1f),
-                        radius = width * 1.2f
+                        center = Offset(width * 0.85f, height * 0.1f),
+                        radius = width * 0.95f
                     )
                 )
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            Color(0x0CFF2D55),
-                            Color(0x04FF2D55),
+                            Color(0x66FFFFFF),
                             Color.Transparent
                         ),
-                        center = Offset(width * 0.85f, height * 0.85f),
-                        radius = width * 0.95f
+                        center = Offset(width * 0.15f, height * 0.2f),
+                        radius = width * 1.1f
                     )
                 )
             }
@@ -143,4 +130,3 @@ fun ConfigureEdgeToEdgeDialog(isDarkMode: Boolean = true) {
         }
     }
 }
-

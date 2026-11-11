@@ -131,6 +131,11 @@ fun ReadNoteScreen(
     var showExportDialog by remember { mutableStateOf(false) }
     var showPinDialog by remember { mutableStateOf(false) }
     var pinDialogForLocking by remember { mutableStateOf(false) }
+    var isNoteLocked by remember(note.id) { mutableStateOf(note.isLocked) }
+    var lockedInThisSession by remember(note.id) { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(note.isLocked) {
+        isNoteLocked = note.isLocked
+    }
     var isSpeaking by remember { mutableStateOf(false) }
     var isLoadingAiSpeech by remember { mutableStateOf(false) }
     var viewAsFormat by remember { mutableStateOf("normal") } // "normal" | "md" | "pdf" | "txt"
@@ -507,36 +512,47 @@ fun ReadNoteScreen(
                                 horizontalArrangement = Arrangement.SpaceEvenly,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Lock Button (Requirement #3: works reliably & prompts PIN setup if not set)
+                                // Lock Button: immediately locks on tap, turns lock SVG icon green, and shows "Locked"
+                                val lockGreen = Color(0xFF22C55E)
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (isNoteLocked) lockGreen.copy(alpha = 0.14f) else Color.Transparent
+                                        )
                                         .clickable {
-                                            if (note.isLocked) {
-                                                pinDialogForLocking = false
-                                                showPinDialog = true
-                                            } else if (!hasCustomPin) {
-                                                pinDialogForLocking = true
-                                                showPinDialog = true
-                                            } else {
-                                                onToggleLock(note.id, false)
+                                            if (!isNoteLocked) {
+                                                isNoteLocked = true
+                                                lockedInThisSession = true
+                                                onToggleLock(note.id, true)
                                                 Toast.makeText(context, "Note Locked", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                if (!hasCustomPin || lockedInThisSession) {
+                                                    isNoteLocked = false
+                                                    lockedInThisSession = false
+                                                    onToggleLock(note.id, false)
+                                                    Toast.makeText(context, "Note Unlocked", Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    pinDialogForLocking = false
+                                                    showPinDialog = true
+                                                }
                                             }
                                         }
-                                        .padding(horizontal = 5.dp, vertical = 4.dp)
+                                        .padding(horizontal = 8.dp, vertical = 5.dp)
                                 ) {
                                     Icon(
-                                        painter = painterResource(if (note.isLocked) R.drawable.ic_security_lock else R.drawable.ic_security_unlock),
-                                        contentDescription = "Lock",
-                                        tint = if (note.isLocked) CrimsonPrimary else if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray,
+                                        painter = painterResource(if (isNoteLocked) R.drawable.ic_svg_lock else R.drawable.ic_svg_unlock),
+                                        contentDescription = if (isNoteLocked) "Locked" else "Lock",
+                                        tint = if (isNoteLocked) lockGreen else if (isDarkMode) Color.White.copy(0.75f) else Color.DarkGray,
                                         modifier = Modifier.size(15.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Spacer(modifier = Modifier.width(5.dp))
                                     Text(
-                                        text = if (note.isLocked) "Locked" else "Lock",
-                                        fontSize = 11.sp,
-                                        fontWeight = if (note.isLocked) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (note.isLocked) CrimsonPrimary else if (isDarkMode) Color.White.copy(0.85f) else Color.Black
+                                        text = if (isNoteLocked) "Locked" else "Lock",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = if (isNoteLocked) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isNoteLocked) lockGreen else if (isDarkMode) Color.White.copy(0.85f) else Color.Black
                                     )
                                 }
 
@@ -966,10 +982,14 @@ fun ReadNoteScreen(
             onUnlocked = {
                 showPinDialog = false
                 if (pinDialogForLocking) {
-                    onToggleLock(note.id, false)
+                    isNoteLocked = true
+                    lockedInThisSession = true
+                    onToggleLock(note.id, true)
                     Toast.makeText(context, "Note Locked", Toast.LENGTH_SHORT).show()
                 } else {
-                    onToggleLock(note.id, true)
+                    isNoteLocked = false
+                    lockedInThisSession = false
+                    onToggleLock(note.id, false)
                     Toast.makeText(context, "Note Unlocked", Toast.LENGTH_SHORT).show()
                 }
             },
@@ -1643,8 +1663,8 @@ private fun ReadRichBody(
                     i++
                 }
 
-                // Bullet item: - text or * text with Crimson/Pink round dot indicator
-                rawLine.trimStart().startsWith("- ") || rawLine.trimStart().startsWith("* ") -> {
+                // Bullet item: - text, * text, or • text with round dot indicator
+                rawLine.trimStart().startsWith("- ") || rawLine.trimStart().startsWith("* ") || rawLine.trimStart().startsWith("• ") -> {
                     val item = rawLine.trimStart().drop(2)
                     Row(modifier = Modifier.padding(start = 6.dp, top = 2.dp, bottom = 2.dp)) {
                         Box(
@@ -1692,6 +1712,7 @@ private fun ReadRichBody(
                         lines[j].trim() != "***" &&
                         !lines[j].trimStart().startsWith("- ") &&
                         !lines[j].trimStart().startsWith("* ") &&
+                        !lines[j].trimStart().startsWith("• ") &&
                         !(lines[j].trimStart().startsWith("|") && lines[j].trimEnd().endsWith("|"))
                     ) j++
 

@@ -915,7 +915,7 @@ private fun DayEditDialog(
 
                 // Section 1: Morning
                 Text(
-                    text = "☀️ MORNING",
+                    text = "MORNING",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFFFFB300),
@@ -953,7 +953,7 @@ private fun DayEditDialog(
                                 morningAmountText = input
                             }
                         },
-                        label = { Text("Amount (₹)") },
+                        label = { Text("Amount (Rs)") },
                         placeholder = { Text("e.g. 240") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         singleLine = true,
@@ -969,7 +969,7 @@ private fun DayEditDialog(
 
                 // Section 2: Evening
                 Text(
-                    text = "🌙 EVENING",
+                    text = "EVENING",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF9575CD),
