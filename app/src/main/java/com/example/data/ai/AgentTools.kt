@@ -128,6 +128,29 @@ object AgentTools {
             )
         ),
         AgentTool(
+            id = "add_image_to_note",
+            group = "Notes",
+            label = "Find & add image to note",
+            description = "Search for a real picture matching the query, DOWNLOAD it to the phone, and insert it into the open note (or the note given by note_id/title). Use when the user wants a photo/picture of something in a note and did not attach an image.",
+            params = listOf(
+                AgentTool.Param("query", "STRING", "Specific 3-8 word search query describing the exact picture needed (e.g. 'Indian Army soldiers Republic Day parade')", required = true),
+                AgentTool.Param("note_id", "INTEGER", "Target note id (optional; defaults to open note or most recent note)", required = false),
+                AgentTool.Param("title", "STRING", "Target note title if note_id is not provided", required = false),
+                AgentTool.Param("caption", "STRING", "Optional caption to add near the image", required = false)
+            )
+        ),
+        AgentTool(
+            id = "replace_artifact_image",
+            group = "Creative & Media",
+            label = "Replace an image in an HTML artifact",
+            description = "Replace one image (by its number in the page, starting at 1) of an HTML artifact you already created with a newly found and downloaded image. Use when the user says an image is wrong, e.g. 'image 2 change karo'.",
+            params = listOf(
+                AgentTool.Param("image_number", "INTEGER", "1-based position of the image in the page (top to bottom)", required = true),
+                AgentTool.Param("query", "STRING", "New specific 3-8 word image search query", required = true),
+                AgentTool.Param("title", "STRING", "Title of the artifact (optional; defaults to the most recent artifact)", required = false)
+            )
+        ),
+        AgentTool(
             id = "create_pdf_document",
             group = "Files & Export",
             label = "Create & export PDF document",
@@ -145,7 +168,7 @@ object AgentTools {
             description = "Create a complete, responsive, standalone HTML5 page (with embedded CSS, warm typography styling, SVG diagrams, or interactive JS) and display an interactive HTML Artifact card in chat with full-screen preview and download.",
             params = listOf(
                 AgentTool.Param("title", "STRING", "Title of the HTML artifact or web page", required = true),
-                AgentTool.Param("html_code", "STRING", "Complete standalone <!DOCTYPE html><html>...</html> source code", required = true)
+                AgentTool.Param("html_code", "STRING", "Complete standalone <!DOCTYPE html><html>...</html> source code. For real photos use <img data-q=\"specific 3-8 word search query\" alt=\"...\"> (never remote URLs); the app finds and downloads the images before showing the page. Draw charts/icons/diagrams as inline SVG.", required = true)
             )
         ),
         AgentTool(
@@ -372,6 +395,39 @@ object AgentTools {
         append("Privacy rule: Hidden notes, locked notes, and notes in the Recycle Bin do not exist for you — never guess or mention them.\n")
         append("Important capability boundary: AI image generation has been permanently removed from this app. Do not offer to generate raster AI photos; instead, you can create rich SVG vector diagrams, charts, typography slide decks, HTML pages, and PDF documents.\n")
 
+        if (!spoken) {
+            append(
+                """
+                [ANSWER DEPTH & QUALITY — VERY IMPORTANT]
+                - Never give a thin one-paragraph answer to a topic question. Explain it so a smart student could actually learn from it.
+                - For "explain / what is / how does / tell me about / compare / notes banao" requests use this structure:
+                  1) One-line direct answer (core idea).
+                  2) Key concepts step by step — the WHY, not just the what.
+                  3) A concrete example or analogy.
+                  4) Important facts: numbers, dates, names, definitions (only ones you are confident about).
+                  5) Common mistakes / limitations / what people get wrong.
+                  6) Short summary + what to learn next.
+                - Typical length for a topic question: 250–600 words. Go longer when the user says detailed / deep / full / poora. Go short ONLY for simple factual questions or when the user asks for short.
+                - Use headings, short lists and tables when they make it easier to scan; plain paragraphs for reasoning.
+                - Facts must be accurate. If unsure about a number/date/claim, say so (or search if search is available). NEVER invent statistics, quotes, sources or study results.
+                - A note created from a topic request must follow the same depth rules (headings, ==highlights==, bold terms, lists/tables/code blocks, and a chart when real numbers exist).
+                - Treat every example number in this prompt (benchmark scores etc.) as FORMAT-ONLY; never reuse them as real data.
+                """.trimIndent()
+            ).append("\n")
+        }
+        append(
+            """
+            [TOOL USE & CHART DATA RULES]
+            - If the user asks you to save, create, write, format, organise or move something, DO it with tools; don't only describe it. Plan silently (folder, title, content, formatting), call the tools, then confirm in 1–3 lines what was done and where. Ask a question only if something essential is missing and can't be guessed.
+            - Never claim something is done unless the tool result says DONE. If a tool fails, say what failed and what you'll try next.
+            - Use a chart when the user asks for a graph/chart/comparison/percentages, or when the content has 2+ comparable real numbers. No real numbers → no chart.
+            - Chart type: bar = few categories or percentages; line = change over time; pie = parts of a whole (max 6 slices); blocks = "X out of Y"; timeline = dated events; table = several attributes per item.
+            - Chart data: use ONLY numbers the user gave, numbers already in the note, or numbers you verified by search. If the user gives a number, use it exactly. If numbers are missing, ask one short question or label the chart "illustrative" — never fabricate. `value` is a plain number (unit goes in `unit`); percent charts use max = 100; 2–8 items; labels 1–3 words; title max 6 words. If the user names colours use them exactly (green #15803D, red #DC2626, blue #2563EB, orange #EA580C), otherwise good = green, bad = red, neutral = blue/orange, with a different colour per item.
+            - After adding a chart, add 1–2 sentences saying what stands out (not just "chart added").
+            - If the user wants to change an image of an artifact ("image 2 galat hai"), call `replace_artifact_image`.
+            """.trimIndent()
+        ).append("\n")
+
         if (searchModeEnabled) {
             append(
                 """
@@ -548,6 +604,9 @@ object AgentTools {
             2. DOCUMENT & IMAGE UPLOADS:
                - When a document (PDF, DOCX, TXT, MD, etc.) is attached—even if the user didn't type a specific question—immediately provide a complete, structured analysis: (a) Document Overview, (b) Concise Summary, and (c) Key Points / Actionable Takeaways.
                - When the user attaches an image and asks to insert it into a note, call `insert_image_to_note`.
+               - When the user wants a REAL photo/picture in a note and did NOT attach one, call `add_image_to_note` with a specific 3-8 word `query`; the app downloads it and inserts it.
+               - IMAGES IN HTML ARTIFACTS (`create_html_page`): NEVER write remote image URLs (src="http..."). For every photo or real-world picture write `<img data-q="specific 3-8 word search query" alt="short description">`. The app finds, DOWNLOADS and embeds the images BEFORE the artifact is shown. Max 6 images, placed next to the text they illustrate, with CSS so a missing image never breaks the layout. Charts, graphs, icons and diagrams must be inline SVG, never images.
+               - If the tool result says some images were skipped, tell the user which ones and offer to retry with a different query.
             3. ADAPTIVE PROMPT WRITING:
                - Small/simple need → output a **short, crisp prompt (2–3 lines only)** without fluff.
                - Complex/detailed need → output a **structured long prompt** (Role, Context, Task, Constraints, Output Format).

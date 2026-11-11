@@ -2820,6 +2820,20 @@ fun HtmlArtifactCard(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // Built artifacts (images already downloaded) arrive as "AUFILE:<path to local index.html>"
+    val fileMode = htmlCode.startsWith("AUFILE:")
+    val filePath = htmlCode.removePrefix("AUFILE:")
+    val loadPage: (WebView) -> Unit = { wv ->
+        if (wv.tag != htmlCode) {
+            wv.tag = htmlCode
+            if (fileMode) {
+                wv.settings.allowFileAccess = true
+                wv.loadUrl("file://" + filePath)
+            } else {
+                wv.loadDataWithBaseURL("https://aunotes.local/", htmlCode, "text/html", "UTF-8", null)
+            }
+        }
+    }
     var showFullScreen by remember { mutableStateOf(false) }
 
     val cardBg = if (isDarkMode) Color(0xFF17171B) else Color(0xFFFAF8F5)
@@ -2885,11 +2899,11 @@ fun HtmlArtifactCard(
                         settings.loadWithOverviewMode = true
                         settings.useWideViewPort = true
                         webViewClient = WebViewClient()
-                        loadDataWithBaseURL("https://aunotes.local/", htmlCode, "text/html", "UTF-8", null)
+                        loadPage(this)
                     }
                 },
                 update = { wv ->
-                    wv.loadDataWithBaseURL("https://aunotes.local/", htmlCode, "text/html", "UTF-8", null)
+                    loadPage(wv)
                 }
             )
         }
@@ -2925,7 +2939,7 @@ fun HtmlArtifactCard(
                         scope.launch(Dispatchers.IO) {
                             val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "artifact" } + ".html"
                             val tmp = File(context.cacheDir, safeName)
-                            tmp.writeText(htmlCode)
+                            tmp.writeText(if (fileMode) com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath)) else htmlCode)
                             val saved = NoteExporter.saveToDevice(context, tmp, safeName, "text/html")
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(
@@ -2942,6 +2956,36 @@ fun HtmlArtifactCard(
                     Icon(Icons.Default.Download, null, tint = fg, modifier = Modifier.size(15.dp))
                     Spacer(Modifier.width(5.dp))
                     Text("Download .html", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = fg)
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .weight(0.7f)
+                    .height(38.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(fg.copy(alpha = 0.08f))
+                    .clickable {
+                        scope.launch(Dispatchers.IO) {
+                            val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "artifact" } + ".html"
+                            val tmp = File(context.cacheDir, safeName)
+                            tmp.writeText(if (fileMode) com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath)) else htmlCode)
+                            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", tmp)
+                            withContext(Dispatchers.Main) {
+                                val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "text/html"
+                                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(android.content.Intent.createChooser(send, "Share artifact"))
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Share, null, tint = fg, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("Share", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = fg)
                 }
             }
         }
@@ -2979,7 +3023,7 @@ fun HtmlArtifactCard(
                                 scope.launch(Dispatchers.IO) {
                                     val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "page" } + ".html"
                                     val tmp = File(context.cacheDir, safeName)
-                                    tmp.writeText(htmlCode)
+                                    tmp.writeText(if (fileMode) com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath)) else htmlCode)
                                     val saved = NoteExporter.saveToDevice(context, tmp, safeName, "text/html")
                                     withContext(Dispatchers.Main) {
                                         Toast.makeText(
@@ -3004,7 +3048,7 @@ fun HtmlArtifactCard(
                                 settings.loadWithOverviewMode = true
                                 settings.useWideViewPort = true
                                 webViewClient = WebViewClient()
-                                loadDataWithBaseURL("https://aunotes.local/", htmlCode, "text/html", "UTF-8", null)
+                                loadPage(this)
                             }
                         }
                     )

@@ -859,6 +859,8 @@ fun AiChatScreen(
         "get_milk_summary" -> "Calculating Milk Accounting Summary"
         "save_milk_entry" -> "Saving Milk Hisab Entry"
         "insert_image_to_note" -> "Inserting image into note"
+        "add_image_to_note" -> "Finding & downloading image"
+        "replace_artifact_image" -> "Replacing artifact image"
         "make_graphs_for_note" -> "Making graphs"
         "web_search" -> "Searching the live web"
         "create_pdf_document" -> "Generating & exporting PDF document"
@@ -1370,6 +1372,53 @@ fun AiChatScreen(
                     caption = captionArg.ifBlank { null }
                 )
             }
+            "replace_artifact_image" -> {
+                val titleArg = args.optString("title", "").trim()
+                val number = args.optInt("image_number", 1)
+                val query = args.optString("query", "").trim()
+                if (query.isBlank()) {
+                    ToolOutcome("NOT DONE: query was empty. Give a specific 3-8 word image search query.")
+                } else {
+                    val idx = com.example.data.ai.ArtifactBuilder.findLatest(context, titleArg)
+                    if (idx == null) {
+                        ToolOutcome("NOT DONE: No downloaded artifact was found${if (titleArg.isNotBlank()) " with title \"$titleArg\"" else ""}.")
+                    } else {
+                        val err = com.example.data.ai.ArtifactBuilder.replaceImage(context, idx, number, query)
+                        if (err != null) {
+                            ToolOutcome("NOT DONE: $err")
+                        } else {
+                            val shownTitle = com.example.data.ai.ArtifactBuilder.titleOf(idx).ifBlank { "Interactive HTML Page" }
+                            val b64 = android.util.Base64.encodeToString(("AUFILE:" + idx.absolutePath).toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+                            latestArtifactBlocks.add("[html_artifact:${shownTitle.replace("|", "-").replace("]", ")")}|$b64]")
+                            ToolOutcome("DONE: Replaced image $number in \"$shownTitle\" with a new downloaded image for \"$query\". The updated artifact card is displayed in the chat.")
+                        }
+                    }
+                }
+            }
+            "add_image_to_note" -> {
+                val query = args.optString("query", "").trim()
+                val noteIdArg = args.optLong("note_id", args.optLong("id", -1L))
+                val titleArg = args.optString("title", "").trim()
+                val captionArg = args.optString("caption", "").trim()
+                if (query.isBlank()) {
+                    ToolOutcome("NOT DONE: query was empty. Give a specific 3-8 word image search query.")
+                } else {
+                    val imgFile = com.example.data.ai.ArtifactImages.fetch(context, query)
+                    if (imgFile == null) {
+                        ToolOutcome("NOT DONE: Could not find a usable image for \"$query\". Try a different, more specific query.")
+                    } else {
+                        val b64Img = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            android.util.Base64.encodeToString(imgFile.readBytes(), android.util.Base64.DEFAULT)
+                        }
+                        insertImageIntoTargetNote(
+                            base64Img = b64Img,
+                            targetNoteId = noteIdArg.takeIf { it > 0 },
+                            targetTitle = titleArg.ifBlank { null },
+                            caption = captionArg.ifBlank { null }
+                        )
+                    }
+                }
+            }
             "make_graphs_for_note" -> {
                 val noteIdArg = args.optLong("note_id", -1L).takeIf { it > 0 }
                 val titleArg = args.optString("title", "Data Analysis Graph").trim().ifBlank { "Data Analysis Graph" }
@@ -1501,6 +1550,19 @@ fun AiChatScreen(
                         </html>
                         """.trimIndent()
                     }
+                    // Download-first: find + download every <img data-q="..."> BEFORE the card is shown
+                    val built = com.example.data.ai.ArtifactBuilder.build(context, title, fullHtml) { done, total, label, ok ->
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            stepRunning((if (ok) "Downloaded image $done/$total" else "No image found $done/$total") + " — " + label.take(40))
+                            stepFinish(ok)
+                        }
+                    }
+                    val builtIndex = built.indexFile
+                    val exportHtml = if (builtIndex != null) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            com.example.data.ai.ArtifactBuilder.inlineForExport(builtIndex)
+                        }
+                    } else fullHtml
                     var savedPath: String? = null
                     if (saveToDownloads) {
                         val safeBase = title.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").trim().take(60).ifBlank { "page" }
@@ -1508,15 +1570,21 @@ fun AiChatScreen(
                         savedPath = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                             try {
                                 val tempFile = java.io.File(context.cacheDir, fileName)
-                                tempFile.writeText(fullHtml, Charsets.UTF_8)
+                                tempFile.writeText(exportHtml, Charsets.UTF_8)
                                 com.example.ui.util.NoteExporter.saveToDevice(context, tempFile, fileName, "text/html")?.displayPath
                             } catch (_: Throwable) { null }
                         }
                     }
-                    val b64 = android.util.Base64.encodeToString(fullHtml.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+                    val cardPayload = if (builtIndex != null) "AUFILE:" + builtIndex.absolutePath else fullHtml
+                    val b64 = android.util.Base64.encodeToString(cardPayload.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
                     val cleanTitle = title.replace("|", "-").replace("]", ")")
                     latestArtifactBlocks.add("[html_artifact:$cleanTitle|$b64]")
-                    ToolOutcome("DONE: Created interactive HTML page \"$title\"${savedPath?.let { " and saved to $it" }.orEmpty()}. An interactive HTML preview card is displayed in the chat.")
+                    val imgNote = when {
+                        built.total == 0 -> ""
+                        built.skipped.isEmpty() -> " ${built.loaded}/${built.total} images were found and downloaded."
+                        else -> " ${built.loaded}/${built.total} images downloaded; no usable image found for: ${built.skipped.joinToString("; ")}."
+                    }
+                    ToolOutcome("DONE: Created interactive HTML page \"$title\"${savedPath?.let { " and saved to $it" }.orEmpty()}.$imgNote An interactive HTML preview card is displayed in the chat.")
                 }
             }
             "create_slide_deck" -> {

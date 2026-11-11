@@ -504,7 +504,7 @@ class AiService {
             put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             put("contents", buildContents(history, textContent("user", prompt)))
             put("tools", JSONArray().put(JSONObject().put("functionDeclarations", functionDeclarations)))
-            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 4096))
+            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 8192))
         }
 
         try {
@@ -743,7 +743,7 @@ class AiService {
         val body = JSONObject().apply {
             put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             put("contents", buildContents(history, latest))
-            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 4096))
+            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 8192))
         }
 
         try {
