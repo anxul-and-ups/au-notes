@@ -163,6 +163,7 @@ import com.example.ui.components.AgentVisualsParser
 import com.example.ui.components.HtmlArtifactCard
 import com.example.ui.components.OrganisedFileCard
 import com.example.ui.components.PdfArtifactCard
+import com.example.ui.components.FileArtifactCard
 import com.example.ui.components.SlidesMakerCard
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Refresh
@@ -573,6 +574,7 @@ fun AiChatScreen(
                     }
                 }
                 val totalKb = (fileSizeBytes / 1024L).coerceAtLeast(1L)
+                val inboxCopy = runCatching { com.example.data.ai.ChatInbox.add(context, uri, fileName) }.getOrNull()
 
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                     isUploadingAttachment = true
@@ -701,6 +703,36 @@ fun AiChatScreen(
                             isUploadingAttachment = false
                         }
                     }
+                } else if (
+                    mimeType == "application/zip" || mimeType == "application/x-zip-compressed" ||
+                    Regex("\\.(zip|ttf|otf|ttc|woff2?|mp3|wav|m4a|ogg|flac|aac|mp4|mkv|mov|avi|webm|3gp|apk|rar|7z|gz|tar|exe|bin|so|xlsx|pptx|doc|xls|ppt)$", RegexOption.IGNORE_CASE).containsMatchIn(fileName) ||
+                    mimeType.startsWith("audio/") || mimeType.startsWith("video/") || mimeType.startsWith("font/")
+                ) {
+                    // Binary / archive: never read as text (that would send garbage to the AI).
+                    val isZipFile = fileName.endsWith(".zip", ignoreCase = true) || mimeType.contains("zip")
+                    val info = if (isZipFile && inboxCopy != null) {
+                        val listing = runCatching {
+                            com.example.data.ai.ZipTools.describe(com.example.data.ai.ZipTools.list(inboxCopy))
+                        }.getOrElse { "(could not read the ZIP: ${it.message})" }
+                        "ZIP archive \"$fileName\" (${com.example.data.ai.ZipTools.human(inboxCopy.length())}), saved in the chat inbox. Contents:\n$listing\nUse the tools inspect_zip / clean_zip / create_zip to work with it."
+                    } else {
+                        "Binary file \"$fileName\" ($totalKb KB, ${mimeType.ifBlank { "unknown type" }}). It is saved in the chat inbox and cannot be read as text. Use the file tools (create_zip / inspect_zip / clean_zip) if the user wants to package or filter it."
+                    }
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        attachedContent = info
+                        sessionAttachmentName = fileName
+                        sessionAttachmentText = attachedContent
+                        uploadProgressFraction = 1f
+                        uploadStatusHeadline = "File Added (100%)"
+                        uploadRemainingDetail = "$totalKb KB • 0 KB remaining"
+                        for (i in uploadTimelineSteps.indices) {
+                            if (uploadTimelineSteps[i].state == 0) {
+                                uploadTimelineSteps[i] = uploadTimelineSteps[i].copy(state = 1)
+                            }
+                        }
+                        uploadTimelineSteps.add(AgentStep("$fileName added to chat — Ready (100%)", 1))
+                        isUploadingAttachment = false
+                    }
                 } else {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         uploadProgressFraction = 0.5f
@@ -737,10 +769,31 @@ fun AiChatScreen(
 
     // File picker for attachments (Rule C1, C2, C3)
     val attachmentPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            attachUriToChat(uri, autoSendIfDoc = false)
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            // Every picked file goes into the chat inbox (usable by zip/rename tools);
+            // the LAST one is also attached for the AI to read/see.
+            if (uris.size > 1) {
+                coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val t0 = System.currentTimeMillis()
+                    uris.forEachIndexed { idx, u ->
+                        // copy in the order the user picked and stamp increasing times, so "1st, 2nd, 3rd" stays correct
+                        runCatching { com.example.data.ai.ChatInbox.addFromUri(context, u)?.setLastModified(t0 + idx) }
+                    }
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        attachUriToChat(uris.last(), autoSendIfDoc = false)
+                    }
+                }
+            } else {
+                attachUriToChat(uris.last(), autoSendIfDoc = false)
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { com.example.data.ai.ChatInbox.prune(context) }
         }
     }
 
@@ -861,6 +914,10 @@ fun AiChatScreen(
         "insert_image_to_note" -> "Inserting image into note"
         "add_image_to_note" -> "Finding & downloading image"
         "replace_artifact_image" -> "Replacing artifact image"
+        "list_inbox_files" -> "Checking attached files"
+        "inspect_zip" -> "Looking inside the ZIP"
+        "clean_zip" -> "Creating clean ZIP"
+        "create_zip" -> "Creating ZIP with renamed files"
         "make_graphs_for_note" -> "Making graphs"
         "web_search" -> "Searching the live web"
         "create_pdf_document" -> "Generating & exporting PDF document"
@@ -1371,6 +1428,103 @@ fun AiChatScreen(
                     targetTitle = titleArg.ifBlank { null },
                     caption = captionArg.ifBlank { null }
                 )
+            }
+            "list_inbox_files" -> {
+                val files = com.example.data.ai.ChatInbox.list(context)
+                if (files.isEmpty()) ToolOutcome("NOT DONE: No files in the chat inbox. Ask the user to attach files first.")
+                else ToolOutcome("DONE: Inbox files (upload order):\n" + com.example.data.ai.ChatInbox.describe(files))
+            }
+            "inspect_zip" -> {
+                val f = com.example.data.ai.ChatInbox.find(context, args.optString("file", ""), preferZip = true)
+                if (f == null) {
+                    ToolOutcome("NOT DONE: ZIP file not found in the chat inbox. Ask the user to attach it.")
+                } else {
+                    try {
+                        val entries = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.example.data.ai.ZipTools.list(f) }
+                        ToolOutcome("DONE: Contents of ${f.name}:\n" + com.example.data.ai.ZipTools.describe(entries))
+                    } catch (e: Throwable) {
+                        ToolOutcome("NOT DONE: Could not read ${f.name} as a ZIP (${e.message}).")
+                    }
+                }
+            }
+            "clean_zip" -> {
+                val f = com.example.data.ai.ChatInbox.find(context, args.optString("file", ""), preferZip = true)
+                val keep = args.optString("keep_extensions", "").lowercase()
+                    .split(Regex("[,;\\s|]+")).map { it.trim().trimStart('.') }.filter { it.isNotBlank() }.toSet()
+                val flatten = args.optBoolean("flatten", false)
+                val validate = args.optBoolean("validate_fonts", true)
+                val outBase = args.optString("output_name", "").trim().ifBlank {
+                    (f?.nameWithoutExtension ?: "archive") + "_clean"
+                }
+                if (f == null) {
+                    ToolOutcome("NOT DONE: ZIP file not found in the chat inbox. Ask the user to attach it.")
+                } else if (keep.isEmpty()) {
+                    ToolOutcome("NOT DONE: keep_extensions was empty. Say which file types to keep (e.g. ttf,otf).")
+                } else {
+                    try {
+                        val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            com.example.data.ai.ZipTools.cleanZip(context, f, keep, validate, flatten, outBase)
+                        }
+                        if (res.kept == 0) {
+                            res.file.delete()
+                            ToolOutcome("NOT DONE: No files matched ${keep.joinToString(",")} (removed ${res.removed}, invalid ${res.invalid.size}). No new ZIP was created.")
+                        } else {
+                            val saved = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                com.example.ui.util.NoteExporter.saveToDevice(context, res.file, res.file.name, "application/zip")
+                            }
+                            val summary = "${res.kept} kept, ${res.removed + res.junk} removed" +
+                                (if (res.invalid.isNotEmpty()) ", ${res.invalid.size} broken" else "")
+                            latestArtifactBlocks.add("[file_artifact:${res.file.name.replace("|", "-").replace("]", ")")}|${res.file.absolutePath}|${summary.replace("|", "-")}]")
+                            ToolOutcome(
+                                "DONE: Created ${res.file.name}: kept ${res.kept} file(s), removed ${res.removed} other file(s) and ${res.junk} junk item(s)" +
+                                    (if (res.invalid.isNotEmpty()) "; dropped ${res.invalid.size} broken/fake font(s): ${res.invalid.take(10).joinToString(", ")}" else "") +
+                                    (if (res.duplicatesRenamed > 0) "; renamed ${res.duplicatesRenamed} duplicate name(s)" else "") +
+                                    (saved?.let { ". Saved to ${it.displayPath}" } ?: "") +
+                                    ". A file card is displayed in the chat."
+                            )
+                        }
+                    } catch (e: Throwable) {
+                        ToolOutcome("NOT DONE: Could not clean the ZIP (${e.message}).")
+                    }
+                }
+            }
+            "create_zip" -> {
+                val zipName = args.optString("zip_name", "").trim().ifBlank { "files" }
+                val fileRefs = args.optString("files", "").split("|").map { it.trim() }.filter { it.isNotBlank() }
+                val newNames = args.optString("new_names", "").split("|").map { it.trim() }.filter { it.isNotBlank() }
+                val inbox = com.example.data.ai.ChatInbox.list(context)
+                val chosen: List<java.io.File>? = if (fileRefs.isEmpty()) {
+                    inbox.filter { !it.name.endsWith(".zip", true) }.ifEmpty { null }
+                } else {
+                    val found = fileRefs.map { com.example.data.ai.ChatInbox.find(context, it) }
+                    if (found.any { it == null }) null else found.filterNotNull()
+                }
+                if (chosen == null || chosen.isEmpty()) {
+                    ToolOutcome("NOT DONE: Could not match the files. Inbox:\n" + (if (inbox.isEmpty()) "(empty)" else com.example.data.ai.ChatInbox.describe(inbox)))
+                } else if (newNames.isNotEmpty() && newNames.size != chosen.size) {
+                    ToolOutcome("NOT DONE: ${chosen.size} files but ${newNames.size} new names. Ask the user for exactly ${chosen.size} names (or none to keep the originals). Files in order:\n" + chosen.mapIndexed { i, f -> "${i + 1}. ${f.name}" }.joinToString("\n"))
+                } else {
+                    try {
+                        val items = chosen.mapIndexed { i, f -> f to (newNames.getOrNull(i) ?: f.name) }
+                        val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            com.example.data.ai.ZipTools.createZip(context, items, zipName)
+                        }
+                        val saved = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            com.example.ui.util.NoteExporter.saveToDevice(context, res.file, res.file.name, "application/zip")
+                        }
+                        val summary = "${res.kept} file(s)" + (if (newNames.isNotEmpty()) ", renamed" else "")
+                        latestArtifactBlocks.add("[file_artifact:${res.file.name.replace("|", "-").replace("]", ")")}|${res.file.absolutePath}|$summary]")
+                        ToolOutcome(
+                            "DONE: Created ${res.file.name} with ${res.kept} file(s)" +
+                                (if (newNames.isNotEmpty()) " using the new names" else "") +
+                                (if (res.duplicatesRenamed > 0) "; ${res.duplicatesRenamed} duplicate name(s) got _2, _3 suffixes" else "") +
+                                (saved?.let { ". Saved to ${it.displayPath}" } ?: "") +
+                                ". A file card is displayed in the chat."
+                        )
+                    } catch (e: Throwable) {
+                        ToolOutcome("NOT DONE: Could not create the ZIP (${e.message}).")
+                    }
+                }
             }
             "replace_artifact_image" -> {
                 val titleArg = args.optString("title", "").trim()
@@ -2166,6 +2320,11 @@ fun AiChatScreen(
                         append(docText).append("\n=== DOCUMENT END ===\n\n")
                     } else if (!docImages.isNullOrEmpty()) {
                         append("The user attached ${docImages.size} image(s)/page(s) (${sessionAttachmentName ?: "visual attachment"}). Read them carefully.\n\n")
+                    }
+                    val inboxNow = runCatching { com.example.data.ai.ChatInbox.list(context) }.getOrDefault(emptyList())
+                    if (inboxNow.isNotEmpty()) {
+                        append("Files currently in the chat inbox (numbered in upload order; use their names or numbers with create_zip / inspect_zip / clean_zip):\n")
+                        append(com.example.data.ai.ChatInbox.describe(inboxNow)).append("\n\n")
                     }
                     append(userMsg)
                     if (preFetchedSearchContext.isNotBlank()) {
@@ -4917,6 +5076,15 @@ private fun RenderAgentRichMessage(
                     HtmlArtifactCard(
                         title = block.title,
                         htmlCode = block.htmlCode,
+                        isDarkMode = isDarkMode
+                    )
+                }
+
+                is AgentContentBlock.FileArtifactBlock -> {
+                    FileArtifactCard(
+                        title = block.title,
+                        filePath = block.filePath,
+                        summary = block.summary,
                         isDarkMode = isDarkMode
                     )
                 }

@@ -151,6 +151,46 @@ object AgentTools {
             )
         ),
         AgentTool(
+            id = "list_inbox_files",
+            group = "Files & Export",
+            label = "List files the user attached",
+            description = "List the files the user attached in this chat (in upload order, numbered). Use before create_zip / inspect_zip / clean_zip if you are unsure which files exist.",
+            params = emptyList()
+        ),
+        AgentTool(
+            id = "inspect_zip",
+            group = "Files & Export",
+            label = "Look inside a ZIP file",
+            description = "List what is inside an attached ZIP (file names, sizes, types). Always do this before cleaning a ZIP so you know what it contains.",
+            params = listOf(
+                AgentTool.Param("file", "STRING", "ZIP file name or its inbox number (blank = latest ZIP)", required = false)
+            )
+        ),
+        AgentTool(
+            id = "clean_zip",
+            group = "Files & Export",
+            label = "Create a clean ZIP (keep only some file types)",
+            description = "Make a NEW zip from an attached ZIP that keeps only the wanted extensions (e.g. ttf,otf), removes everything else plus junk like __MACOSX and .DS_Store, optionally checks that font files are real/working, and optionally flattens folders. The result is saved to Downloads/AU Notes and shown as a card.",
+            params = listOf(
+                AgentTool.Param("file", "STRING", "Source ZIP name or inbox number (blank = latest ZIP)", required = false),
+                AgentTool.Param("keep_extensions", "STRING", "Extensions to keep, comma separated, without dots, e.g. ttf,otf", required = true),
+                AgentTool.Param("validate_fonts", "BOOLEAN", "Drop broken/fake .ttf/.otf/.ttc files (default true)", required = false),
+                AgentTool.Param("flatten", "BOOLEAN", "Put all kept files in the root, no sub-folders (default false)", required = false),
+                AgentTool.Param("output_name", "STRING", "Name of the new zip (without .zip)", required = false)
+            )
+        ),
+        AgentTool(
+            id = "create_zip",
+            group = "Files & Export",
+            label = "Create a ZIP from attached files (with renaming)",
+            description = "Put attached files into a new ZIP with the zip name and per-file names the user wants. 'files' and 'new_names' are lists separated by the | character, matched by position. The original file extension is kept automatically when the new name has none. Saved to Downloads/AU Notes and shown as a card.",
+            params = listOf(
+                AgentTool.Param("zip_name", "STRING", "Name of the zip (without .zip)", required = true),
+                AgentTool.Param("files", "STRING", "File names or inbox numbers separated by | (blank = all attached non-zip files, in upload order)", required = false),
+                AgentTool.Param("new_names", "STRING", "New names separated by | in the same order as files (optional)", required = false)
+            )
+        ),
+        AgentTool(
             id = "create_pdf_document",
             group = "Files & Export",
             label = "Create & export PDF document",
@@ -552,7 +592,9 @@ object AgentTools {
                - When a document (PDF, DOCX, TXT, MD, etc.) is attached—even if the user didn't type a specific question—immediately provide a complete, structured analysis: (a) Document Overview, (b) Detailed Summary, and (c) Key Points / Actionable Takeaways.
                - When the user attaches an image and asks to insert it into a note, call `insert_image_to_note`.
                - When the user wants a REAL photo/picture in a note and did NOT attach one, call `add_image_to_note` with a specific 3-8 word `query`; the app downloads it and inserts it.
-               - IMAGES IN HTML ARTIFACTS (`create_html_page`): NEVER write remote image URLs (src="http..."). For every photo or real-world picture write `<img data-q="specific 3-8 word search query" alt="short description">`. The app finds, DOWNLOADS and embeds the images BEFORE the artifact is shown.
+               - IMAGES IN HTML ARTIFACTS (`create_html_page`): NEVER write remote image URLs (src="http..."). For every photo or real-world picture write `<img data-q="specific 3-8 word search query" alt="short description">`. The app finds, DOWNLOADS and embeds the images BEFORE the artifact is shown. Max 6 images, placed next to the text they illustrate, with CSS so a missing image never breaks the layout. Charts, graphs, icons and diagrams must be inline SVG, never images.
+               - If the tool result says some images were skipped, tell the user which ones and offer to retry with a different query.
+               - ZIP & FILE TOOLS: attached files are available as "chat inbox" files (numbered, upload order). To make a ZIP from images/files with custom names use `create_zip` (names in `new_names` separated by |; if the user gave fewer names than files, ask). To clean someone's ZIP ("sirf ttf/otf rakho") ALWAYS call `inspect_zip` first, then `clean_zip` with `keep_extensions`; never invent which files are inside. Report counts honestly (kept / removed / invalid fonts) from the tool result. Only the last attached image is visible to you; for other files rely on their names and order, and ask the user if a rename depends on what an image shows.
             3. ADAPTIVE PROMPT WRITING:
                - Small/simple need -> output a **short, crisp prompt (2–3 lines only)** without fluff.
                - Complex/detailed need -> output a **structured long prompt** (Role, Context, Task, Constraints, Output Format).

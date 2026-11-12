@@ -52,6 +52,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
@@ -3769,3 +3770,93 @@ fun WebSourcesFaviconRow(
         }
     }
 }
+
+// =============================================================================================
+// GENERIC FILE ARTIFACT CARD (zip files created by AU Bot)
+// =============================================================================================
+
+@Composable
+fun FileArtifactCard(
+    title: String,
+    filePath: String,
+    summary: String,
+    isDarkMode: Boolean
+) {
+    val context = LocalContext.current
+    val cardBg = if (isDarkMode) Color(0xFF17171B) else Color(0xFFFAF8F5)
+    val borderCol = if (isDarkMode) Color(0xFF2C2C34) else Color(0xFFD6D3CB)
+    val fg = if (isDarkMode) Color(0xFFF4F1EA) else Color(0xFF18181B)
+    val accent = Color(0xFFD97757)
+    val exists = remember(filePath) { File(filePath).exists() }
+    val sizeText = remember(filePath) {
+        File(filePath).takeIf { it.exists() }?.let { com.example.data.ai.ZipTools.human(it.length()) }.orEmpty()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(cardBg)
+            .border(1.dp, borderCol, RoundedCornerShape(16.dp))
+            .padding(14.dp)
+    ) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(accent.copy(alpha = 0.14f))
+                    .border(1.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Archive, contentDescription = null, tint = accent, modifier = Modifier.size(22.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, fontSize = 14.5.sp, fontWeight = FontWeight.Bold, color = fg, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    listOf(sizeText, summary).filter { it.isNotBlank() }.joinToString(" • ").ifBlank { "File ready" },
+                    fontSize = 11.5.sp,
+                    color = fg.copy(alpha = 0.65f)
+                )
+            }
+            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF22C55E), modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.height(10.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(38.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(if (isDarkMode) Color(0xFF232329) else Color(0xFF18181B))
+                .border(1.dp, if (isDarkMode) borderCol else Color(0xFF18181B), RoundedCornerShape(9.dp))
+                .clickable {
+                    runCatching {
+                        val file = File(filePath)
+                        if (file.exists()) {
+                            val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "application/zip"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(send, "Share $title").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        } else {
+                            Toast.makeText(context, "File not found. It was also saved in Downloads/AU Notes", Toast.LENGTH_LONG).show()
+                        }
+                    }.onFailure {
+                        Toast.makeText(context, "Could not share: $filePath", Toast.LENGTH_LONG).show()
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Share, null, tint = Color.White, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (exists) "Share / Save file" else "Open Downloads/AU Notes", fontSize = 12.5.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            }
+        }
+    }
+}
+

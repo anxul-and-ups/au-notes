@@ -185,6 +185,49 @@ fun AgentSettingsScreen(
 
             Spacer(Modifier.height(18.dp))
 
+            // -------- 0. WHAT SHOULD AGENT CALL YOU --------
+            val currentAgentUserName by preferences.agentUserName.collectAsState()
+            var editableUserName by remember(currentAgentUserName) { mutableStateOf(currentAgentUserName) }
+            SectionHeader("WHAT SHOULD AGENT CALL YOU", warmAccent)
+            EditorialSectionCard(cardBg = cardBg, cardBorder = cardBorder) {
+                Text(
+                    text = "Set the name AU Agent uses to greet and address you in Chat and Voice Mode:",
+                    fontSize = 11.5.sp,
+                    color = sub
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = editableUserName,
+                        onValueChange = { editableUserName = it },
+                        placeholder = { Text("Enter your name", fontSize = 12.sp) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = warmAccent,
+                            unfocusedBorderColor = cardBorder,
+                            focusedTextColor = fg,
+                            unfocusedTextColor = fg
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            preferences.setAgentUserName(editableUserName)
+                            preferences.setAgentNamePrompted()
+                            Toast.makeText(context, "Saved name: ${editableUserName.trim().ifBlank { "Cleared" }}", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = warmAccent),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.height(48.dp)
+                    ) {
+                        Text("Save", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+
             // -------- 1. 3D VOICE ORB --------
             SectionHeader("3D VOICE ORB", warmAccent)
             EditorialSectionCard(cardBg = cardBg, cardBorder = cardBorder) {

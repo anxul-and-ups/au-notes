@@ -37,6 +37,7 @@ object NoteAgentFormatter {
         data class OrganisedFileBlock(val rawJson: String) : ChatSegment()
         data class HtmlArtifactBlock(val title: String, val htmlCode: String) : ChatSegment()
         data class PdfArtifactBlock(val title: String, val filePath: String, val summary: String) : ChatSegment()
+        data class FileArtifactBlock(val title: String, val filePath: String, val summary: String) : ChatSegment()
         data class WebSourcesBlock(val sources: List<WebSourceItem>) : ChatSegment()
     }
 
@@ -143,6 +144,17 @@ object NoteAgentFormatter {
                     val path = parts[1]
                     val summary = parts.getOrNull(2) ?: "Formatted PDF Document"
                     segments.add(ChatSegment.PdfArtifactBlock(title, path, summary))
+                }
+                i++
+                continue
+            }
+
+            // 0b2. File Artifact Marker (zip etc.): [file_artifact:name|filePath|summary]
+            if (trimmed.startsWith("[file_artifact:") && trimmed.endsWith("]")) {
+                val payload = trimmed.removePrefix("[file_artifact:").removeSuffix("]")
+                val parts = payload.split("|", limit = 3)
+                if (parts.size >= 2) {
+                    segments.add(ChatSegment.FileArtifactBlock(parts[0].ifBlank { "file.zip" }, parts[1], parts.getOrNull(2) ?: ""))
                 }
                 i++
                 continue
@@ -523,6 +535,10 @@ object NoteAgentFormatter {
                     appendStyledSegment("PDF Document: ${seg.title} (${seg.summary})", forceBold = true)
                     sb.append("\n")
                 }
+                is ChatSegment.FileArtifactBlock -> {
+                    appendStyledSegment("File: ${seg.title} (${seg.summary})", forceBold = true)
+                    sb.append("\n")
+                }
                 is ChatSegment.WebSourcesBlock -> {
                     // Encode web sources marker at the end or keep clean references
                     if (seg.sources.isNotEmpty()) {
@@ -594,6 +610,7 @@ object NoteAgentFormatter {
                 is ChatSegment.OrganisedFileBlock -> AgentContentBlock.OrganisedFileBlock(seg.rawJson)
                 is ChatSegment.HtmlArtifactBlock -> AgentContentBlock.HtmlArtifactBlock(seg.title, seg.htmlCode)
                 is ChatSegment.PdfArtifactBlock -> AgentContentBlock.PdfArtifactBlock(seg.title, seg.filePath, seg.summary)
+                is ChatSegment.FileArtifactBlock -> AgentContentBlock.FileArtifactBlock(seg.title, seg.filePath, seg.summary)
                 is ChatSegment.WebSourcesBlock -> AgentContentBlock.WebSourcesBlock(seg.sources)
                 is ChatSegment.BulletItem -> AgentContentBlock.Paragraph("• ${seg.text}")
                 is ChatSegment.RichParagraph -> AgentContentBlock.Paragraph(seg.text)
@@ -692,5 +709,6 @@ sealed class AgentContentBlock {
     data class OrganisedFileBlock(val json: String) : AgentContentBlock()
     data class HtmlArtifactBlock(val title: String, val htmlCode: String) : AgentContentBlock()
     data class PdfArtifactBlock(val title: String, val filePath: String, val summary: String) : AgentContentBlock()
+    data class FileArtifactBlock(val title: String, val filePath: String, val summary: String) : AgentContentBlock()
     data class WebSourcesBlock(val sources: List<WebSourceItem>) : AgentContentBlock()
 }
