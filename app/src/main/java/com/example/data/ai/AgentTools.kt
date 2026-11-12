@@ -151,26 +151,48 @@ object AgentTools {
             )
         ),
         AgentTool(
+            id = "download_drive_or_url_file",
+            group = "Files & Export",
+            label = "Download ZIP / Font Pack from Google Drive or URL",
+            description = "Download a ZIP archive, font pack, or file directly from a public Google Drive share link (https://drive.google.com/file/d/.../view), Dropbox link, GitHub link, or direct URL into the chat inbox. If the downloaded file is a ZIP, its contents are automatically inspected and returned.",
+            params = listOf(
+                AgentTool.Param("url", "STRING", "Public Google Drive file link, Dropbox link, or direct file/ZIP URL", required = true),
+                AgentTool.Param("file_name", "STRING", "Optional custom file name (e.g. 'creator_fonts.zip')", required = false)
+            )
+        ),
+        AgentTool(
             id = "list_inbox_files",
             group = "Files & Export",
             label = "List files the user attached",
-            description = "List the files the user attached in this chat (in upload order, numbered). Use before create_zip / inspect_zip / clean_zip if you are unsure which files exist.",
+            description = "List the files the user attached or downloaded in this chat (in upload order, numbered). Use before create_zip / inspect_zip / clean_zip / extract_zip if you are unsure which files exist.",
             params = emptyList()
         ),
         AgentTool(
             id = "inspect_zip",
             group = "Files & Export",
             label = "Look inside a ZIP file",
-            description = "List what is inside an attached ZIP (file names, sizes, types). Always do this before cleaning a ZIP so you know what it contains.",
+            description = "List what is inside an attached or downloaded ZIP (file names, sizes, types). Always do this before cleaning a ZIP so you know what it contains.",
             params = listOf(
                 AgentTool.Param("file", "STRING", "ZIP file name or its inbox number (blank = latest ZIP)", required = false)
+            )
+        ),
+        AgentTool(
+            id = "extract_zip",
+            group = "Files & Export",
+            label = "Unzip / Extract ZIP files to Downloads/AU Notes",
+            description = "Unzip and extract files from an attached or downloaded ZIP directly into a subfolder in Downloads/AU Notes/<folder_name> on the user's phone, and display a downloadable artifact card in chat. Can extract all files or only specific extensions (e.g. ttf,otf for creator font packs) while validating fonts and stripping junk (__MACOSX, .DS_Store).",
+            params = listOf(
+                AgentTool.Param("file", "STRING", "Source ZIP name or inbox number (blank = latest ZIP)", required = false),
+                AgentTool.Param("keep_extensions", "STRING", "Optional comma-separated extensions to extract (e.g. 'ttf,otf' for fonts, or leave blank to extract all safe files)", required = false),
+                AgentTool.Param("validate_fonts", "BOOLEAN", "Drop broken/fake .ttf/.otf/.ttc files (default true)", required = false),
+                AgentTool.Param("folder_name", "STRING", "Subfolder name inside Downloads/AU Notes/ (optional; defaults to ZIP name)", required = false)
             )
         ),
         AgentTool(
             id = "clean_zip",
             group = "Files & Export",
             label = "Create a clean ZIP (keep only some file types)",
-            description = "Make a NEW zip from an attached ZIP that keeps only the wanted extensions (e.g. ttf,otf), removes everything else plus junk like __MACOSX and .DS_Store, optionally checks that font files are real/working, and optionally flattens folders. The result is saved to Downloads/AU Notes and shown as a card.",
+            description = "Make a NEW zip from an attached or downloaded ZIP that keeps only the wanted extensions (e.g. ttf,otf), removes everything else plus junk like __MACOSX and .DS_Store, optionally checks that font files are real/working, and optionally flattens folders. The result is saved to Downloads/AU Notes and shown as a card.",
             params = listOf(
                 AgentTool.Param("file", "STRING", "Source ZIP name or inbox number (blank = latest ZIP)", required = false),
                 AgentTool.Param("keep_extensions", "STRING", "Extensions to keep, comma separated, without dots, e.g. ttf,otf", required = true),
@@ -594,7 +616,13 @@ object AgentTools {
                - When the user wants a REAL photo/picture in a note and did NOT attach one, call `add_image_to_note` with a specific 3-8 word `query`; the app downloads it and inserts it.
                - IMAGES IN HTML ARTIFACTS (`create_html_page`): NEVER write remote image URLs (src="http..."). For every photo or real-world picture write `<img data-q="specific 3-8 word search query" alt="short description">`. The app finds, DOWNLOADS and embeds the images BEFORE the artifact is shown. Max 6 images, placed next to the text they illustrate, with CSS so a missing image never breaks the layout. Charts, graphs, icons and diagrams must be inline SVG, never images.
                - If the tool result says some images were skipped, tell the user which ones and offer to retry with a different query.
-               - ZIP & FILE TOOLS: attached files are available as "chat inbox" files (numbered, upload order). To make a ZIP from images/files with custom names use `create_zip` (names in `new_names` separated by |; if the user gave fewer names than files, ask). To clean someone's ZIP ("sirf ttf/otf rakho") ALWAYS call `inspect_zip` first, then `clean_zip` with `keep_extensions`; never invent which files are inside. Report counts honestly (kept / removed / invalid fonts) from the tool result. Only the last attached image is visible to you; for other files rely on their names and order, and ask the user if a rename depends on what an image shows.
+               - ZIP & FILE TOOLS (INCLUDING GOOGLE DRIVE / URL LINKS):
+                 • Attached or downloaded files are available as "chat inbox" files (numbered, upload order).
+                 • When the user shares a Google Drive link (`https://drive.google.com/file/d/...`), Dropbox link, or direct URL to a ZIP / font pack, call `download_drive_or_url_file` first! It downloads the file into the chat inbox and automatically inspects ZIP contents.
+                 • If the user wants to UNZIP / extract the files (e.g. extract all fonts from a YouTuber's Google Drive font pack into their phone's Downloads), call `extract_zip` (optionally setting `keep_extensions` like `"ttf,otf"` if they only want fonts, or leaving `keep_extensions` blank to extract everything).
+                 • If the user wants a cleaned `.zip` file ("sirf ttf/otf rakho"), call `inspect_zip` (if not already inspected) and then `clean_zip` with `keep_extensions`.
+                 • To make a ZIP from images/files with custom names use `create_zip` (names in `new_names` separated by |; if the user gave fewer names than files, ask).
+                 • Always report counts honestly (kept / extracted / removed / invalid fonts) from the tool result. Only the last attached image is visible to you; for other files rely on their names and order, and ask the user if a rename depends on what an image shows.
             3. ADAPTIVE PROMPT WRITING:
                - Small/simple need -> output a **short, crisp prompt (2–3 lines only)** without fluff.
                - Complex/detailed need -> output a **structured long prompt** (Role, Context, Task, Constraints, Output Format).

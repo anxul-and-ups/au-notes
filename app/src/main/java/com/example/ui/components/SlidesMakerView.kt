@@ -17,6 +17,8 @@ import android.provider.MediaStore
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.view.ViewGroup
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -125,6 +127,16 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
 import kotlin.math.min
+
+private fun createSafeWebViewClient(): WebViewClient = object : WebViewClient() {
+    override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+        runCatching {
+            (view?.parent as? ViewGroup)?.removeView(view)
+            view?.destroy()
+        }
+        return true
+    }
+}
 
 // =============================================================================================
 // BUNDLED EDITORIAL TYPOGRAPHY FONTS (Anton, DM Serif Display, Inter)
@@ -2259,7 +2271,7 @@ fun SlidesMakerCard(
                         settings.domStorageEnabled = true
                         settings.loadWithOverviewMode = true
                         settings.useWideViewPort = true
-                        webViewClient = WebViewClient()
+                        webViewClient = createSafeWebViewClient()
                         tag = slidingHtml
                         loadDataWithBaseURL("https://aunotes.local/", slidingHtml, "text/html", "UTF-8", null)
                         inlineWebView = this
@@ -2270,6 +2282,14 @@ fun SlidesMakerCard(
                     if (wv.tag != slidingHtml) {
                         wv.tag = slidingHtml
                         wv.loadDataWithBaseURL("https://aunotes.local/", slidingHtml, "text/html", "UTF-8", null)
+                    }
+                },
+                onRelease = { wv ->
+                    if (inlineWebView === wv) inlineWebView = null
+                    runCatching {
+                        (wv.parent as? ViewGroup)?.removeView(wv)
+                        wv.stopLoading()
+                        wv.destroy()
                     }
                 }
             )
@@ -2507,8 +2527,15 @@ fun SlidesMakerCard(
                                 settings.domStorageEnabled = true
                                 settings.loadWithOverviewMode = true
                                 settings.useWideViewPort = true
-                                webViewClient = WebViewClient()
+                                webViewClient = createSafeWebViewClient()
                                 loadDataWithBaseURL("https://aunotes.local/", slidingHtml, "text/html", "UTF-8", null)
+                            }
+                        },
+                        onRelease = { wv ->
+                            runCatching {
+                                (wv.parent as? ViewGroup)?.removeView(wv)
+                                wv.stopLoading()
+                                wv.destroy()
                             }
                         }
                     )
@@ -3052,14 +3079,26 @@ fun AgentDiagramCard(
                         settings.javaScriptEnabled = false
                         settings.loadWithOverviewMode = true
                         settings.useWideViewPort = true
-                        webViewClient = WebViewClient()
+                        webViewClient = createSafeWebViewClient()
+                        tag = wrappedHtml
                         loadDataWithBaseURL(null, wrappedHtml, "text/html", "UTF-8", null)
                         webViewRef = this
                     }
                 },
                 update = { wv ->
                     webViewRef = wv
-                    wv.loadDataWithBaseURL(null, wrappedHtml, "text/html", "UTF-8", null)
+                    if (wv.tag != wrappedHtml) {
+                        wv.tag = wrappedHtml
+                        wv.loadDataWithBaseURL(null, wrappedHtml, "text/html", "UTF-8", null)
+                    }
+                },
+                onRelease = { wv ->
+                    if (webViewRef === wv) webViewRef = null
+                    runCatching {
+                        (wv.parent as? ViewGroup)?.removeView(wv)
+                        wv.stopLoading()
+                        wv.destroy()
+                    }
                 }
             )
         }
@@ -3154,7 +3193,15 @@ fun AgentDiagramCard(
                                 settings.javaScriptEnabled = false
                                 settings.builtInZoomControls = true
                                 settings.displayZoomControls = false
+                                webViewClient = createSafeWebViewClient()
                                 loadDataWithBaseURL(null, wrappedHtml, "text/html", "UTF-8", null)
+                            }
+                        },
+                        onRelease = { wv ->
+                            runCatching {
+                                (wv.parent as? ViewGroup)?.removeView(wv)
+                                wv.stopLoading()
+                                wv.destroy()
                             }
                         }
                     )
@@ -3254,12 +3301,19 @@ fun HtmlArtifactCard(
                         settings.domStorageEnabled = true
                         settings.loadWithOverviewMode = true
                         settings.useWideViewPort = true
-                        webViewClient = WebViewClient()
+                        webViewClient = createSafeWebViewClient()
                         loadPage(this)
                     }
                 },
                 update = { wv ->
                     loadPage(wv)
+                },
+                onRelease = { wv ->
+                    runCatching {
+                        (wv.parent as? ViewGroup)?.removeView(wv)
+                        wv.stopLoading()
+                        wv.destroy()
+                    }
                 }
             )
         }
@@ -3403,8 +3457,15 @@ fun HtmlArtifactCard(
                                 settings.domStorageEnabled = true
                                 settings.loadWithOverviewMode = true
                                 settings.useWideViewPort = true
-                                webViewClient = WebViewClient()
+                                webViewClient = createSafeWebViewClient()
                                 loadPage(this)
+                            }
+                        },
+                        onRelease = { wv ->
+                            runCatching {
+                                (wv.parent as? ViewGroup)?.removeView(wv)
+                                wv.stopLoading()
+                                wv.destroy()
                             }
                         }
                     )

@@ -1001,6 +1001,14 @@ private fun HtmlPreview(html: String, dark: Boolean, colors: HtmlColors) {
                         override fun onReceivedHttpError(view: WebView, request: android.webkit.WebResourceRequest, errorResponse: android.webkit.WebResourceResponse) {
                             if (problems.size < 6) problems.add("Could not load ${request.url.lastPathSegment ?: request.url} (HTTP ${errorResponse.statusCode})")
                         }
+                        override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+                            runCatching {
+                                (view?.parent as? android.view.ViewGroup)?.removeView(view)
+                                view?.destroy()
+                            }
+                            if (problems.size < 6) problems.add("WebView renderer restarted after memory pressure.")
+                            return true
+                        }
                     }
                     webRef[0] = this
                 }

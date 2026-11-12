@@ -74,7 +74,7 @@ if (isEmbedded) {
   document.body.style.background = "transparent";
 }
 
-const FOV=45, VIS=3.1, ORBIT=36, COUNT=6000;
+const FOV=45, VIS=3.1, ORBIT=36, COUNT=3200;
 const STATES={
   idle:     {scale:1.00,speed:.35,cyan:.35,purple:.45,bright:1.00,glow:.50,ring:.15,wob:0},
   listening:{scale:1.05,speed:.85,cyan:1.00,purple:.25,bright:1.12,glow:.95,ring:.35,wob:0},
@@ -85,12 +85,14 @@ const LABELS={idle:"READY",listening:"LISTENING",thinking:"THINKING...",speaking
 const $=s=>document.querySelector(s);
 const stage=$("#stage"),canvas=$("#c"),shadowEl=$("#shadow");
 
+canvas.addEventListener("webglcontextlost", function(e) { e.preventDefault(); }, false);
+
 let renderer;
 try{
-  renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true,powerPreference:"high-performance"});
+  renderer=new THREE.WebGLRenderer({canvas,antialias:false,alpha:true,powerPreference:"default"});
 }catch(e){
   try{
-    renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
+    renderer=new THREE.WebGLRenderer({canvas,antialias:false,alpha:true});
   }catch(e2){
     const errEl=$("#err");
     if(errEl) errEl.style.display="block";

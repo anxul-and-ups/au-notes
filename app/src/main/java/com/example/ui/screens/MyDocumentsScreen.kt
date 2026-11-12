@@ -1528,11 +1528,25 @@ private fun HtmlFileView(file: File, isDarkMode: Boolean) {
                     settings.useWideViewPort = true
                     settings.loadWithOverviewMode = true
                     setBackgroundColor(android.graphics.Color.WHITE)
-                    webViewClient = WebViewClient()
+                    webViewClient = object : WebViewClient() {
+                        override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+                            runCatching {
+                                (view?.parent as? android.view.ViewGroup)?.removeView(view)
+                                view?.destroy()
+                            }
+                            return true
+                        }
+                    }
                     loadDataWithBaseURL("https://localhost/", h, "text/html", "UTF-8", null)
                 }
             },
-            onRelease = { it.stopLoading(); it.destroy() }
+            onRelease = { wv ->
+                runCatching {
+                    (wv.parent as? android.view.ViewGroup)?.removeView(wv)
+                    wv.stopLoading()
+                    wv.destroy()
+                }
+            }
         )
     }
 }

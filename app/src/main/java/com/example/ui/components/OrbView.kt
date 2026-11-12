@@ -9,19 +9,31 @@ import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 val ORB_THEMES = listOf(
     "dark" to "Dark",
@@ -139,6 +151,9 @@ fun isOrbBackgroundLight(theme: String, customColor: String): Boolean {
 /**
  * Renders the 3D WebGL particle orb from assets/orb.html inside a transparent WebView,
  * driving it from Kotlin via window.JarvisOrb.
+ * If the device/emulator Chromium WebGL renderer process crashes (`onRenderProcessGone`),
+ * it cleanly detaches and destroys the dead WebView without crashing the app, and seamlessly
+ * switches to a native 60fps Compose 3D Fibonacci Particle Orb fallback.
  */
 @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
 @Composable
@@ -154,6 +169,21 @@ fun OrbView(
 ) {
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
     val pageReady = remember { mutableStateOf(false) }
+    var useNativeFallback by remember { mutableStateOf(false) }
+
+    if (useNativeFallback) {
+        NativeComposeOrbFallback(
+            state = state,
+            level = level,
+            theme = theme,
+            customColor = customColor,
+            intensity = intensity,
+            onTap = onTap,
+            onLongPress = onLongPress,
+            modifier = modifier
+        )
+        return
+    }
 
     fun eval(js: String) {
         val wv = webViewRef.value ?: return
@@ -215,12 +245,16 @@ fun OrbView(
 
     DisposableEffect(Unit) {
         onDispose {
-            try {
-                webViewRef.value?.stopLoading()
-                webViewRef.value?.destroy()
-            } catch (_: Throwable) {
-            }
+            val wv = webViewRef.value
             webViewRef.value = null
+            pageReady.value = false
+            if (wv != null) {
+                runCatching {
+                    (wv.parent as? ViewGroup)?.removeView(wv)
+                    wv.stopLoading()
+                    wv.destroy()
+                }
+            }
         }
     }
 
@@ -263,10 +297,12 @@ fun OrbView(
                         detail: RenderProcessGoneDetail?
                     ): Boolean {
                         pageReady.value = false
-                        try {
-                            view?.reload()
-                        } catch (_: Throwable) {
+                        webViewRef.value = null
+                        runCatching {
+                            (view?.parent as? ViewGroup)?.removeView(view)
+                            view?.destroy()
                         }
+                        useNativeFallback = true
                         return true
                     }
                 }
@@ -297,6 +333,179 @@ fun OrbView(
         },
         update = { wv ->
             webViewRef.value = wv
+        },
+        onRelease = { wv ->
+            pageReady.value = false
+            if (webViewRef.value === wv) webViewRef.value = null
+            runCatching {
+                (wv.parent as? ViewGroup)?.removeView(wv)
+                wv.stopLoading()
+                wv.destroy()
+            }
         }
     )
+}
+
+@Composable
+private fun NativeComposeOrbFallback(
+    state: String,
+    level: () -> Float,
+    theme: String,
+    customColor: String,
+    intensity: Float,
+    onTap: (() -> Unit)?,
+    onLongPress: (() -> Unit)?,
+    modifier: Modifier = Modifier
+) {
+    var animTime by remember { mutableFloatStateOf(0f) }
+    var smoothedAudio by remember { mutableFloatStateOf(0f) }
+
+    val particleCount = 650
+    val basePoints = remember {
+        FloatArray(particleCount * 4).apply {
+            val goldenAngle = 2.3999632f
+            for (i in 0 until particleCount) {
+                val y = 1f - 2f * (i + 0.5f) / particleCount
+                val r = sqrt((1f - y * y).coerceAtLeast(0f))
+                val theta = i * goldenAngle
+                val shell = 0.94f + (i % 7) * 0.009f
+                this[i * 4] = cos(theta) * r * shell
+                this[i * 4 + 1] = y * shell
+                this[i * 4 + 2] = sin(theta) * r * shell
+                this[i * 4 + 3] = (i % 19) / 19f
+            }
+        }
+    }
+
+    val (primaryCol, secondaryCol, accentCol) = remember(theme, customColor) {
+        if (customColor.isNotBlank()) {
+            val c = runCatching { Color(AndroidColor.parseColor(customColor.trim())) }.getOrDefault(Color(0xFF5B8CFF))
+            Triple(c, c.copy(alpha = 0.85f), Color(0xFF4FE3FF))
+        } else {
+            when (theme.lowercase()) {
+                "light" -> Triple(Color(0xFF2F6BFF), Color(0xFF8B5CF6), Color(0xFF10C6FF))
+                "red", "crimson" -> Triple(Color(0xFFFF4D5E), Color(0xFFFF2D6F), Color(0xFFFF8A5C))
+                "sunset" -> Triple(Color(0xFFFF6A3D), Color(0xFFE83E8C), Color(0xFF8B5CF6))
+                else -> Triple(Color(0xFF5B8CFF), Color(0xFF9B7BFF), Color(0xFF4FE3FF))
+            }
+        }
+    }
+
+    LaunchedEffect(state, intensity) {
+        var lastNanos = 0L
+        val mult = intensity.coerceIn(0.4f, 2.0f)
+        val speedMult = when (state.lowercase()) {
+            "speaking" -> 1.35f
+            "thinking" -> 1.65f
+            "listening" -> 1.05f
+            else -> 0.55f
+        }
+        while (true) {
+            withFrameNanos { nanos ->
+                val dt = if (lastNanos == 0L) 0.016f else ((nanos - lastNanos) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+                lastNanos = nanos
+                animTime += dt * speedMult
+                val rawLvl = (level().coerceIn(0f, 1f) * mult).coerceIn(0f, 1f)
+                val simLvl = when (state.lowercase()) {
+                    "speaking" -> 0.25f + 0.35f * kotlin.math.abs(sin(animTime * 5.2f) * cos(animTime * 2.1f))
+                    "listening" -> 0.14f + 0.14f * kotlin.math.abs(sin(animTime * 2.8f))
+                    "thinking" -> 0.10f + 0.08f * sin(animTime * 3.4f)
+                    else -> 0.04f + 0.03f * sin(animTime * 1.2f)
+                }
+                val target = max(rawLvl, simLvl)
+                smoothedAudio += (target - smoothedAudio) * 0.22f
+            }
+        }
+    }
+
+    val gestureModifier = if (onTap != null || onLongPress != null) {
+        modifier.pointerInput(onTap, onLongPress) {
+            detectTapGestures(
+                onTap = { onTap?.invoke() },
+                onLongPress = { onLongPress?.invoke() }
+            )
+        }
+    } else modifier
+
+    Canvas(modifier = gestureModifier) {
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val minDim = min(size.width, size.height)
+        val baseRadius = minDim * 0.33f * (1f + smoothedAudio * 0.08f)
+
+        // Outer ambient glow
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    primaryCol.copy(alpha = 0.28f + smoothedAudio * 0.18f),
+                    secondaryCol.copy(alpha = 0.12f),
+                    Color.Transparent
+                ),
+                center = Offset(cx, cy),
+                radius = baseRadius * 1.65f
+            ),
+            radius = baseRadius * 1.65f,
+            center = Offset(cx, cy)
+        )
+
+        // Outer orbital rings
+        drawCircle(
+            color = accentCol.copy(alpha = 0.24f + smoothedAudio * 0.2f),
+            radius = baseRadius * 1.18f,
+            center = Offset(cx, cy),
+            style = Stroke(width = 1.5f)
+        )
+        drawCircle(
+            color = secondaryCol.copy(alpha = 0.16f + smoothedAudio * 0.15f),
+            radius = baseRadius * 1.28f,
+            center = Offset(cx, cy),
+            style = Stroke(width = 1.1f)
+        )
+
+        val rotY = animTime * 0.45f
+        val rotX = sin(animTime * 0.27f) * 0.25f
+        val cosY = cos(rotY)
+        val sinY = sin(rotY)
+        val cosX = cos(rotX)
+        val sinX = sin(rotX)
+
+        for (i in 0 until particleCount) {
+            val bx = basePoints[i * 4]
+            val by = basePoints[i * 4 + 1]
+            val bz = basePoints[i * 4 + 2]
+            val rnd = basePoints[i * 4 + 3]
+
+            val wave = sin(bx * 3f + animTime * 0.9f + rnd * 6f) *
+                sin(by * 3f - animTime * 0.7f) *
+                sin(bz * 3f + animTime * 0.5f)
+            val displace = 1f + wave * 0.06f + smoothedAudio * 0.14f * rnd
+            val px = bx * displace
+            val py = by * displace
+            val pz = bz * displace
+
+            // Rotate around Y then X
+            val rx = px * cosY + pz * sinY
+            val rz0 = -px * sinY + pz * cosY
+            val ry = py * cosX - rz0 * sinX
+            val rz = py * sinX + rz0 * cosX
+
+            val depth = ((rz + 1.2f) / 2.4f).coerceIn(0f, 1f)
+            val perspective = 2.6f / (2.6f - rz * 0.75f)
+            val sx = cx + rx * baseRadius * perspective * 0.78f
+            val sy = cy + ry * baseRadius * perspective * 0.78f
+
+            val alpha = (0.20f + depth * 0.78f).coerceIn(0.15f, 1f)
+            val ptRadius = (1.4f + rnd * 2.2f + smoothedAudio * 1.4f) * (0.75f + depth * 0.45f)
+            val col = when (i % 3) {
+                0 -> primaryCol
+                1 -> accentCol
+                else -> secondaryCol
+            }
+            drawCircle(
+                color = col.copy(alpha = alpha),
+                radius = ptRadius,
+                center = Offset(sx, sy)
+            )
+        }
+    }
 }

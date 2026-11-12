@@ -1429,21 +1429,100 @@ fun AiChatScreen(
                     caption = captionArg.ifBlank { null }
                 )
             }
+            "download_drive_or_url_file" -> {
+                val urlArg = args.optString("url", "").trim()
+                val nameArg = args.optString("file_name", "").trim()
+                if (urlArg.isBlank()) {
+                    ToolOutcome("NOT DONE: url was empty. Ask the user for the Google Drive or direct file link.")
+                } else {
+                    val dl = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.example.data.ai.ChatInbox.downloadFromUrl(context, urlArg, nameArg)
+                    }
+                    if (dl.file == null) {
+                        ToolOutcome("NOT DONE: ${dl.error ?: "Could not download file from link."}")
+                    } else if (dl.isZip) {
+                        val inspectMsg = try {
+                            val entries = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                com.example.data.ai.ZipTools.list(dl.file)
+                            }
+                            com.example.data.ai.ZipTools.describe(entries)
+                        } catch (e: Throwable) {
+                            "Downloaded, but could not list ZIP entries (${e.message})."
+                        }
+                        ToolOutcome(
+                            "DONE: Downloaded ${dl.file.name} (${com.example.data.ai.ZipTools.human(dl.file.length())}) into chat inbox.\n" +
+                                "ZIP Contents:\n$inspectMsg\n" +
+                                "You can now call `extract_zip` to unzip files into Downloads/AU Notes or `clean_zip` to make a filtered ZIP."
+                        )
+                    } else {
+                        ToolOutcome(
+                            "DONE: Downloaded ${dl.file.name} (${com.example.data.ai.ZipTools.human(dl.file.length())}) into chat inbox."
+                        )
+                    }
+                }
+            }
             "list_inbox_files" -> {
                 val files = com.example.data.ai.ChatInbox.list(context)
-                if (files.isEmpty()) ToolOutcome("NOT DONE: No files in the chat inbox. Ask the user to attach files first.")
+                if (files.isEmpty()) ToolOutcome("NOT DONE: No files in the chat inbox. Ask the user to attach files or share a Google Drive link first.")
                 else ToolOutcome("DONE: Inbox files (upload order):\n" + com.example.data.ai.ChatInbox.describe(files))
             }
             "inspect_zip" -> {
                 val f = com.example.data.ai.ChatInbox.find(context, args.optString("file", ""), preferZip = true)
                 if (f == null) {
-                    ToolOutcome("NOT DONE: ZIP file not found in the chat inbox. Ask the user to attach it.")
+                    ToolOutcome("NOT DONE: ZIP file not found in the chat inbox. Ask the user to attach it or share a Google Drive link.")
                 } else {
                     try {
                         val entries = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.example.data.ai.ZipTools.list(f) }
                         ToolOutcome("DONE: Contents of ${f.name}:\n" + com.example.data.ai.ZipTools.describe(entries))
                     } catch (e: Throwable) {
                         ToolOutcome("NOT DONE: Could not read ${f.name} as a ZIP (${e.message}).")
+                    }
+                }
+            }
+            "extract_zip" -> {
+                val f = com.example.data.ai.ChatInbox.find(context, args.optString("file", ""), preferZip = true)
+                val rawKeep = args.optString("keep_extensions", "").lowercase().trim()
+                val keep = if (rawKeep.isBlank() || rawKeep == "all" || rawKeep == "*") {
+                    emptySet()
+                } else {
+                    rawKeep.split(Regex("[,;\\s|]+")).map { it.trim().trimStart('.') }.filter { it.isNotBlank() }.toSet()
+                }
+                val validate = args.optBoolean("validate_fonts", true)
+                val folderName = args.optString("folder_name", "").trim().ifBlank {
+                    f?.nameWithoutExtension ?: "Extracted_Files"
+                }
+                if (f == null) {
+                    ToolOutcome("NOT DONE: ZIP file not found in the chat inbox. Ask the user to attach it or share a Google Drive link first.")
+                } else {
+                    try {
+                        val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            com.example.data.ai.ZipTools.extractZipToDownloads(context, f, keep, validate, folderName)
+                        }
+                        if (res.extractedNames.isEmpty()) {
+                            ToolOutcome(
+                                "NOT DONE: No valid files were extracted from ${f.name}" +
+                                    (if (keep.isNotEmpty()) " matching ${keep.joinToString(",")}" else "") +
+                                    " (removed ${res.removed}, invalid ${res.invalid.size})."
+                            )
+                        } else {
+                            res.bundledZip?.let { bundle ->
+                                val summary = "${res.extractedNames.size} extracted to ${res.folderDisplayPath}" +
+                                    (if (res.invalid.isNotEmpty()) ", ${res.invalid.size} broken skipped" else "")
+                                latestArtifactBlocks.add(
+                                    "[file_artifact:${bundle.name.replace("|", "-").replace("]", ")")}|${bundle.absolutePath}|${summary.replace("|", "-")}]"
+                                )
+                            }
+                            ToolOutcome(
+                                "DONE: Unzipped ${res.extractedNames.size} file(s) from ${f.name} directly into ${res.folderDisplayPath}" +
+                                    (if (res.removed > 0 || res.junk > 0) " (skipped ${res.removed} non-matching file(s) and ${res.junk} junk item(s))" else "") +
+                                    (if (res.invalid.isNotEmpty()) "; dropped ${res.invalid.size} broken/fake font(s): ${res.invalid.take(10).joinToString(", ")}" else "") +
+                                    ". Extracted files: ${res.extractedNames.take(30).joinToString(", ")}" +
+                                    (if (res.extractedNames.size > 30) " ... and ${res.extractedNames.size - 30} more" else "") +
+                                    ". A downloadable card is also shown in chat."
+                            )
+                        }
+                    } catch (e: Throwable) {
+                        ToolOutcome("NOT DONE: Could not unzip ${f.name} (${e.message}).")
                     }
                 }
             }

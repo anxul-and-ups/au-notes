@@ -1506,6 +1506,18 @@ private fun FullScreenMailView(
                                     settings.useWideViewPort = true
                                     settings.domStorageEnabled = false
                                     setBackgroundColor(0)
+                                    webViewClient = object : android.webkit.WebViewClient() {
+                                        override fun onRenderProcessGone(
+                                            view: WebView?,
+                                            detail: android.webkit.RenderProcessGoneDetail?
+                                        ): Boolean {
+                                            runCatching {
+                                                (view?.parent as? android.view.ViewGroup)?.removeView(view)
+                                                view?.destroy()
+                                            }
+                                            return true
+                                        }
+                                    }
                                 }
                             },
                             update = { webView ->
@@ -1550,7 +1562,17 @@ private fun FullScreenMailView(
                                     </body>
                                     </html>
                                 """.trimIndent()
-                                webView.loadDataWithBaseURL(null, fullDoc, "text/html", "UTF-8", null)
+                                if (webView.tag != fullDoc) {
+                                    webView.tag = fullDoc
+                                    webView.loadDataWithBaseURL(null, fullDoc, "text/html", "UTF-8", null)
+                                }
+                            },
+                            onRelease = { wv ->
+                                runCatching {
+                                    (wv.parent as? android.view.ViewGroup)?.removeView(wv)
+                                    wv.stopLoading()
+                                    wv.destroy()
+                                }
                             },
                             modifier = Modifier.fillMaxSize()
                         )
