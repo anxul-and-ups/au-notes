@@ -17,12 +17,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21 (Required by AGP 9.1.1 & Gradle 9.3.1)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
           cache: 'gradle'
+
+      - name: Accept Android SDK Licenses
+        run: |
+          if [ -n "$ANDROID_HOME" ] && [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          elif [ -n "$ANDROID_SDK_ROOT" ] && [ -f "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          fi
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -46,9 +54,9 @@ jobs:
           fi
           if [ -f "./gradlew" ]; then
             chmod +x ./gradlew
-            ./gradlew assembleRelease
+            ./gradlew assembleRelease --no-configuration-cache --stacktrace
           else
-            gradle assembleRelease
+            gradle assembleRelease --no-configuration-cache --stacktrace
           fi
 
       - name: Package APK for Release

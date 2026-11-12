@@ -77,9 +77,9 @@ android {
   }
 }
 
-// Configure the Secrets Gradle Plugin to use .env and .env.example files
+// Configure the Secrets Gradle Plugin to use .env (if present) and .env.example as fallback
 secrets {
-  propertiesFileName = ".env"
+  propertiesFileName = if (rootProject.file(".env").exists()) ".env" else ".env.example"
   defaultPropertiesFileName = ".env.example"
 }
 
