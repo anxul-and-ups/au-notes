@@ -3850,7 +3850,7 @@ fun FileArtifactCard(
     val accent = Color(0xFFD97757)
     val exists = remember(filePath) { File(filePath).exists() }
     val sizeText = remember(filePath) {
-        File(filePath).takeIf { it.exists() }?.let { com.example.data.ai.ZipTools.human(it.length()) }.orEmpty()
+        File(filePath).takeIf { it.exists() }?.let { com.example.data.ai.ChatInbox.human(it.length()) }.orEmpty()
     }
 
     Column(

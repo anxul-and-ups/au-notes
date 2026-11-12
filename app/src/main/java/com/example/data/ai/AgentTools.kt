@@ -151,68 +151,6 @@ object AgentTools {
             )
         ),
         AgentTool(
-            id = "download_drive_or_url_file",
-            group = "Files & Export",
-            label = "Download ZIP / Font Pack from Google Drive or URL",
-            description = "Download a ZIP archive, font pack, or file directly from a public Google Drive share link (https://drive.google.com/file/d/.../view), Dropbox link, GitHub link, or direct URL into the chat inbox. If the downloaded file is a ZIP, its contents are automatically inspected and returned.",
-            params = listOf(
-                AgentTool.Param("url", "STRING", "Public Google Drive file link, Dropbox link, or direct file/ZIP URL", required = true),
-                AgentTool.Param("file_name", "STRING", "Optional custom file name (e.g. 'creator_fonts.zip')", required = false)
-            )
-        ),
-        AgentTool(
-            id = "list_inbox_files",
-            group = "Files & Export",
-            label = "List files the user attached",
-            description = "List the files the user attached or downloaded in this chat (in upload order, numbered). Use before create_zip / inspect_zip / clean_zip / extract_zip if you are unsure which files exist.",
-            params = emptyList()
-        ),
-        AgentTool(
-            id = "inspect_zip",
-            group = "Files & Export",
-            label = "Look inside a ZIP file",
-            description = "List what is inside an attached or downloaded ZIP (file names, sizes, types). Always do this before cleaning a ZIP so you know what it contains.",
-            params = listOf(
-                AgentTool.Param("file", "STRING", "ZIP file name or its inbox number (blank = latest ZIP)", required = false)
-            )
-        ),
-        AgentTool(
-            id = "extract_zip",
-            group = "Files & Export",
-            label = "Unzip / Extract ZIP files to Downloads/AU Notes",
-            description = "Unzip and extract files from an attached or downloaded ZIP directly into a subfolder in Downloads/AU Notes/<folder_name> on the user's phone, and display a downloadable artifact card in chat. Can extract all files or only specific extensions (e.g. ttf,otf for creator font packs) while validating fonts and stripping junk (__MACOSX, .DS_Store).",
-            params = listOf(
-                AgentTool.Param("file", "STRING", "Source ZIP name or inbox number (blank = latest ZIP)", required = false),
-                AgentTool.Param("keep_extensions", "STRING", "Optional comma-separated extensions to extract (e.g. 'ttf,otf' for fonts, or leave blank to extract all safe files)", required = false),
-                AgentTool.Param("validate_fonts", "BOOLEAN", "Drop broken/fake .ttf/.otf/.ttc files (default true)", required = false),
-                AgentTool.Param("folder_name", "STRING", "Subfolder name inside Downloads/AU Notes/ (optional; defaults to ZIP name)", required = false)
-            )
-        ),
-        AgentTool(
-            id = "clean_zip",
-            group = "Files & Export",
-            label = "Create a clean ZIP (keep only some file types)",
-            description = "Make a NEW zip from an attached or downloaded ZIP that keeps only the wanted extensions (e.g. ttf,otf), removes everything else plus junk like __MACOSX and .DS_Store, optionally checks that font files are real/working, and optionally flattens folders. The result is saved to Downloads/AU Notes and shown as a card.",
-            params = listOf(
-                AgentTool.Param("file", "STRING", "Source ZIP name or inbox number (blank = latest ZIP)", required = false),
-                AgentTool.Param("keep_extensions", "STRING", "Extensions to keep, comma separated, without dots, e.g. ttf,otf", required = true),
-                AgentTool.Param("validate_fonts", "BOOLEAN", "Drop broken/fake .ttf/.otf/.ttc files (default true)", required = false),
-                AgentTool.Param("flatten", "BOOLEAN", "Put all kept files in the root, no sub-folders (default false)", required = false),
-                AgentTool.Param("output_name", "STRING", "Name of the new zip (without .zip)", required = false)
-            )
-        ),
-        AgentTool(
-            id = "create_zip",
-            group = "Files & Export",
-            label = "Create a ZIP from attached files (with renaming)",
-            description = "Put attached files into a new ZIP with the zip name and per-file names the user wants. 'files' and 'new_names' are lists separated by the | character, matched by position. The original file extension is kept automatically when the new name has none. Saved to Downloads/AU Notes and shown as a card.",
-            params = listOf(
-                AgentTool.Param("zip_name", "STRING", "Name of the zip (without .zip)", required = true),
-                AgentTool.Param("files", "STRING", "File names or inbox numbers separated by | (blank = all attached non-zip files, in upload order)", required = false),
-                AgentTool.Param("new_names", "STRING", "New names separated by | in the same order as files (optional)", required = false)
-            )
-        ),
-        AgentTool(
             id = "create_pdf_document",
             group = "Files & Export",
             label = "Create & export PDF document",
@@ -227,10 +165,26 @@ object AgentTools {
             id = "create_html_page",
             group = "Creative & Media",
             label = "Create interactive HTML/SVG page",
-            description = "Create a complete, responsive, standalone HTML5 page (with embedded CSS, warm typography styling, SVG diagrams, or interactive JS) and display an interactive HTML Artifact card in chat with full-screen preview and download.",
+            description = "Create a complete, responsive, standalone HTML5 page (NOT for slide decks: use create_html_slides for slides) (with embedded CSS, warm typography styling, SVG diagrams, or interactive JS) and display an interactive HTML Artifact card in chat with full-screen preview and download.",
             params = listOf(
                 AgentTool.Param("title", "STRING", "Title of the HTML artifact or web page", required = true),
                 AgentTool.Param("html_code", "STRING", "Complete standalone <!DOCTYPE html><html>...</html> source code. For real photos use <img data-q=\"specific 3-8 word search query\" alt=\"...\"> (never remote URLs); the app finds and downloads the images before showing the page. Draw charts/icons/diagrams as inline SVG.", required = true)
+            )
+        ),
+        AgentTool(
+            id = "create_html_slides",
+            group = "Creative & Media",
+            label = "Create HTML slide deck (swipeable, with images)",
+            description = "Create a REAL swipeable slide deck (one slide per screen) from a document, note, photos or topic, with images placed automatically and a layout that never breaks. Use this whenever the user asks for slides / presentation / PPT / 'slides banao'. The app downloads or copies all images BEFORE showing the deck.",
+            params = listOf(
+                AgentTool.Param("title", "STRING", "Deck title", required = true),
+                AgentTool.Param(
+                    "slides_json", "STRING",
+                    "JSON array of slides. Each slide: {\"layout\":\"title|content|image_right|image_left|image_full|stats|timeline|bars|table|two_column|quote|closing\", \"section\":\"small label\", \"title\":\"max 8 words, *word* highlights\", \"subtitle\":\"\", \"text\":\"short paragraph\", \"bullets\":[\"full-information bullet\" or {\"head\":\"Term\",\"text\":\"explanation\"}], \"image_query\":\"3-8 specific words\" OR \"image_file\":\"inbox file name/number\", \"caption\":\"\", \"stats\":[{\"value\":\"80%\",\"label\":\"...\"}], \"items\":[{\"label\":\"1947\",\"text\":\"...\"}], \"bars\":[{\"label\":\"A\",\"value\":80}], \"unit\":\"%\", \"header\":[\"Col1\",\"Col2\"], \"rows\":[[\"a\",\"b\"]], \"left\":{\"title\":\"\",\"bullets\":[]}, \"right\":{\"title\":\"\",\"bullets\":[]}, \"quote\":\"\", \"author\":\"\"}",
+                    required = true
+                ),
+                AgentTool.Param("theme", "STRING", "paper | olive | blue | red | dark (default paper)", required = false),
+                AgentTool.Param("accent_color", "STRING", "Optional hex accent colour, e.g. #C2410C", required = false)
             )
         ),
         AgentTool(
@@ -490,6 +444,21 @@ object AgentTools {
             """.trimIndent()
         ).append("\n")
 
+        if (!spoken) {
+            append(
+                """
+                [SLIDES / TURN MY FILE, NOTE OR PHOTOS INTO A PRESENTATION]
+                - Whenever the user wants slides / presentation / PPT / "slides banao" (from an attached file, a note, photos or just a topic) call `create_html_slides`, NOT `create_html_page`. Use `create_slide_deck` only if the user explicitly asks for the typography/editorial deck.
+                - SOURCE FIRST: the attached document text is already in the message; for a note, call `read_note` first and read ALL of it. Do NOT shrink it to a few points. Cover every main section, heading and argument in the source's order and keep the key facts, numbers, names, dates, definitions and steps.
+                - Size: tiny source 6–8 slides; medium 10–14; long 14–20 (max 24). Roughly one slide per section or idea.
+                - Slide 1 = layout `title`; last slide = `closing` (short summary / takeaway). In between mix layouts: `content` (title + 3–5 informative bullets, each up to ~18 words, never vague), `stats` for big numbers, `timeline` for dates/steps, `bars` for real numeric comparisons only, `table` for comparisons, `two_column` for pros/cons or A vs B, `quote` for a quote, `image_right` / `image_left` / `image_full` when a picture helps.
+                - Pictures: if the user attached their own photos, USE THEM ALL, in order, via `image_file` (the inbox file name or number) on image layouts; never search the web for something the user already gave. For other pictures use `image_query` (3–8 specific words). At most 1 image per slide, about 8 images in total, never put image HTML in `text`. Charts and diagrams are drawn by the app (stats/bars/table), never as images.
+                - `slides_json` must be one valid JSON array string. Put `*word*` around one key word of a title to highlight it.
+                - After the tool succeeds, tell the user in 2–3 lines how many slides were made and which images were used or skipped.
+                """.trimIndent()
+            ).append("\n")
+        }
+
         if (searchModeEnabled) {
             append(
                 """
@@ -516,7 +485,7 @@ object AgentTools {
                 - You have FULL permission to execute all enabled tools and multi-step workflows:
                   • Create & export PDF documents (`create_pdf_document`, `export_note`)
                   • Create interactive HTML/CSS/SVG pages (`create_html_page`)
-                  • Create warm-paper Typography Slide Decks (`create_slide_deck` or ```slides blocks)
+                  • Create swipeable HTML Slide Decks with automatic images (`create_html_slides`) or editorial Typography Slide Decks (`create_slide_deck` / ```slides blocks)
                   • Create & update structured charts and SVG diagrams (`add_chart`, `update_chart`, `make_graphs_for_note`, or ```chart / ```diagram blocks)
                   • Create, read, search, edit, move, or delete notes and folders (`create_note`, `edit_note`, `edit_current_note`, `search_notes`, `read_note`, `insert_image_to_note`)
                   • Perform live web searches (`web_search`) and manage Milk Hisab / Memory.
@@ -527,7 +496,7 @@ object AgentTools {
             append(
                 """
                 [CURRENT MODE: CHAT & ARTIFACT MODE]
-                - You can chat naturally, answer questions, search/read notes (`search_notes`, `read_note`, `list_notes`, `read_screen`), summarize uploaded PDFs/images, and when the user explicitly asks for a PDF document (`create_pdf_document`), HTML page (`create_html_page`), Slide Deck (`create_slide_deck` / ```slides), Chart (`add_chart` / ```chart), or SVG Diagram (```diagram), you SHOULD generate it directly!
+                - You can chat naturally, answer questions, search/read notes (`search_notes`, `read_note`, `list_notes`, `read_screen`), summarize uploaded PDFs/images, and when the user explicitly asks for a PDF document (`create_pdf_document`), HTML page (`create_html_page`), Slide Deck (`create_html_slides` / `create_slide_deck` / ```slides), Chart (`add_chart` / ```chart), or SVG Diagram (```diagram), you SHOULD generate it directly!
                 - For modifying or deleting existing saved notes (`edit_note`, `delete_note`, `move_note_to_folder`), if Work Mode is OFF and the user hasn't explicitly confirmed, you can either run the requested creation tool or remind them they can also toggle **Work Mode** for autonomous multi-note editing.
                 """.trimIndent()
             ).append("\n")
@@ -538,7 +507,7 @@ object AgentTools {
                 """
                 [VOICE AGENT INSTRUCTIONS]
                 - You are currently speaking with the user in Voice Mode, which shares the exact same session, tools, and screen as text chat.
-                - When the user asks you by voice to prepare a PDF, make an HTML page, create a slide deck, draw a chart, create/edit a note, or search the web, CALL THE TOOL (`create_pdf_document`, `create_html_page`, `create_slide_deck`, `add_chart`, `create_note`, `edit_note`, `web_search`) right away!
+                - When the user asks you by voice to prepare a PDF, make an HTML page, create a slide deck, draw a chart, create/edit a note, or search the web, CALL THE TOOL (`create_pdf_document`, `create_html_page`, `create_html_slides`, `create_slide_deck`, `add_chart`, `create_note`, `edit_note`, `web_search`) right away!
                 - After executing the tool, give a concise, warm spoken confirmation (e.g., "Ok sir, maine Indian Army par PDF document taiyar kar diya hai aur aapki chat screen par laga diya hai.") while the full rich artifact appears on screen.
                 """.trimIndent()
             ).append("\n")
@@ -559,7 +528,7 @@ object AgentTools {
                  • Markdown comparison tables (`| Col 1 | Col 2 |`) and key definitions wrapped in `==highlight==`
                - NEVER cut short, summarize briefly, or omit details when creating notes or PDFs. Write as much thorough, well-organized detail as the topic deserves.
             3. SLIDES IN INTERACTIVE SLIDING HTML ARTIFACT STYLE:
-               - Whenever the user asks for slides or a presentation, call `create_slide_deck` (or output a ```slides block). The app automatically renders it as an interactive horizontal sliding HTML artifact that the user can swipe through, add directly into their Notes, and export to PDF.
+               - Whenever the user asks for slides or a presentation, call `create_html_slides` (or `create_slide_deck` if they ask for editorial typography slides).
             """.trimIndent()
         ).append("\n")
 
@@ -616,13 +585,6 @@ object AgentTools {
                - When the user wants a REAL photo/picture in a note and did NOT attach one, call `add_image_to_note` with a specific 3-8 word `query`; the app downloads it and inserts it.
                - IMAGES IN HTML ARTIFACTS (`create_html_page`): NEVER write remote image URLs (src="http..."). For every photo or real-world picture write `<img data-q="specific 3-8 word search query" alt="short description">`. The app finds, DOWNLOADS and embeds the images BEFORE the artifact is shown. Max 6 images, placed next to the text they illustrate, with CSS so a missing image never breaks the layout. Charts, graphs, icons and diagrams must be inline SVG, never images.
                - If the tool result says some images were skipped, tell the user which ones and offer to retry with a different query.
-               - ZIP & FILE TOOLS (INCLUDING GOOGLE DRIVE / URL LINKS):
-                 • Attached or downloaded files are available as "chat inbox" files (numbered, upload order).
-                 • When the user shares a Google Drive link (`https://drive.google.com/file/d/...`), Dropbox link, or direct URL to a ZIP / font pack, call `download_drive_or_url_file` first! It downloads the file into the chat inbox and automatically inspects ZIP contents.
-                 • If the user wants to UNZIP / extract the files (e.g. extract all fonts from a YouTuber's Google Drive font pack into their phone's Downloads), call `extract_zip` (optionally setting `keep_extensions` like `"ttf,otf"` if they only want fonts, or leaving `keep_extensions` blank to extract everything).
-                 • If the user wants a cleaned `.zip` file ("sirf ttf/otf rakho"), call `inspect_zip` (if not already inspected) and then `clean_zip` with `keep_extensions`.
-                 • To make a ZIP from images/files with custom names use `create_zip` (names in `new_names` separated by |; if the user gave fewer names than files, ask).
-                 • Always report counts honestly (kept / extracted / removed / invalid fonts) from the tool result. Only the last attached image is visible to you; for other files rely on their names and order, and ask the user if a rename depends on what an image shows.
             3. ADAPTIVE PROMPT WRITING:
                - Small/simple need -> output a **short, crisp prompt (2–3 lines only)** without fluff.
                - Complex/detailed need -> output a **structured long prompt** (Role, Context, Task, Constraints, Output Format).

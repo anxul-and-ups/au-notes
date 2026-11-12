@@ -74,6 +74,28 @@ object ArtifactImages {
         if (download(url, out)) out else null
     }
 
+    /** Use a file the USER gave (inbox): downscale to a JPEG in app storage. */
+    suspend fun fromLocal(context: Context, src: File): File? = withContext(Dispatchers.IO) {
+        val out = File(imagesDir(context), sha1("f:" + src.absolutePath + src.length()) + ".jpg")
+        if (out.exists() && out.length() > 0) return@withContext out
+        try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(src.path, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
+            val sample = Integer.highestOneBit(maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / MAX_SIDE))
+            val decoded = BitmapFactory.decodeFile(src.path, BitmapFactory.Options().apply { inSampleSize = sample })
+                ?: return@withContext null
+            val flat = if (decoded.hasAlpha()) {
+                val b = Bitmap.createBitmap(decoded.width, decoded.height, Bitmap.Config.ARGB_8888)
+                Canvas(b).apply { drawColor(Color.WHITE); drawBitmap(decoded, 0f, 0f, null) }
+                decoded.recycle(); b
+            } else decoded
+            out.outputStream().use { flat.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+            flat.recycle()
+            if (out.length() > 0) out else null
+        } catch (_: Throwable) { null }
+    }
+
     // ------------------------------------------------------------------ candidates
 
     private fun candidates(q: String): List<String> {
@@ -230,16 +252,17 @@ object ArtifactBuilder {
         val skipped: List<String>
     )
 
-    private const val MAX_IMAGES = 6
+    private const val MAX_IMAGES = 10
     private val IMG_TAG = Regex("<img\\b[^>]*>", RegexOption.IGNORE_CASE)
     private val DATA_Q = Regex("\\sdata-q\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')", RegexOption.IGNORE_CASE)
+    private val DATA_FILE = Regex("\\sdata-file\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')", RegexOption.IGNORE_CASE)
     private val SRC = Regex("\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')", RegexOption.IGNORE_CASE)
     private val ALT = Regex("\\salt\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')", RegexOption.IGNORE_CASE)
 
     private fun Regex.firstGroup(s: String): String? =
         find(s)?.let { m -> m.groupValues[1].ifBlank { m.groupValues[2] } }?.takeIf { it.isNotBlank() }
 
-    private class Job(val range: IntRange, val tag: String, val query: String?, val remote: String?, val alt: String)
+    private class Job(val range: IntRange, val tag: String, val query: String?, val remote: String?, val alt: String, val local: String? = null)
 
     suspend fun build(
         context: Context,
@@ -251,10 +274,11 @@ object ArtifactBuilder {
         for (m in IMG_TAG.findAll(html)) {
             val tag = m.value
             val q = DATA_Q.firstGroup(tag)
+            val localRef = DATA_FILE.firstGroup(tag)
             val src = SRC.firstGroup(tag)
             val isRemote = src != null && (src.startsWith("http://") || src.startsWith("https://"))
-            if (q == null && !isRemote) continue            // local/data: image, leave untouched
-            jobs.add(Job(m.range, tag, q, if (isRemote) src else null, ALT.firstGroup(tag).orEmpty()))
+            if (q == null && localRef == null && !isRemote) continue   // local/data: image, leave untouched
+            jobs.add(Job(m.range, tag, q, if (isRemote) src else null, ALT.firstGroup(tag).orEmpty(), localRef))
         }
         if (jobs.isEmpty()) return@withContext Result(null, 0, 0, emptyList())
 
@@ -271,13 +295,16 @@ object ArtifactBuilder {
                     if (idx >= MAX_IMAGES) return@async null
                     sem.withPermit {
                         val f = when {
+                            j.local != null ->
+                                ChatInbox.find(context, j.local)?.let { ArtifactImages.fromLocal(context, it) }
+                                    ?: j.alt.takeIf { it.isNotBlank() }?.let { ArtifactImages.fetch(context, it) }
                             j.remote != null ->
                                 ArtifactImages.fetchUrl(context, j.remote)
                                     ?: j.alt.takeIf { it.isNotBlank() }?.let { ArtifactImages.fetch(context, it) }
                             else -> ArtifactImages.fetch(context, j.query ?: j.alt)
                         }
                         val saved = f?.let { src -> File(imgDir, src.name).also { dst -> src.copyTo(dst, overwrite = true) } }
-                        val label = (j.query ?: j.alt).ifBlank { j.remote.orEmpty() }
+                        val label = (j.query ?: j.local ?: j.alt).ifBlank { j.remote.orEmpty() }
                         runCatching { onProgress?.invoke(doneCount.incrementAndGet(), totalToLoad, label, saved != null) }
                         saved
                     }
@@ -294,10 +321,10 @@ object ArtifactBuilder {
             val f = files[i]
             if (f != null) {
                 loaded++
-                val rest = j.tag.replace(DATA_Q, "").replace(SRC, "").substring(4)
+                val rest = j.tag.replace(DATA_Q, "").replace(DATA_FILE, "").replace(SRC, "").substring(4)
                 sb.append("<img src=\"images/").append(f.name).append('"').append(rest)
             } else {
-                skipped.add((j.query ?: j.alt).ifBlank { j.remote.orEmpty() }.take(60))
+                skipped.add((j.query ?: j.local ?: j.alt).ifBlank { j.remote.orEmpty() }.take(60))
             }
             cursor = j.range.last + 1
         }
@@ -341,6 +368,22 @@ object ArtifactBuilder {
             indexFile.writeText(html.replaceRange(m.range, newTag), Charsets.UTF_8)
             null
         }
+
+    /**
+     * Safety net for AI-written pages: make sure they have a mobile viewport and that images can
+     * never be wider than the screen (the usual cause of "everything overlapping / broken format").
+     */
+    fun harden(html: String): String {
+        var h = html
+        val head = Regex("<head[^>]*>", RegexOption.IGNORE_CASE).find(h)
+        val extra = StringBuilder()
+        if (!Regex("name\\s*=\\s*[\"']viewport[\"']", RegexOption.IGNORE_CASE).containsMatchIn(h))
+            extra.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">")
+        extra.append("<style>:where(img,video,svg){max-width:100%}:where(img){height:auto}:where(body){overflow-wrap:anywhere}</style>")
+        h = if (head != null) h.replaceRange(head.range.last + 1, head.range.last + 1, extra.toString())
+        else extra.toString() + h
+        return h
+    }
 
     /** Single self-contained HTML (images embedded as data: URIs) for saving/sharing. */
     fun inlineForExport(indexFile: File): String {
