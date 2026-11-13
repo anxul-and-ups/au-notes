@@ -97,6 +97,11 @@ import java.util.Calendar
 import com.example.data.repository.MilkAccountingRepository
 import androidx.compose.ui.zIndex
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.AddCircleOutline
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -538,6 +543,14 @@ fun AiChatScreen(
     var sessionAttachmentText by remember { mutableStateOf<String?>(null) }
     var sessionAttachmentImages by remember { mutableStateOf<List<String>?>(null) }
     var sessionAttachmentUri by remember { mutableStateOf<Uri?>(null) }
+    val attachedNotes = remember { mutableStateListOf<NoteEntity>() }
+    var sessionAttachedNotes by remember { mutableStateOf<List<NoteEntity>>(emptyList()) }
+    var showNoteAttachDialog by remember { mutableStateOf(false) }
+    var noteAttachSearchQuery by remember { mutableStateOf("") }
+    val allNotesForPicker by repository.allActiveNotes.collectAsState(initial = emptyList())
+    var sidebarModelSearchQuery by remember { mutableStateOf("") }
+    var sidebarProviderFilter by remember { mutableStateOf("All") }
+    var isRefreshingSidebarModels by remember { mutableStateOf(false) }
     var handleSendAction by remember { mutableStateOf<((String) -> Unit)?>(null) }
 
     val messages = remember {
@@ -1151,9 +1164,34 @@ fun AiChatScreen(
                 )
             }
             "read_note" -> {
-                val note = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
-                if (note == null || !agentVisible(note)) ToolOutcome("Note not found or not accessible.")
-                else { trackNote(note); ToolOutcome("Title: ${note.title}\nFolder: ${note.folder}\n\n${note.content}") }
+                val requestedId = args.optLong("note_id", -1L)
+                val requestedTitle = args.optString("title", "").trim()
+                var note = if (requestedId > 0) repository.getNoteByIdOnce(requestedId) else null
+                if ((note == null || !agentVisible(note)) && requestedTitle.isNotBlank()) {
+                    val active = try { repository.allActiveNotes.first() } catch (_: Exception) { emptyList() }
+                    val visible = active.filter { agentVisible(it) }
+                    note = visible.firstOrNull { it.title.equals(requestedTitle, ignoreCase = true) }
+                        ?: visible.firstOrNull { it.title.contains(requestedTitle, ignoreCase = true) }
+                        ?: visible.firstOrNull { it.content.contains(requestedTitle, ignoreCase = true) }
+                }
+                if (note == null || !agentVisible(note)) {
+                    ToolOutcome("Note not found or not accessible. Try list_notes or search_notes first.")
+                } else {
+                    trackNote(note)
+                    val fullNoteBody = buildString {
+                        append("Note ID: ${note.id}\n")
+                        append("Title: ${note.title}\n")
+                        append("Folder: ${note.folder}\n")
+                        append("Category: ${note.category}\n\n")
+                        append("=== FULL NOTE CONTENT & CODE ===\n")
+                        append(note.content)
+                        if (note.tableData.isNotBlank()) {
+                            append("\n\n=== EMBEDDED TABLE DATA ===\n")
+                            append(note.tableData)
+                        }
+                    }
+                    ToolOutcome(fullNoteBody, noteResults = listOf(note))
+                }
             }
             "list_notes" -> {
                 val folder = args.optString("folder", "").trim()
@@ -2034,20 +2072,29 @@ fun AiChatScreen(
             Toast.makeText(context, "Please wait for the file upload timeline to reach 100%", Toast.LENGTH_SHORT).show()
             return
         }
-        if (promptText.isBlank() && attachedContent.isNullOrBlank() && attachedPdfImages.isNullOrEmpty()) return
+        if (promptText.isBlank() && attachedContent.isNullOrBlank() && attachedPdfImages.isNullOrEmpty() && attachedNotes.isEmpty()) return
         if (isLoading) return
 
         val currentAttachmentName = attachedFileName
         val currentAttachmentText = attachedContent
         val currentPdfImages = attachedPdfImages
         val currentImgUri = attachedImageUri
+        val currentPickedNotes = attachedNotes.toList()
+        if (currentPickedNotes.isNotEmpty()) {
+            sessionAttachedNotes = currentPickedNotes
+            currentPickedNotes.forEach { trackNote(it) }
+        }
+        val activeAttachedNotes = if (currentPickedNotes.isNotEmpty()) currentPickedNotes else sessionAttachedNotes
         val isDoc = currentImgUri == null && (!currentAttachmentText.isNullOrBlank() || !currentPdfImages.isNullOrEmpty())
 
         val userMsg = promptText.trim().ifBlank {
-            if (isDoc) {
-                "I have uploaded \"${currentAttachmentName ?: "document"}\". Please analyze it in detail: (1) Overview of the document, (2) Concise Summary, and (3) All Important Key Points."
-            } else {
-                "Please analyze this attached image."
+            when {
+                currentPickedNotes.isNotEmpty() ->
+                    "I have attached ${currentPickedNotes.size} note(s): ${currentPickedNotes.joinToString(", ") { "\"${it.title}\"" }}. Please read their full content and code carefully and help me with them."
+                isDoc ->
+                    "I have uploaded \"${currentAttachmentName ?: "document"}\". Please analyze it in detail: (1) Overview of the document, (2) Concise Summary, and (3) All Important Key Points."
+                else ->
+                    "Please analyze this attached image."
             }
         }
 
@@ -2059,11 +2106,20 @@ fun AiChatScreen(
         val docText = currentAttachmentText ?: sessionAttachmentText
         val docImages = currentPdfImages ?: sessionAttachmentImages
 
+        val displayAttachLabel = buildString {
+            if (!currentAttachmentName.isNullOrBlank()) append(currentAttachmentName)
+            if (currentPickedNotes.isNotEmpty()) {
+                if (isNotEmpty()) append(" + ")
+                append(currentPickedNotes.joinToString(", ") { "Note: ${it.title.ifBlank { "Untitled" }}" })
+            }
+        }.ifBlank { null }
+
         inputText = ""
         attachedFileName = null
         attachedContent = null
         attachedPdfImages = null
         attachedImageUri = null
+        attachedNotes.clear()
         uploadTimelineSteps.clear()
         uploadProgressFraction = 0f
         uploadStatusHeadline = ""
@@ -2077,7 +2133,7 @@ fun AiChatScreen(
                 id = userMsgId,
                 sender = "user",
                 text = userMsg,
-                attachedFileName = currentAttachmentName,
+                attachedFileName = displayAttachLabel,
                 deliveryStatus = "Sending…"
             )
         )
@@ -2191,7 +2247,8 @@ fun AiChatScreen(
                     "Gemini" -> Triple(preferences.getEffectiveApiKey(), "", preferences.selectedModel.value)
                     else -> {
                         val entry = providerEntries[activeProvider]
-                        Triple(entry?.apiKey.orEmpty(), entry?.baseUrl.orEmpty(), entry?.model.orEmpty())
+                        val chosen = entry?.model.orEmpty().ifBlank { preferences.selectedModel.value }
+                        Triple(entry?.apiKey.orEmpty(), entry?.baseUrl.orEmpty(), chosen)
                     }
                 }
 
@@ -2208,7 +2265,7 @@ fun AiChatScreen(
                         (it.id != "edit_current_note" || onModifyCurrentNote != null || onApplyAgentNoteToEditor != null)
                 }
                 val notesIndex = try {
-                    repository.allActiveNotes.first().filter { agentVisible(it) }.take(40)
+                    repository.allActiveNotes.first().filter { agentVisible(it) }.take(50)
                         .joinToString("\n") { "${it.id} | ${it.title} | ${it.folder}" }
                 } catch (e: Exception) { "" }
                 val sessionText = sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" }
@@ -2228,9 +2285,12 @@ fun AiChatScreen(
                     recentChatTranscript = buildRecentTranscriptString()
                 )
 
-                // Dedicated SEARCH Mode toggle: when enabled, actively perform live web search & attach verified sources
+                // Smart SEARCH Mode: only pre-fetch web search when the query actually needs external/live facts
+                // (never waste time searching when converting attached notes/PDFs/images or answering casual greetings)
                 var preFetchedSearchContext = ""
-                if (searchModeEnabled) {
+                val hasLocalAttachmentTask = currentPickedNotes.isNotEmpty() || !currentAttachmentText.isNullOrBlank() || !currentPdfImages.isNullOrEmpty() || currentImgUri != null
+                val shouldPreSearch = searchModeEnabled && (!hasLocalAttachmentTask || userMsg.contains("search", ignoreCase = true)) && aiService.shouldUseWebSearch(userMsg)
+                if (shouldPreSearch) {
                     stepRunning("Searching the live web")
                     val searchOutcome = aiService.performWebSearch(userMsg)
                     if (searchOutcome.hits.isNotEmpty()) {
@@ -2250,11 +2310,22 @@ fun AiChatScreen(
                 }
 
                 var prompt = buildString {
+                    if (activeAttachedNotes.isNotEmpty()) {
+                        append("[Attached Note(s) from User — Read 100% of this content, code, and tables carefully and follow the user's exact instructions]\n")
+                        activeAttachedNotes.forEachIndexed { idx, n ->
+                            append("=== ATTACHED NOTE ${idx + 1}: \"${n.title}\" (id=${n.id}, folder=${n.folder}) ===\n")
+                            append(n.content)
+                            if (n.tableData.isNotBlank()) {
+                                append("\n--- Note Table Data ---\n").append(n.tableData)
+                            }
+                            append("\n=== END OF ATTACHED NOTE ${idx + 1} ===\n\n")
+                        }
+                    }
                     if (!docText.isNullOrBlank()) {
-                        append("The user attached this document (${sessionAttachmentName ?: "document"}). Read it fully and use it.\n=== DOCUMENT START ===\n")
+                        append("The user attached this document (${sessionAttachmentName ?: "document"}). Read it fully and honor any user instructions on which sections/points to include or skip.\n=== DOCUMENT START ===\n")
                         append(docText).append("\n=== DOCUMENT END ===\n\n")
                     } else if (!docImages.isNullOrEmpty()) {
-                        append("The user attached ${docImages.size} image(s)/page(s) (${sessionAttachmentName ?: "visual attachment"}). Read them carefully.\n\n")
+                        append("The user attached ${docImages.size} image(s)/page(s) (${sessionAttachmentName ?: "visual attachment"}). Read every page/image carefully and honor any user instructions on which points to include or skip.\n\n")
                     }
                     val inboxNow = runCatching { com.example.data.ai.ChatInbox.list(context) }.getOrDefault(emptyList())
                     if (inboxNow.isNotEmpty()) {
@@ -2266,16 +2337,16 @@ fun AiChatScreen(
                         append(preFetchedSearchContext)
                     }
                 }
-                var images: List<String> = if (activeProvider == "Gemini") docImages ?: emptyList() else emptyList()
-                if (com.example.data.ai.ScreenShare.active && activeProvider == "Gemini") {
+                var images: List<String> = docImages ?: emptyList()
+                if (com.example.data.ai.ScreenShare.active) {
                     com.example.data.ai.ScreenShare.captureBase64()?.let { shot ->
                         images = images + shot
-                        prompt = "[The user is sharing their screen live. The LAST attached image is their CURRENT screen. Use it to understand what 'this', 'ye', 'isko' refers to (for example an Instagram bio they want saved in a note) and copy the real text from it.]\n\n" + prompt
+                        prompt = "[The user is sharing their screen live. The LAST attached image is their CURRENT screen. Use it to understand what 'this', 'ye', 'isko' refers to and copy the real text from it.]\n\n" + prompt
                     }
                 }
 
                 var finalText = ""
-                var results: List<NoteEntity>? = null
+                var results: List<NoteEntity>? = if (currentPickedNotes.isNotEmpty()) currentPickedNotes else null
                 var pending: PendingAiAction? = null
                 var steps = 0
                 var toolRepairTries = 0
@@ -2290,7 +2361,7 @@ fun AiChatScreen(
                         history = turns,
                         prompt = prompt,
                         imagesBase64 = images,
-                        enableWebSearch = (steps == 0 && searchModeEnabled)
+                        enableWebSearch = (steps == 0 && searchModeEnabled && preFetchedSearchContext.isBlank() && shouldPreSearch)
                     )
                     val isReplyError = reply.startsWith("Error:") || reply.startsWith("⚠️")
                     stepFinish(!isReplyError)
@@ -3406,6 +3477,52 @@ fun AiChatScreen(
                                     }
                                 }
 
+                                // Attached Notes Chips inside composer card
+                                if (attachedNotes.isNotEmpty()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        attachedNotes.forEach { n ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(Color(0xFFD97757).copy(alpha = 0.16f))
+                                                    .border(1.dp, Color(0xFFD97757).copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Description,
+                                                    contentDescription = null,
+                                                    tint = Color(0xFFD97757),
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = n.title.ifBlank { "Untitled Note" }.take(24),
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B),
+                                                    maxLines = 1
+                                                )
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "Remove attached note",
+                                                    tint = if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF52525B),
+                                                    modifier = Modifier
+                                                        .size(14.dp)
+                                                        .clickable { attachedNotes.removeAll { it.id == n.id } }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // Text input area ("Chat with AU Agent...")
                                 TextField(
                                     value = inputText,
@@ -3438,8 +3555,7 @@ fun AiChatScreen(
                                         }
                                 )
 
-                                // Bottom Control Row: [+] [Tools] [SEARCH Mode Toggle Pill] ------ [Mic] [Waveform / Send]
-                                // (Model selection has been moved exclusively to the AI Chat Sidebar)
+                                // Bottom Control Row: [+] [Tools] [SEARCH Mode Toggle Pill] [Notes Picker Icon] ------ [Mic] [Waveform / Send]
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -3449,7 +3565,7 @@ fun AiChatScreen(
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         // Circular + attachment button
                                         Box(
@@ -3508,28 +3624,67 @@ fun AiChatScreen(
                                                     preferences.setSearchModeEnabled(next)
                                                     Toast.makeText(
                                                         context,
-                                                        if (next) "SEARCH Mode ON: Live web search enabled" else "SEARCH Mode OFF: Answering from knowledge & tools",
+                                                        if (next) "SEARCH Mode ON: Smart web search enabled" else "SEARCH Mode OFF: Fast knowledge & tools mode",
                                                         Toast.LENGTH_SHORT
                                                     ).show()
                                                 }
-                                                .padding(horizontal = 13.dp),
+                                                .padding(horizontal = 11.dp),
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Language,
                                                 contentDescription = "Toggle Web Search Mode",
                                                 tint = if (searchModeEnabled) Color.White
                                                 else if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
-                                                modifier = Modifier.size(16.dp)
+                                                modifier = Modifier.size(15.dp)
                                             )
                                             Text(
                                                 text = if (searchModeEnabled) "SEARCH ON" else "Search",
-                                                fontSize = 12.sp,
+                                                fontSize = 11.5.sp,
                                                 fontWeight = if (searchModeEnabled) FontWeight.Bold else FontWeight.SemiBold,
                                                 color = if (searchModeEnabled) Color.White
                                                 else if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A)
                                             )
+                                        }
+
+                                        // Notes Picker Icon Button right next to Search Mode
+                                        val hasAttachedNotes = attachedNotes.isNotEmpty()
+                                        Row(
+                                            modifier = Modifier
+                                                .height(38.dp)
+                                                .clip(RoundedCornerShape(19.dp))
+                                                .background(
+                                                    if (hasAttachedNotes) Color(0xFFD97757)
+                                                    else if (isDarkMode) Color(0xFF28282F)
+                                                    else Color(0xFFEEECE6)
+                                                )
+                                                .border(
+                                                    width = if (hasAttachedNotes) 0.dp else 1.dp,
+                                                    color = if (hasAttachedNotes) Color.Transparent
+                                                    else if (isDarkMode) Color(0x26FFFFFF) else Color(0x16000000),
+                                                    shape = RoundedCornerShape(19.dp)
+                                                )
+                                                .clickable { showNoteAttachDialog = true }
+                                                .padding(horizontal = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Description,
+                                                contentDescription = "Attach Notes to Chat",
+                                                tint = if (hasAttachedNotes) Color.White
+                                                else if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            if (hasAttachedNotes) {
+                                                Text(
+                                                    text = "${attachedNotes.size}",
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.White
+                                                )
+                                            }
                                         }
                                     }
 
@@ -3591,7 +3746,7 @@ fun AiChatScreen(
                                                         .background(Color(0xFFD97757))
                                                 )
                                             }
-                                        } else if (inputText.isNotBlank() || attachedFileName != null) {
+                                        } else if (inputText.isNotBlank() || attachedFileName != null || attachedNotes.isNotEmpty()) {
                                             // High-contrast circular Send button
                                             Box(
                                                 modifier = Modifier
@@ -3979,17 +4134,82 @@ fun AiChatScreen(
                 ) {
                     // 1. Header: Brand Identity + Close button
                     val detectedModelsMap by preferences.detectedModels.collectAsState()
+                    val userApiKeyPref by preferences.userApiKey.collectAsState()
                     val isOnlineForSidebar = com.example.data.ai.ApiConnectivityChecker.isOnline(context)
-                    val liveDetected = if (isOnlineForSidebar) {
-                        detectedModelsMap["Gemini"].orEmpty().map { it.removePrefix("models/") }.distinct()
-                    } else {
-                        emptyList()
+
+                    // Collect all configured providers that have keys or detected models
+                    val configuredProviders = remember(providerEntries, detectedModelsMap, activeProvider, userApiKeyPref) {
+                        val list = mutableListOf<String>()
+                        if (activeProvider.isNotBlank()) list.add(activeProvider)
+                        if (preferences.getEffectiveApiKey().isNotBlank() || detectedModelsMap["Gemini"]?.isNotEmpty() == true) {
+                            list.add("Gemini")
+                        }
+                        providerEntries.forEach { (pName, entry) ->
+                            if (entry.apiKey.isNotBlank() || detectedModelsMap[pName]?.isNotEmpty() == true) {
+                                list.add(pName)
+                            }
+                        }
+                        detectedModelsMap.keys.forEach { pName ->
+                            if (detectedModelsMap[pName]?.isNotEmpty() == true) list.add(pName)
+                        }
+                        list.distinct()
                     }
-                    val currentSelectedClean = selectedModelPref.removePrefix("models/")
-                    val verifiedSelectedModel = when {
-                        liveDetected.isEmpty() -> null
-                        liveDetected.any { it.equals(currentSelectedClean, ignoreCase = true) } -> currentSelectedClean
-                        else -> liveDetected.first()
+
+                    // Auto-detect models when sidebar opens if activeProvider has an API key but 0 detected models
+                    LaunchedEffect(isAgentSidebarOpen, activeProvider) {
+                        if (isAgentSidebarOpen && isOnlineForSidebar) {
+                            val currentList = detectedModelsMap[activeProvider].orEmpty()
+                            if (currentList.isEmpty()) {
+                                val (k, bUrl) = if (activeProvider == "Gemini") {
+                                    preferences.getEffectiveApiKey() to ""
+                                } else {
+                                    val e = providerEntries[activeProvider]
+                                    (e?.apiKey.orEmpty()) to (e?.baseUrl.orEmpty())
+                                }
+                                if (k.isNotBlank()) {
+                                    isRefreshingSidebarModels = true
+                                    val res = com.example.data.ai.ApiConnectivityChecker.check(activeProvider, k, bUrl)
+                                    isRefreshingSidebarModels = false
+                                    if (res.ok && res.models.isNotEmpty()) {
+                                        preferences.setDetectedModels(activeProvider, res.models)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Build unified (providerName, modelId) list across all configured providers
+                    val allProviderModels = remember(detectedModelsMap, configuredProviders, activeProvider, providerEntries) {
+                        val pairs = mutableListOf<Pair<String, String>>()
+                        configuredProviders.forEach { prov ->
+                            val hasKey = if (prov == "Gemini") preferences.getEffectiveApiKey().isNotBlank()
+                            else providerEntries[prov]?.apiKey?.isNotBlank() == true
+                            if (hasKey || prov == activeProvider) {
+                                val modelsForProv = detectedModelsMap[prov].orEmpty().map { it.removePrefix("models/") }.distinct()
+                                modelsForProv.forEach { m -> pairs.add(prov to m) }
+                                // If custom provider has a saved model not yet in detectedModelsMap, include it too
+                                val savedEntryModel = providerEntries[prov]?.model?.removePrefix("models/")?.trim().orEmpty()
+                                if (savedEntryModel.isNotBlank() && modelsForProv.none { it.equals(savedEntryModel, ignoreCase = true) }) {
+                                    pairs.add(prov to savedEntryModel)
+                                }
+                            }
+                        }
+                        pairs.distinctBy { "${it.first.lowercase()}::${it.second.lowercase()}" }
+                    }
+
+                    val activeModelForCurrentProvider = remember(activeProvider, selectedModelPref, providerEntries, allProviderModels) {
+                        val rawCurrent = if (activeProvider == "Gemini") {
+                            selectedModelPref.removePrefix("models/")
+                        } else {
+                            providerEntries[activeProvider]?.model?.ifBlank { selectedModelPref }?.removePrefix("models/").orEmpty()
+                        }
+                        val providerModels = allProviderModels.filter { it.first.equals(activeProvider, ignoreCase = true) }.map { it.second }
+                        when {
+                            rawCurrent.isNotBlank() && providerModels.any { it.equals(rawCurrent, ignoreCase = true) } -> rawCurrent
+                            rawCurrent.isNotBlank() -> rawCurrent
+                            providerModels.isNotEmpty() -> providerModels.first()
+                            else -> null
+                        }
                     }
 
                     Row(
@@ -3999,7 +4219,8 @@ fun AiChatScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.weight(1f)
                         ) {
                             Box(
                                 modifier = Modifier
@@ -4014,7 +4235,7 @@ fun AiChatScreen(
                                     sketchColor = warmAccent
                                 )
                             }
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = "AU Agent Studio",
                                     fontSize = 16.sp,
@@ -4022,7 +4243,7 @@ fun AiChatScreen(
                                     color = primaryInk
                                 )
                                 Text(
-                                    text = verifiedSelectedModel ?: "Gemini Workspace",
+                                    text = if (activeModelForCurrentProvider != null) "$activeProvider • $activeModelForCurrentProvider" else "$activeProvider Workspace",
                                     fontSize = 11.sp,
                                     color = warmAccent,
                                     maxLines = 1,
@@ -4075,34 +4296,191 @@ fun AiChatScreen(
                         }
                     }
 
-                    // Active Model Selector (only when models are already detected in API Room)
-                    if (liveDetected.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(cardBg)
-                                .border(1.dp, cardBorder, RoundedCornerShape(16.dp))
-                                .padding(14.dp)
+                    // 3. Multi-Provider Model Selector + Search Models + Live Refresh
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(cardBg)
+                            .border(1.dp, cardBorder, RoundedCornerShape(16.dp))
+                            .padding(14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "ACTIVE MODEL (${liveDetected.size})",
+                                text = "MODELS & PROVIDERS (${allProviderModels.size})",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.8.sp,
                                 color = secondaryInk
                             )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(warmAccent.copy(alpha = 0.14f))
+                                    .clickable(enabled = !isRefreshingSidebarModels) {
+                                        coroutineScope.launch {
+                                            isRefreshingSidebarModels = true
+                                            var totalFound = 0
+                                            for (prov in configuredProviders) {
+                                                val (k, bUrl) = if (prov == "Gemini") {
+                                                    preferences.getEffectiveApiKey() to ""
+                                                } else {
+                                                    val e = providerEntries[prov]
+                                                    (e?.apiKey.orEmpty()) to (e?.baseUrl.orEmpty())
+                                                }
+                                                if (k.isNotBlank()) {
+                                                    val res = com.example.data.ai.ApiConnectivityChecker.check(prov, k, bUrl)
+                                                    if (res.ok && res.models.isNotEmpty()) {
+                                                        preferences.setDetectedModels(prov, res.models)
+                                                        totalFound += res.models.size
+                                                    }
+                                                }
+                                            }
+                                            isRefreshingSidebarModels = false
+                                            Toast.makeText(
+                                                context,
+                                                if (totalFound > 0) "Detected $totalFound models across providers" else "Could not detect models. Check keys/URL in API Room.",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                if (isRefreshingSidebarModels) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(12.dp),
+                                        color = warmAccent,
+                                        strokeWidth = 1.8.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Detect Models",
+                                        tint = warmAccent,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                                Text(
+                                    text = if (isRefreshingSidebarModels) "Detecting..." else "Detect",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = warmAccent
+                                )
+                            }
+                        }
+
+                        // Provider filter chips (All + each configured provider like Token Harbour, Gemini, OpenRouter...)
+                        if (configuredProviders.size > 1) {
                             Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                val filterTabs = listOf("All") + configuredProviders
+                                filterTabs.forEach { tab ->
+                                    val isTabSelected = sidebarProviderFilter.equals(tab, ignoreCase = true)
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(9.dp))
+                                            .background(
+                                                if (isTabSelected) warmAccent
+                                                else if (isDarkMode) Color(0xFF23232C)
+                                                else Color(0xFFEDEAE2)
+                                            )
+                                            .clickable {
+                                                sidebarProviderFilter = tab
+                                                if (tab != "All") {
+                                                    preferences.setActiveProvider(tab)
+                                                    val firstModel = detectedModelsMap[tab]?.firstOrNull()?.removePrefix("models/")
+                                                        ?: providerEntries[tab]?.model?.removePrefix("models/")
+                                                    if (!firstModel.isNullOrBlank()) {
+                                                        preferences.setSelectedModel(firstModel)
+                                                    }
+                                                }
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                                    ) {
+                                        Text(
+                                            text = tab,
+                                            fontSize = 11.sp,
+                                            fontWeight = if (isTabSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isTabSelected) Color.White else primaryInk
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Search Models Input Bar
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = sidebarModelSearchQuery,
+                            onValueChange = { sidebarModelSearchQuery = it },
+                            placeholder = {
+                                Text("Search models or provider...", fontSize = 11.5.sp, color = secondaryInk)
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.Search, contentDescription = null, tint = secondaryInk, modifier = Modifier.size(16.dp))
+                            },
+                            trailingIcon = {
+                                if (sidebarModelSearchQuery.isNotBlank()) {
+                                    IconButton(onClick = { sidebarModelSearchQuery = "" }, modifier = Modifier.size(22.dp)) {
+                                        Icon(Icons.Default.Close, contentDescription = "Clear search", tint = secondaryInk, modifier = Modifier.size(14.dp))
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, color = primaryInk),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = warmAccent,
+                                unfocusedBorderColor = cardBorder,
+                                focusedContainerColor = if (isDarkMode) Color(0xFF202028) else Color(0xFFF7F5F0),
+                                unfocusedContainerColor = if (isDarkMode) Color(0xFF202028) else Color(0xFFF7F5F0)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 44.dp)
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        val filteredModels = remember(allProviderModels, sidebarProviderFilter, sidebarModelSearchQuery) {
+                            allProviderModels.filter { (prov, mod) ->
+                                val matchesProv = sidebarProviderFilter == "All" || prov.equals(sidebarProviderFilter, ignoreCase = true)
+                                val q = sidebarModelSearchQuery.trim()
+                                val matchesQuery = q.isBlank() || mod.contains(q, ignoreCase = true) || prov.contains(q, ignoreCase = true)
+                                matchesProv && matchesQuery
+                            }
+                        }
+
+                        if (filteredModels.isEmpty()) {
+                            Text(
+                                text = if (allProviderModels.isEmpty()) "No models detected yet. Tap 'Detect' above or add your API key in API Room."
+                                else "No models matching \"$sidebarModelSearchQuery\".",
+                                fontSize = 11.5.sp,
+                                color = secondaryInk,
+                                modifier = Modifier.padding(vertical = 6.dp)
+                            )
+                        } else {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(max = 200.dp)
+                                    .heightIn(max = 230.dp)
                                     .verticalScroll(rememberScrollState()),
                                 verticalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
-                                liveDetected.forEach { m ->
-                                    val isCurrent = verifiedSelectedModel?.equals(m, ignoreCase = true) == true
+                                filteredModels.forEach { (prov, m) ->
+                                    val isCurrent = activeProvider.equals(prov, ignoreCase = true) &&
+                                        activeModelForCurrentProvider?.equals(m, ignoreCase = true) == true
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -4118,23 +4496,42 @@ fun AiChatScreen(
                                                 shape = RoundedCornerShape(10.dp)
                                             )
                                             .clickable {
-                                                preferences.setActiveProvider("Gemini")
+                                                preferences.setActiveProvider(prov)
                                                 preferences.setSelectedModel(m)
-                                                Toast.makeText(context, "Active model: $m", Toast.LENGTH_SHORT).show()
+                                                if (prov != "Gemini") {
+                                                    val existing = providerEntries[prov]
+                                                    if (existing != null) {
+                                                        preferences.saveApiProvider(
+                                                            name = existing.name,
+                                                            apiKey = existing.apiKey,
+                                                            baseUrl = existing.baseUrl,
+                                                            model = m,
+                                                            isCustom = existing.isCustom
+                                                        )
+                                                    }
+                                                }
+                                                Toast.makeText(context, "Active: $prov • $m", Toast.LENGTH_SHORT).show()
                                             }
                                             .padding(horizontal = 10.dp, vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Text(
-                                            text = m,
-                                            fontSize = 12.sp,
-                                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isCurrent) warmAccent else primaryInk,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = m,
+                                                fontSize = 12.sp,
+                                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                                color = if (isCurrent) warmAccent else primaryInk,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = prov,
+                                                fontSize = 9.5.sp,
+                                                color = secondaryInk,
+                                                maxLines = 1
+                                            )
+                                        }
                                         if (isCurrent) {
                                             Icon(
                                                 imageVector = Icons.Default.CheckCircle,
@@ -4774,6 +5171,150 @@ fun AiChatScreen(
                     }
                 }
             }
+        }
+
+        // Attach Notes to Chat Dialog (opened from the Notes icon next to Search Mode)
+        if (showNoteAttachDialog) {
+            val visibleNotes = remember(allNotesForPicker, noteAttachSearchQuery) {
+                val q = noteAttachSearchQuery.trim()
+                allNotesForPicker.filter { agentVisible(it) }.filter { n ->
+                    q.isBlank() ||
+                        n.title.contains(q, ignoreCase = true) ||
+                        n.folder.contains(q, ignoreCase = true) ||
+                        n.content.contains(q, ignoreCase = true)
+                }
+            }
+            AlertDialog(
+                onDismissRequest = { showNoteAttachDialog = false },
+                containerColor = if (isDarkMode) Color(0xFF1A1A22) else Color(0xFFFAF8F5),
+                title = {
+                    Column {
+                        Text(
+                            text = "Attach Notes to Chat",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B)
+                        )
+                        Text(
+                            text = "Tap any note to attach its full text, saved code, and tables directly to AU Agent",
+                            fontSize = 11.5.sp,
+                            color = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF71717A)
+                        )
+                    }
+                },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = noteAttachSearchQuery,
+                            onValueChange = { noteAttachSearchQuery = it },
+                            placeholder = { Text("Search notes by title, folder, or code...", fontSize = 12.sp) },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            trailingIcon = {
+                                if (noteAttachSearchQuery.isNotBlank()) {
+                                    IconButton(onClick = { noteAttachSearchQuery = "" }, modifier = Modifier.size(22.dp)) {
+                                        Icon(Icons.Default.Close, contentDescription = "Clear", modifier = Modifier.size(15.dp))
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        if (visibleNotes.isEmpty()) {
+                            Text(
+                                text = "No matching notes found.",
+                                fontSize = 13.sp,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        } else {
+                            LazyColumn(
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(visibleNotes, key = { it.id }) { noteItem ->
+                                    val isAttached = attachedNotes.any { it.id == noteItem.id }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(
+                                                if (isAttached) Color(0xFFD97757).copy(alpha = 0.16f)
+                                                else if (isDarkMode) Color(0xFF24242E)
+                                                else Color(0xFFEDEAE2)
+                                            )
+                                            .border(
+                                                width = if (isAttached) 1.dp else 0.5.dp,
+                                                color = if (isAttached) Color(0xFFD97757) else Color.Transparent,
+                                                shape = RoundedCornerShape(12.dp)
+                                            )
+                                            .clickable {
+                                                if (isAttached) {
+                                                    attachedNotes.removeAll { it.id == noteItem.id }
+                                                } else {
+                                                    attachedNotes.add(noteItem)
+                                                }
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = noteItem.title.ifBlank { "Untitled Note" },
+                                                fontSize = 13.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${noteItem.folder} • ${noteItem.content.replace("\n", " ").take(65)}",
+                                                fontSize = 11.sp,
+                                                color = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF52525B),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Icon(
+                                            imageVector = if (isAttached) Icons.Default.CheckCircle else Icons.Default.AddCircleOutline,
+                                            contentDescription = if (isAttached) "Attached" else "Attach",
+                                            tint = if (isAttached) Color(0xFFD97757) else Color.Gray,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { showNoteAttachDialog = false },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97757)),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(
+                            text = if (attachedNotes.isEmpty()) "Done" else "Attach (${attachedNotes.size})",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    if (attachedNotes.isNotEmpty()) {
+                        TextButton(onClick = { attachedNotes.clear() }) {
+                            Text("Clear All", color = Color(0xFFEF4444))
+                        }
+                    }
+                }
+            )
         }
     }
 }

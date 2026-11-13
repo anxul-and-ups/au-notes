@@ -312,38 +312,127 @@ fun MyDocumentsScreen(
         )
     }
 
-    // Add an existing AU note as a PDF
+    var pendingNoteForFormat by remember { mutableStateOf<NoteEntity?>(null) }
+
+    // Add an existing AU note to My Documents (Step 1: pick note -> Step 2: pick extension .pdf, .md, .html, .txt)
     if (showNotePicker) {
         AlertDialog(
             onDismissRequest = { showNotePicker = false },
-            title = { Text("Add Note to My Documents", fontWeight = FontWeight.Bold) },
+            title = { Text("Import Note to My Documents", fontWeight = FontWeight.Bold) },
             text = {
                 val list = allNotes.filter { !it.isLocked && !it.isHidden && !it.isTrash }
                 if (list.isEmpty()) Text("No notes available.", fontSize = 13.sp)
                 else LazyColumn(Modifier.height(340.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(list.size) { i ->
                         val n = list[i]
-                        Text(
-                            n.title.ifBlank { "Untitled" },
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(Color.Gray.copy(alpha = 0.12f))
                                 .clickable {
                                     showNotePicker = false
-                                    scope.launch {
-                                        val saved = saveNoteToMyDocuments(context, n)
-                                        refresh()
-                                        Toast.makeText(context, if (saved != null) "Saved as ${saved.name}" else "Could not save the note", Toast.LENGTH_SHORT).show()
-                                    }
+                                    pendingNoteForFormat = n
                                 }
-                                .padding(12.dp),
-                            maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp
-                        )
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                n.title.ifBlank { "Untitled" },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = fg
+                            )
+                            Text(
+                                "${n.folder} • Tap to choose format (.pdf, .md, .html, .txt)",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 11.sp,
+                                color = sub
+                            )
+                        }
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { showNotePicker = false }) { Text("Close") } }
+            confirmButton = { TextButton(onClick = { showNotePicker = false }) { Text("Cancel") } }
+        )
+    }
+
+    // Step 2: Format / Extension picker after selecting a note
+    pendingNoteForFormat?.let { selectedNote ->
+        val formatOptions = listOf(
+            Triple(".pdf", "Import as PDF (.pdf)", "Formatted multi-page PDF document"),
+            Triple(".md", "Import as Markdown (.md)", "Structured Markdown with headings, code & tables"),
+            Triple(".html", "Import as HTML (.html)", "Standalone web page with styling"),
+            Triple(".txt", "Import as Plain Text (.txt)", "Clean readable text file")
+        )
+        AlertDialog(
+            onDismissRequest = { pendingNoteForFormat = null },
+            title = {
+                Column {
+                    Text("Choose Import Format", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Text(
+                        "Note: ${selectedNote.title.ifBlank { "Untitled" }}",
+                        fontSize = 12.sp,
+                        color = sub,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    formatOptions.forEach { (ext, label, desc) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(CrimsonPrimary.copy(alpha = 0.10f))
+                                .border(1.dp, CrimsonPrimary.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                                .clickable {
+                                    val targetNote = selectedNote
+                                    pendingNoteForFormat = null
+                                    scope.launch {
+                                        val saved = saveNoteToMyDocuments(context, targetNote, ext)
+                                        refresh()
+                                        Toast.makeText(
+                                            context,
+                                            if (saved != null) "Imported as ${saved.name}" else "Could not import note as $ext",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(label, fontSize = 13.5.sp, fontWeight = FontWeight.Bold, color = fg)
+                                Text(desc, fontSize = 11.sp, color = sub)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(CrimsonPrimary)
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    ext.uppercase(),
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { pendingNoteForFormat = null }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 
@@ -357,11 +446,16 @@ fun MyDocumentsScreen(
     }
 }
 
-/** Builds the note as a PDF off the main thread and files it in My Documents. */
-suspend fun saveNoteToMyDocuments(context: Context, note: NoteEntity): File? = withContext(Dispatchers.IO) {
+/** Builds the note in the requested format (.pdf, .md, .html, .txt) off the main thread and files it in My Documents. */
+suspend fun saveNoteToMyDocuments(
+    context: Context,
+    note: NoteEntity,
+    formatExt: String = ".pdf"
+): File? = withContext(Dispatchers.IO) {
     try {
-        val name = note.title.ifBlank { "Untitled note" }.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").trim().take(60).ifBlank { "note" } + ".pdf"
-        val built = NoteExporter.buildFile(context, note, name, ".pdf")
+        val ext = if (formatExt.startsWith(".")) formatExt.lowercase() else ".${formatExt.lowercase()}"
+        val name = note.title.ifBlank { "Untitled note" }.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").trim().take(60).ifBlank { "note" } + ext
+        val built = NoteExporter.buildFile(context, note, name, ext)
         MyDocuments.importFile(context, built, name)
     } catch (e: Throwable) { null }
 }

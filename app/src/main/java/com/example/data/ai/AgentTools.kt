@@ -70,9 +70,10 @@ object AgentTools {
             id = "read_note",
             group = "Notes",
             label = "Read a note",
-            description = "Read the full content of one note by its note_id.",
+            description = "Read the complete content (including all saved code blocks, markdown, and tables) of a note by its note_id OR by its title/keyword.",
             params = listOf(
-                AgentTool.Param("note_id", "INTEGER", "Numeric id of the note to read", required = true)
+                AgentTool.Param("note_id", "INTEGER", "Numeric id of the note to read (optional if title is provided)", required = false),
+                AgentTool.Param("title", "STRING", "Title or keyword of the note to read if note_id is not known", required = false)
             )
         ),
         AgentTool(
@@ -414,32 +415,34 @@ object AgentTools {
         if (!spoken) {
             append(
                 """
-                [ANSWER DEPTH & QUALITY — VERY IMPORTANT]
-                - Never give a thin one-paragraph answer to a topic question. Explain it so a smart student could actually learn from it.
-                - For "explain / what is / how does / tell me about / compare / notes banao" requests use this structure:
-                  1) One-line direct answer (core idea).
-                  2) Key concepts step by step — the WHY, not just the what.
-                  3) A concrete example or analogy.
-                  4) Important facts: numbers, dates, names, definitions (only ones you are confident about).
-                  5) Common mistakes / limitations / what people get wrong.
-                  6) Short summary + what to learn next.
-                - Typical length for a topic question: 250–600 words. Go longer when the user says detailed / deep / full / poora. Go short ONLY for simple factual questions or when the user asks for short.
-                - Use headings, short lists and tables when they make it easier to scan; plain paragraphs for reasoning.
-                - Facts must be accurate. If unsure about a number/date/claim, say so (or search if search is available). NEVER invent statistics, quotes, sources or study results.
-                - A note created from a topic request must follow the same depth rules (headings, ==highlights==, bold terms, lists/tables/code blocks, and a chart when real numbers exist).
+                [ANSWER DEPTH, FULL KNOWLEDGE UNLOCK & LONG-FORM GENERATION — CRITICAL]
+                - FULL KNOWLEDGE & SERVER CAPACITY UNLOCKED: Use 100% of your pre-trained knowledge base, internal domain expertise, and any provided web/note/document context. Never hold back information or give lazy 300-400 word summaries when depth is needed.
+                - WORD COUNT & LONG-FORM OBEDIENCE:
+                  • If the user asks for a specific length (e.g., "1000 words", "2000 words", "3000 words", "detailed note", "full report", "lambaa", "poora detail me") in a chat reply, Note (`create_note`), PDF (`create_pdf_document`), or HTML Artifact (`create_html_page`), you MUST generate the COMPLETE requested length (2000+ words when asked for 2000 words) with exhaustive sections, deep technical/historical explanations, real data tables, examples, and step-by-step breakdowns. NEVER stop early at 300–400 words!
+                  • For normal, simple questions (e.g., "what is X?", quick Q&A), reply fast, clearly, and directly without unnecessary delay.
+                - For "explain / what is / how does / tell me about / compare / notes banao" requests use a thorough structure:
+                  1) Direct executive summary (core idea).
+                  2) Deep, comprehensive sections step by step — the WHY and HOW, not just surface bullet points.
+                  3) Concrete real-world examples, case studies, or code blocks.
+                  4) Verified facts: numbers, dates, names, specifications, and comparison tables.
+                  5) Common pitfalls, edge cases, and key takeaways.
+                - Facts must be accurate. NEVER invent statistics, quotes, sources, or study results.
                 - Treat every example number in this prompt (benchmark scores etc.) as FORMAT-ONLY; never reuse them as real data.
                 """.trimIndent()
             ).append("\n")
         }
         append(
             """
-            [TOOL USE & CHART DATA RULES]
-            - If the user asks you to save, create, write, format, organise or move something, DO it with tools; don't only describe it. Plan silently (folder, title, content, formatting), call the tools, then confirm in 1–3 lines what was done and where. Ask a question only if something essential is missing and can't be guessed.
-            - Never claim something is done unless the tool result says DONE. If a tool fails, say what failed and what you'll try next.
+            [TOOL USE, NOTE CODE READING & CHART DATA RULES]
+            - If the user asks you to save, create, write, format, organise or move something, DO it with tools; don't only describe it. Plan silently (folder, title, content, formatting), call the tools, then confirm in 1–3 lines what was done and where.
+            - READING NOTES & SAVED CODE:
+              • If the user attached a note in chat (shown under `[Attached Note(s) from User]`) or refers to a note ("is note me ye code saved hai iska use karke slide deck ya html artifact ready kar"), read the entire note content and code carefully. If the note is not yet attached, call `read_note` (using `note_id` or `title`) or `search_notes` first, then immediately call `create_html_page`, `create_html_slides`, or `create_slide_deck` using that exact code/content!
+            - STRICT USER FILTERING ON ATTACHED PDFs / IMAGES / NOTES:
+              • When the user sends an image, PDF, document, or note and says "pure context ka slide deck / HTML artifact ready karo", cover 100% of the sections, facts, figures, and code from that source without dropping anything.
+              • When the user says "ye points chhor dena" / "skip these sections/points" / "only include X", strictly EXCLUDE the points they asked to leave out and build the slide deck / HTML artifact / note ONLY from the remaining requested parts.
             - Use a chart when the user asks for a graph/chart/comparison/percentages, or when the content has 2+ comparable real numbers. No real numbers → no chart.
             - Chart type: bar = few categories or percentages; line = change over time; pie = parts of a whole (max 6 slices); blocks = "X out of Y"; timeline = dated events; table = several attributes per item.
-            - Chart data: use ONLY numbers the user gave, numbers already in the note, or numbers you verified by search. If the user gives a number, use it exactly. If numbers are missing, ask one short question or label the chart "illustrative" — never fabricate. `value` is a plain number (unit goes in `unit`); percent charts use max = 100; 2–8 items; labels 1–3 words; title max 6 words. If the user names colours use them exactly (green #15803D, red #DC2626, blue #2563EB, orange #EA580C), otherwise good = green, bad = red, neutral = blue/orange, with a different colour per item.
-            - After adding a chart, add 1–2 sentences saying what stands out (not just "chart added").
+            - Chart data: use ONLY numbers the user gave, numbers already in the note, or numbers you verified by search. `value` is a plain number (unit goes in `unit`, e.g. "%" or "USD Million"); percent charts use max = 100; 2–8 items; labels 1–3 words; title max 6 words.
             - NEVER paste raw JSON, tool arguments or <tool_call> text into your answer to the user: either call the tool properly or answer in normal words.
             - If the user wants to change an image of an artifact ("image 2 galat hai"), call `replace_artifact_image`.
             """.trimIndent()
@@ -448,15 +451,15 @@ object AgentTools {
         if (!spoken) {
             append(
                 """
-                [SLIDES / TURN MY FILE, NOTE OR PHOTOS INTO A PRESENTATION]
-                - Whenever the user wants slides / presentation / PPT / "slides banao" (from an attached file, a note, photos or just a topic) call `create_html_slides`, NOT `create_html_page`. Use `create_slide_deck` only if the user explicitly asks for the typography/editorial deck.
-                - SOURCE FIRST: the attached document text is already in the message; for a note, call `read_note` first and read ALL of it. Do NOT shrink it to a few points. Cover every main section, heading and argument in the source's order and keep the key facts, numbers, names, dates, definitions and steps.
-                - Size: tiny source 6–8 slides; medium 10–14; long 14–20 (max 24). Roughly one slide per section or idea.
-                - Slide 1 = layout `title`; last slide = `closing` (short summary / takeaway). In between mix layouts: `content` (title + 3–5 informative bullets, each up to ~18 words, never vague), `stats` for big numbers, `timeline` for dates/steps, `bars` for real numeric comparisons only, `table` for comparisons, `two_column` for pros/cons or A vs B, `quote` for a quote, `image_right` / `image_left` / `image_full` when a picture helps.
-                - Pictures: if the user attached their own photos, USE THEM ALL, in order, via `image_file` (the inbox file name or number) on image layouts; never search the web for something the user already gave. For other pictures use `image_query` (3–8 specific words). At most 1 image per slide, about 8 images in total, never put image HTML in `text`. Charts and diagrams are drawn by the app (stats/bars/table), never as images.
-                - `slides_json` must be one valid JSON array string. Put `*word*` around one key word of a title to highlight it.
-                - After the tool succeeds, tell the user in 2–3 lines how many slides were made and which images were used or skipped.
-                - NEVER print the slide JSON, the tool arguments or a <tool_call> as text for the user. If you decide to make a deck, only call the tool (valid JSON: no trailing commas, escape quotes inside text); do not write the deck out as chat text.
+                [SLIDES & HTML ARTIFACT GENERATION RULES]
+                - Whenever the user wants slides / presentation / PPT / "slides banao" (from an attached file, a note, photos or just a topic) call `create_html_slides`, NOT `create_html_page`. Use `create_slide_deck` if the user asks for the editorial typography deck.
+                - Whenever the user wants an interactive web page, long-form 2000-word visual article, dashboard, calculator, or runnable HTML from code saved in a note, call `create_html_page` with a complete, rich, self-contained `<!DOCTYPE html><html>...</html>` document.
+                - SOURCE FIRST: the attached document/note text is already in the message (or read it via `read_note`). Do NOT shrink it to a few generic points. Honor any user instructions on which points to include or skip ("ye points chhor dena").
+                - Size: tiny source 6–8 slides; medium 10–14; long/full context 14–22 (max 24). Roughly one slide per section or idea.
+                - Slide 1 = layout `title`; last slide = `closing` (summary / takeaway). In between mix layouts: `content` (title + 3–5 informative bullets), `stats` for big numbers, `timeline` for dates/steps, `bars` for numeric comparisons, `table` for comparisons, `two_column` for pros/cons or A vs B, `quote` for a quote, `image_right` / `image_left` when a picture helps (avoid `image_full` so images stay cleanly framed and never stretch full-screen over text).
+                - Pictures: if the user attached their own photos, USE THEM ALL, in order, via `image_file` (the inbox file name or number) on `image_right` or `image_left` layouts; never search the web for something the user already gave. For other pictures use `image_query` (3–8 specific words). At most 1 image per slide, properly framed.
+                - `slides_json` must be one valid JSON array. Put `*word*` around one key word of a title to highlight it.
+                - NEVER print the slide JSON, the tool arguments or a <tool_call> as text for the user.
                 """.trimIndent()
             ).append("\n")
         }
@@ -464,18 +467,19 @@ object AgentTools {
         if (searchModeEnabled) {
             append(
                 """
-                [SEARCH MODE: ON — LIVE WEB SEARCH & GROUNDING ACTIVE]
-                - The user has explicitly turned ON the `SEARCH` mode toggle in the chat action bar.
-                - For any question involving external facts, current events, latest releases, AI models, benchmarks, prices, people, or unfamiliar names/topics, you MUST use the provided `[LIVE WEB SEARCH RESULTS]` context and/or call the `web_search` tool to verify facts before answering.
-                - Always include clear source references/citations (e.g., `[Source Title](url)` or a **Sources** list at the end of your reply) based on the retrieved search results.
+                [SEARCH MODE: ON — SMART WEB SEARCH GROUNDING]
+                - The `SEARCH` toggle is ON, but you must search SMARTLY according to need:
+                  • If `[LIVE WEB SEARCH RESULTS]` are already provided below, use them together with your full internal knowledge base to give a complete, well-cited answer.
+                  • Do NOT call `web_search` for simple greetings, math, coding, or when the user asks you to convert an already-attached note, PDF, or image into slides/HTML (unless external facts are missing).
+                  • Call `web_search` only when you genuinely need additional live/current web facts not already in `[LIVE WEB SEARCH RESULTS]`.
                 """.trimIndent()
             ).append("\n")
         } else {
             append(
                 """
-                [SEARCH MODE: OFF — LOCAL & MODEL KNOWLEDGE]
+                [SEARCH MODE: OFF — FAST INTERNAL KNOWLEDGE & LOCAL TOOLS]
                 - The `SEARCH` mode toggle is currently OFF.
-                - Answer using your internal knowledge, conversation context, and local app tools without initiating unsolicited web searches, UNLESS the user explicitly asks you to search the web or verify a live fact online.
+                - Reply immediately using 100% of your internal knowledge base, conversation context, and local app tools without running web searches, UNLESS the user explicitly asks you to search the web online.
                 """.trimIndent()
             ).append("\n")
         }

@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -414,6 +415,28 @@ fun ApiRoomScreen(
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
+                        var geminiSearchQuery by remember { mutableStateOf("") }
+                        OutlinedTextField(
+                            value = geminiSearchQuery,
+                            onValueChange = { geminiSearchQuery = it },
+                            placeholder = { Text("Search Gemini models...", fontSize = 12.sp) },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                            trailingIcon = {
+                                if (geminiSearchQuery.isNotBlank()) {
+                                    IconButton(onClick = { geminiSearchQuery = "" }, modifier = Modifier.size(22.dp)) {
+                                        Icon(Icons.Default.Close, contentDescription = "Clear", modifier = Modifier.size(14.dp))
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        val filteredGeminiModels = remember(detectedGeminiModels, geminiSearchQuery) {
+                            val q = geminiSearchQuery.trim()
+                            if (q.isBlank()) detectedGeminiModels else detectedGeminiModels.filter { it.contains(q, ignoreCase = true) }
+                        }
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -421,7 +444,7 @@ fun ApiRoomScreen(
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            detectedGeminiModels.forEach { m ->
+                            filteredGeminiModels.forEach { m ->
                                 val isCurrent = isGeminiActive && selectedModel.removePrefix("models/").equals(m, ignoreCase = true)
                                 Row(
                                     modifier = Modifier
@@ -663,19 +686,44 @@ fun ApiRoomScreen(
                 Button(
                     colors = ButtonDefaults.buttonColors(containerColor = warmAccent),
                     onClick = {
-                        if (customName.isNotBlank() && customUrl.isNotBlank()) {
+                        val cName = customName.trim()
+                        val cUrl = customUrl.trim()
+                        val cKey = customKey.trim()
+                        if (cName.isNotBlank() && cUrl.isNotBlank()) {
                             preferences.saveApiProvider(
-                                name = customName.trim(),
-                                apiKey = customKey.trim(),
-                                baseUrl = customUrl.trim(),
+                                name = cName,
+                                apiKey = cKey,
+                                baseUrl = cUrl,
                                 model = "",
                                 isCustom = true
                             )
+                            preferences.setActiveProvider(cName)
                             showAddCustomDialog = false
+                            if (cKey.isNotBlank()) {
+                                checkingProvider[cName] = true
+                                scope.launch {
+                                    val res = ApiConnectivityChecker.check(cName, cKey, cUrl)
+                                    checkingProvider[cName] = false
+                                    statusByProvider[cName] = res
+                                    if (res.ok && res.models.isNotEmpty()) {
+                                        preferences.setDetectedModels(cName, res.models)
+                                        val firstModel = res.models.first()
+                                        preferences.saveApiProvider(
+                                            name = cName,
+                                            apiKey = cKey,
+                                            baseUrl = cUrl,
+                                            model = firstModel,
+                                            isCustom = true
+                                        )
+                                        preferences.setSelectedModel(firstModel)
+                                        Toast.makeText(context, "$cName connected (${res.models.size} models)", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
                         }
                     }
                 ) {
-                    Text("Save Provider", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Save & Connect", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -842,6 +890,7 @@ private fun ProviderCard(
         }
 
         if (detectedModels.isNotEmpty()) {
+            var modelFilterQuery by remember { mutableStateOf("") }
             Spacer(modifier = Modifier.height(10.dp))
             Text(
                 text = "DETECTED LIVE MODELS (${detectedModels.size})",
@@ -851,14 +900,35 @@ private fun ProviderCard(
                 letterSpacing = 0.8.sp
             )
             Spacer(modifier = Modifier.height(6.dp))
+            OutlinedTextField(
+                value = modelFilterQuery,
+                onValueChange = { modelFilterQuery = it },
+                placeholder = { Text("Search $name models...", fontSize = 11.5.sp) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                trailingIcon = {
+                    if (modelFilterQuery.isNotBlank()) {
+                        IconButton(onClick = { modelFilterQuery = "" }, modifier = Modifier.size(22.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear", modifier = Modifier.size(14.dp))
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            val visibleModels = remember(detectedModels, modelFilterQuery) {
+                val q = modelFilterQuery.trim()
+                if (q.isBlank()) detectedModels else detectedModels.filter { it.contains(q, ignoreCase = true) }
+            }
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 200.dp)
+                    .heightIn(max = 220.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                detectedModels.forEach { m ->
+                visibleModels.forEach { m ->
                     val isCurrent = isActive && selectedModel.equals(m, ignoreCase = true)
                     Row(
                         modifier = Modifier

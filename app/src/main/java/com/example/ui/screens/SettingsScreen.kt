@@ -87,6 +87,8 @@ fun SettingsScreen(
     onOpenApiRoom: () -> Unit = {},
     onOpenThemeSettings: () -> Unit = {},
     onOpenAgentSettings: () -> Unit = {},
+    onOpenBackupRestore: () -> Unit = {},
+    onEnterSmallWindowMode: () -> Unit = {},
     onOpenRecycleBin: () -> Unit
 ) {
     val context = LocalContext.current
@@ -257,8 +259,6 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            Spacer(modifier = Modifier.height(10.dp))
-
             // AGENT Settings (live voice, voice adjuster, orb style, AI memory)
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -289,7 +289,9 @@ fun SettingsScreen(
                 }
             }
 
-            // Floating Window Overlay Setting
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Small Window & Mini Screen Overlay Setting
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -299,13 +301,79 @@ fun SettingsScreen(
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && !android.provider.Settings.canDrawOverlays(context)) {
                         val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + context.packageName))
                         context.startActivity(intent)
-                        android.widget.Toast.makeText(context, "Please enable Overlay Permission for Floating Window", android.widget.Toast.LENGTH_LONG).show()
+                        android.widget.Toast.makeText(context, "Please enable Overlay Permission for Mini Window", android.widget.Toast.LENGTH_LONG).show()
                     } else {
                         val intent = android.content.Intent(context, com.example.ui.util.FloatingWindowService::class.java)
                         context.startService(intent)
-                        android.widget.Toast.makeText(context, "Floating Window started! Tap bubble to open app.", android.widget.Toast.LENGTH_SHORT).show()
+                        android.widget.Toast.makeText(context, "Mini Window active! Drag header or tap — to minimize.", android.widget.Toast.LENGTH_SHORT).show()
                     }
                 }
+            ) {
+                Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Box(
+                                modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF10B981).copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(androidx.compose.material.icons.Icons.Default.Visibility, null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text("Small Window & Mini Screen", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                                Text("Run AU Notes in a floating mini window over Home or any app", fontSize = 11.sp, color = Color(0xFF10B981))
+                            }
+                        }
+                        Icon(Icons.Default.ChevronRight, null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && !android.provider.Settings.canDrawOverlays(context)) {
+                                    val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + context.packageName))
+                                    context.startActivity(intent)
+                                    android.widget.Toast.makeText(context, "Enable Overlay Permission first", android.widget.Toast.LENGTH_LONG).show()
+                                } else {
+                                    val intent = android.content.Intent(context, com.example.ui.util.FloatingWindowService::class.java)
+                                    context.startService(intent)
+                                    android.widget.Toast.makeText(context, "Mini Screen Window launched!", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Open Mini Overlay", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Button(
+                            onClick = onEnterSmallWindowMode,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Native Small Window", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Backup & Restore (Export / Import All App Data)
+            GlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                isDarkMode = isDarkMode,
+                elevation = 3.dp,
+                onClick = onOpenBackupRestore
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(14.dp),
@@ -314,18 +382,18 @@ fun SettingsScreen(
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
-                            modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF10B981).copy(alpha = 0.15f)),
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFF59E0B).copy(alpha = 0.15f)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(androidx.compose.material.icons.Icons.Default.Visibility, null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
+                            Icon(Icons.Default.ContentPaste, null, tint = Color(0xFFF59E0B), modifier = Modifier.size(22.dp))
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
-                            Text("Floating Window", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
-                            Text("Quick overlay bubble across apps", fontSize = 11.sp, color = Color(0xFF10B981))
+                            Text("Backup & Restore", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                            Text("Export & Import all Notes, My Documents, Chats in 1 file", fontSize = 11.sp, color = Color(0xFFF59E0B))
                         }
                     }
-                    Icon(Icons.Default.ChevronRight, null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.ChevronRight, null, tint = Color(0xFFF59E0B), modifier = Modifier.size(20.dp))
                 }
             }
 

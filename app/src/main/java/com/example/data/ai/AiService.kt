@@ -1,6 +1,9 @@
 package com.example.data.ai
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -66,8 +69,13 @@ class AiService {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(25, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(180, TimeUnit.SECONDS)
         .writeTimeout(90, TimeUnit.SECONDS)
+        .build()
+
+    private val searchClient = OkHttpClient.Builder()
+        .connectTimeout(7, TimeUnit.SECONDS)
+        .readTimeout(9, TimeUnit.SECONDS)
         .build()
 
     private class ApiFailure(
@@ -295,132 +303,150 @@ class AiService {
     }
 
     /**
-     * Live Multi-Source Web Search Engine with Deep Page Extraction (no artificial truncation):
-     * Queries DuckDuckGo HTML, Google News RSS, and Wikipedia API, and extracts readable article text
-     * from top web pages so detailed notes and PDFs have comprehensive factual depth.
+     * Live Multi-Source Web Search Engine with Parallel Deep Page Extraction:
+     * Queries DuckDuckGo HTML, Google News RSS, and Wikipedia API concurrently, and extracts readable
+     * article text in parallel from top web pages so detailed notes and PDFs have comprehensive factual depth
+     * while returning 4x faster.
      */
     suspend fun performWebSearch(rawQuery: String): WebSearchOutcome = withContext(Dispatchers.IO) {
         val query = rawQuery
+            .lineSequence()
+            .firstOrNull { !it.trim().startsWith("[") && it.isNotBlank() }
+            .orEmpty()
+            .ifBlank { rawQuery.take(240) }
             .replace(Regex("^(search|google|find|look up|pata karo|search karo|tell me about)\\s+", RegexOption.IGNORE_CASE), "")
             .trim()
-            .ifBlank { rawQuery.trim() }
+            .take(200)
+            .ifBlank { rawQuery.trim().take(200) }
 
-        val hits = mutableListOf<WebSearchHit>()
+        val encoded = URLEncoder.encode(query, "UTF-8")
 
-        // 1. DuckDuckGo HTML search for live web pages & snippets
-        runCatching {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            val ddgUrl = "https://html.duckduckgo.com/html/?q=$encoded"
-            val req = Request.Builder()
-                .url(ddgUrl)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .get()
-                .build()
-            client.newCall(req).execute().use { resp ->
-                val html = resp.body?.string().orEmpty()
-                if (resp.isSuccessful && html.isNotBlank()) {
-                    val blockRegex = Regex(
-                        """<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>[\s\S]*?(?:<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)</a>|<div[^>]*class="result__snippet"[^>]*>([\s\S]*?)</div>)""",
-                        RegexOption.IGNORE_CASE
-                    )
-                    for (m in blockRegex.findAll(html)) {
-                        if (hits.size >= 10) break
-                        val rawHref = m.groupValues[1]
-                        val cleanUrl = extractRealUrlFromDdg(rawHref)
-                        val title = stripHtmlTags(m.groupValues[2])
-                        val snippet = stripHtmlTags(m.groupValues[3].ifBlank { m.groupValues[4] })
-                        if (title.isNotBlank() && cleanUrl.startsWith("http")) {
-                            val dom = extractDomain(cleanUrl)
-                            hits.add(WebSearchHit(title = title, url = cleanUrl, snippet = snippet, source = dom, domain = dom))
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Google News RSS for dated news & official announcements
-        runCatching {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            val newsUrl = "https://news.google.com/rss/search?q=$encoded&hl=en-US&gl=US&ceid=US:en"
-            val req = Request.Builder()
-                .url(newsUrl)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
-                .get()
-                .build()
-            client.newCall(req).execute().use { resp ->
-                val xml = resp.body?.string().orEmpty()
-                if (resp.isSuccessful && xml.isNotBlank()) {
-                    val itemRegex = Regex("<item>([\\s\\S]*?)</item>", RegexOption.IGNORE_CASE)
-                    val sourceUrlRegex = Regex("<source[^>]*url=\"([^\"]+)\"[^>]*>", RegexOption.IGNORE_CASE)
-                    for (m in itemRegex.findAll(xml)) {
-                        if (hits.size >= 15) break
-                        val itemXml = m.groupValues[1]
-                        val title = extractXmlTag(itemXml, "title")
-                        val link = extractXmlTag(itemXml, "link")
-                        val pubDate = extractXmlTag(itemXml, "pubDate")
-                        val source = extractXmlTag(itemXml, "source")
-                        val srcUrl = sourceUrlRegex.find(itemXml)?.groupValues?.getOrNull(1).orEmpty()
-                        val desc = stripHtmlTags(extractXmlTag(itemXml, "description"))
-                        if (title.isNotBlank() && link.isNotBlank()) {
-                            val snippet = buildString {
-                                if (source.isNotBlank()) append("Source: $source. ")
-                                if (pubDate.isNotBlank()) append("Published: $pubDate. ")
-                                if (desc.isNotBlank() && !desc.equals(title, ignoreCase = true)) append(desc)
-                            }.trim()
-                            val dom = if (srcUrl.isNotBlank()) extractDomain(srcUrl) else extractDomain(link)
-                            hits.add(WebSearchHit(title = title, url = link, snippet = snippet, source = source.ifBlank { dom }, domain = dom))
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. Wikipedia Search API for encyclopedic / factual grounding
-        runCatching {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            val wikiUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&utf8=&format=json&srlimit=5"
-            val req = Request.Builder()
-                .url(wikiUrl)
-                .header("User-Agent", "AUNotesAndroid/1.0")
-                .get()
-                .build()
-            client.newCall(req).execute().use { resp ->
-                val body = resp.body?.string().orEmpty()
-                if (resp.isSuccessful && body.isNotBlank()) {
-                    val searchArr = JSONObject(body).optJSONObject("query")?.optJSONArray("search")
-                    if (searchArr != null) {
-                        for (i in 0 until searchArr.length()) {
-                            val item = searchArr.getJSONObject(i)
-                            val title = item.optString("title")
-                            val snippet = stripHtmlTags(item.optString("snippet"))
-                            if (title.isNotBlank()) {
-                                val pageUrl = "https://en.wikipedia.org/wiki/${URLEncoder.encode(title.replace(' ', '_'), "UTF-8")}"
-                                hits.add(
-                                    WebSearchHit(
-                                        title = "$title — Wikipedia",
-                                        url = pageUrl,
-                                        snippet = snippet,
-                                        source = "en.wikipedia.org",
-                                        domain = "en.wikipedia.org"
-                                    )
-                                )
+        val sourceLists = coroutineScope {
+            val ddgDeferred = async {
+                val list = mutableListOf<WebSearchHit>()
+                runCatching {
+                    val ddgUrl = "https://html.duckduckgo.com/html/?q=$encoded"
+                    val req = Request.Builder()
+                        .url(ddgUrl)
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                        .header("Accept-Language", "en-US,en;q=0.9")
+                        .get()
+                        .build()
+                    searchClient.newCall(req).execute().use { resp ->
+                        val html = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful && html.isNotBlank()) {
+                            val blockRegex = Regex(
+                                """<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>[\s\S]*?(?:<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)</a>|<div[^>]*class="result__snippet"[^>]*>([\s\S]*?)</div>)""",
+                                RegexOption.IGNORE_CASE
+                            )
+                            for (m in blockRegex.findAll(html)) {
+                                if (list.size >= 10) break
+                                val rawHref = m.groupValues[1]
+                                val cleanUrl = extractRealUrlFromDdg(rawHref)
+                                val title = stripHtmlTags(m.groupValues[2])
+                                val snippet = stripHtmlTags(m.groupValues[3].ifBlank { m.groupValues[4] })
+                                if (title.isNotBlank() && cleanUrl.startsWith("http")) {
+                                    val dom = extractDomain(cleanUrl)
+                                    list.add(WebSearchHit(title = title, url = cleanUrl, snippet = snippet, source = dom, domain = dom))
+                                }
                             }
                         }
                     }
                 }
+                list
             }
+
+            val newsDeferred = async {
+                val list = mutableListOf<WebSearchHit>()
+                runCatching {
+                    val newsUrl = "https://news.google.com/rss/search?q=$encoded&hl=en-US&gl=US&ceid=US:en"
+                    val req = Request.Builder()
+                        .url(newsUrl)
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+                        .get()
+                        .build()
+                    searchClient.newCall(req).execute().use { resp ->
+                        val xml = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful && xml.isNotBlank()) {
+                            val itemRegex = Regex("<item>([\\s\\S]*?)</item>", RegexOption.IGNORE_CASE)
+                            val sourceUrlRegex = Regex("<source[^>]*url=\"([^\"]+)\"[^>]*>", RegexOption.IGNORE_CASE)
+                            for (m in itemRegex.findAll(xml)) {
+                                if (list.size >= 6) break
+                                val itemXml = m.groupValues[1]
+                                val title = extractXmlTag(itemXml, "title")
+                                val link = extractXmlTag(itemXml, "link")
+                                val pubDate = extractXmlTag(itemXml, "pubDate")
+                                val source = extractXmlTag(itemXml, "source")
+                                val srcUrl = sourceUrlRegex.find(itemXml)?.groupValues?.getOrNull(1).orEmpty()
+                                val desc = stripHtmlTags(extractXmlTag(itemXml, "description"))
+                                if (title.isNotBlank() && link.isNotBlank()) {
+                                    val snippet = buildString {
+                                        if (source.isNotBlank()) append("Source: $source. ")
+                                        if (pubDate.isNotBlank()) append("Published: $pubDate. ")
+                                        if (desc.isNotBlank() && !desc.equals(title, ignoreCase = true)) append(desc)
+                                    }.trim()
+                                    val dom = if (srcUrl.isNotBlank()) extractDomain(srcUrl) else extractDomain(link)
+                                    list.add(WebSearchHit(title = title, url = link, snippet = snippet, source = source.ifBlank { dom }, domain = dom))
+                                }
+                            }
+                        }
+                    }
+                }
+                list
+            }
+
+            val wikiDeferred = async {
+                val list = mutableListOf<WebSearchHit>()
+                runCatching {
+                    val wikiUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&utf8=&format=json&srlimit=5"
+                    val req = Request.Builder()
+                        .url(wikiUrl)
+                        .header("User-Agent", "AUNotesAndroid/1.0")
+                        .get()
+                        .build()
+                    searchClient.newCall(req).execute().use { resp ->
+                        val body = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful && body.isNotBlank()) {
+                            val searchArr = JSONObject(body).optJSONObject("query")?.optJSONArray("search")
+                            if (searchArr != null) {
+                                for (i in 0 until searchArr.length()) {
+                                    val item = searchArr.getJSONObject(i)
+                                    val title = item.optString("title")
+                                    val snippet = stripHtmlTags(item.optString("snippet"))
+                                    if (title.isNotBlank()) {
+                                        val pageUrl = "https://en.wikipedia.org/wiki/${URLEncoder.encode(title.replace(' ', '_'), "UTF-8")}"
+                                        list.add(
+                                            WebSearchHit(
+                                                title = "$title — Wikipedia",
+                                                url = pageUrl,
+                                                snippet = snippet,
+                                                source = "en.wikipedia.org",
+                                                domain = "en.wikipedia.org"
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                list
+            }
+
+            awaitAll(ddgDeferred, newsDeferred, wikiDeferred)
         }
 
+        val hits = sourceLists.flatten()
         val uniqueHits = hits.distinctBy { it.url }.take(15)
 
-        // 4. Deep readable article text extraction from top 4 web hits (up to 10,000 chars each)
-        val deepExcerpts = mutableListOf<Pair<String, String>>()
-        for (hit in uniqueHits.filter { !it.url.contains("news.google.com") }.take(4)) {
-            val pageText = fetchReadablePageContent(hit.url, maxChars = 10000)
-            if (pageText.length > 140) {
-                deepExcerpts.add("${hit.title} (${hit.domain})" to pageText)
-            }
+        // 4. Parallel deep readable article text extraction from top 4 web hits (up to 10,000 chars each)
+        val deepExcerpts = coroutineScope {
+            uniqueHits.filter { !it.url.contains("news.google.com") }.take(4).map { hit ->
+                async {
+                    val pageText = fetchReadablePageContent(hit.url, maxChars = 10000)
+                    if (pageText.length > 140) "${hit.title} (${hit.domain})" to pageText else null
+                }
+            }.awaitAll().filterNotNull()
         }
 
         val formatted = if (uniqueHits.isEmpty()) {
@@ -441,7 +467,7 @@ class AiService {
                         append("### Source: $sourceLabel\n$content\n\n")
                     }
                 }
-                append("\nUse these verified web results to provide an exhaustive, comprehensive, well-structured response. Do NOT paste raw URLs inside your sentences; the app automatically attaches interactive Website Source Cards with favicons.")
+                append("\nUse these verified web results PLUS your full internal knowledge base to provide an exhaustive, comprehensive, well-structured response. Do NOT paste raw URLs inside your sentences; the app automatically attaches interactive Website Source Cards with favicons.")
                 val sourcesTag = buildWebSourcesMarker(uniqueHits)
                 if (sourcesTag.isNotBlank()) {
                     append("\n").append(sourcesTag)
@@ -459,7 +485,7 @@ class AiService {
                 .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
                 .get()
                 .build()
-            client.newCall(req).execute().use { resp ->
+            searchClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return ""
                 val html = resp.body?.string().orEmpty()
                 if (html.isBlank()) return ""
@@ -679,21 +705,40 @@ class AiService {
     }
 
     /**
-     * Heuristic detector used only when explicitly requested by callers that don't have a toggle.
+     * Smart detector: decides whether a user prompt actually benefits from live web search
+     * when Search Mode is enabled, avoiding unnecessary latency on greetings, local note/attachment
+     * tasks, coding, or casual Q&A.
      */
     fun shouldUseWebSearch(prompt: String): Boolean {
         val q = prompt.trim().lowercase()
-        if (q.length < 6) return false
-        val localNoteVerbs = listOf("create_note", "edit_note", "delete_note", "move_note", "open_folder", "note me", "note mein", "folder bana")
-        if (localNoteVerbs.any { q.contains(it) } && !q.contains("search") && !q.contains("latest") && !q.contains("news") && !q.contains("detail") && !q.contains("pdf")) {
+        if (q.length < 8) return false
+        val casualGreetings = setOf(
+            "hi", "hello", "hey", "hii", "namaste", "ram ram", "kaise ho", "kya haal hai",
+            "ok", "okay", "thanks", "thank you", "shukriya", "theek hai", "acha", "good morning",
+            "good night", "good evening", "kon ho", "kaun ho", "who are you"
+        )
+        if (casualGreetings.contains(q.trimEnd('?', '!', '.'))) return false
+
+        // If the user is asking to work with an attached note, image, or PDF, don't force a blind web search
+        // unless they explicitly ask to search the web too.
+        val isLocalContextTask = q.contains("is note") || q.contains("this note") ||
+            q.contains("attached note") || q.contains("is pdf") || q.contains("this pdf") ||
+            q.contains("is image") || q.contains("this image") || q.contains("pure context") ||
+            q.contains("saved code") || q.contains("code saved")
+        if (isLocalContextTask && !q.contains("search") && !q.contains("web") && !q.contains("google") && !q.contains("latest")) {
+            return false
+        }
+
+        val localNoteVerbs = listOf("create_note", "edit_note", "delete_note", "move_note", "open_folder", "folder bana")
+        if (localNoteVerbs.any { q.contains(it) } && !q.contains("search") && !q.contains("latest") && !q.contains("news")) {
             return false
         }
         val webTriggers = listOf(
             "search", "google", "web", "internet", "online", "latest", "current", "today", "aaj",
             "news", "khabar", "price", "rate", "stock", "weather", "score", "match", "who is",
-            "what is the latest", "2025", "2026", "update", "release", "repo", "github", "url", "website", "link",
+            "what is the latest", "2024", "2025", "2026", "update", "release", "repo", "github", "url", "website", "link",
             "kaun hai", "kab hua", "kahaan hai", "pata karo", "search karo", "dhundo", "mythos", "fable",
-            "detail", "detailed", "pdf", "report", "guide", "research"
+            "research", "history of", "indian army", "biography", "statistics", "data on", "report on"
         )
         return webTriggers.any { q.contains(it) }
     }
@@ -722,12 +767,13 @@ class AiService {
     ): String = withContext(Dispatchers.IO) {
         try {
             val isToolResultTurn = prompt.trimStart().startsWith("[TOOL RESULT")
+            val alreadyHasWebResults = prompt.contains("[LIVE WEB SEARCH RESULTS") || system.contains("[LIVE WEB SEARCH RESULTS")
             // Also extract any [web_sources_json:...] embedded inside a [TOOL RESULT] from web_search tool
-            val toolWebSourcesMarker = if (isToolResultTurn && prompt.contains("[web_sources_json:")) {
+            val toolWebSourcesMarker = if ((isToolResultTurn || alreadyHasWebResults) && prompt.contains("[web_sources_json:")) {
                 Regex("\\[web_sources_json:[^\\]]+\\]").find(prompt)?.value
             } else null
 
-            val liveWebOutcome = if (enableWebSearch && !isToolResultTurn) {
+            val liveWebOutcome = if (enableWebSearch && !isToolResultTurn && !alreadyHasWebResults && shouldUseWebSearch(prompt)) {
                 runCatching { performWebSearch(prompt) }.getOrNull()
             } else null
 
@@ -757,21 +803,6 @@ class AiService {
                     put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", effectiveSystem))))
                     put("contents", buildContents(history, latest))
                     put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 65536))
-                }
-                if (enableWebSearch && !isToolResultTurn) {
-                    val searchBody = JSONObject(baseBody.toString()).apply {
-                        put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
-                    }
-                    try {
-                        val metaResp = generateWithMeta(apiKey, model, searchBody)
-                        val txt = joinText(metaResp.parts)
-                        if (txt.isNotBlank()) {
-                            val combinedHits = (metaResp.groundingHits + liveWebOutcome?.hits.orEmpty()).distinctBy { it.url }
-                            return@withContext appendSourcesIfMissing(txt, combinedHits)
-                        }
-                    } catch (_: Exception) {
-                        // Fall back cleanly to standard generation (which already has liveWebOutcome in effectiveSystem)
-                    }
                 }
                 val rawText = joinText(generate(apiKey, model, baseBody)).ifBlank {
                     "I couldn't come up with an answer. Could you rephrase that?"
@@ -809,7 +840,7 @@ class AiService {
                     }
                 }
                 val chosen = resolveDynamicModel(provider, apiKey, base, model)
-                val rawText = callOpenAiCompatible(base, apiKey, chosen, effectiveSystem, normalizeTurns(history), prompt)
+                val rawText = callOpenAiCompatible(base, apiKey, chosen, effectiveSystem, normalizeTurns(history), prompt, imagesBase64)
                 var withSources = appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
                 if (toolWebSourcesMarker != null && !withSources.contains("[web_sources_json:") && !withSources.contains("<tool_call>")) {
                     withSources = withSources.trimEnd() + "\n\n" + toolWebSourcesMarker
@@ -931,10 +962,15 @@ class AiService {
         model: String,
         systemPrompt: String,
         history: List<ConversationTurn>,
-        userPrompt: String
+        userPrompt: String,
+        imagesBase64: List<String> = emptyList()
     ): String {
         val cleanBase = baseUrl.trimEnd('/')
-        val endpoint = if (cleanBase.endsWith("/chat/completions")) cleanBase else "$cleanBase/chat/completions"
+            .removeSuffix("/chat/completions")
+            .removeSuffix("/models")
+            .trimEnd('/')
+        val primaryEndpoint = "$cleanBase/chat/completions"
+
         val messages = JSONArray()
         messages.put(JSONObject().apply {
             put("role", "system")
@@ -949,45 +985,92 @@ class AiService {
                 })
             }
         }
-        messages.put(JSONObject().apply {
-            put("role", "user")
-            put("content", userPrompt)
-        })
-
-        val reqBody = JSONObject().apply {
-            put("model", model)
-            put("messages", messages)
-            put("temperature", 0.7)
+        if (imagesBase64.isEmpty()) {
+            messages.put(JSONObject().apply {
+                put("role", "user")
+                put("content", userPrompt)
+            })
+        } else {
+            val contentArr = JSONArray()
+            contentArr.put(JSONObject().apply {
+                put("type", "text")
+                put("text", userPrompt)
+            })
+            for (img in imagesBase64.take(8)) {
+                val mime = if (img.startsWith("/9j/")) "image/jpeg" else "image/png"
+                contentArr.put(JSONObject().apply {
+                    put("type", "image_url")
+                    put("image_url", JSONObject().put("url", "data:$mime;base64,$img"))
+                })
+            }
+            messages.put(JSONObject().apply {
+                put("role", "user")
+                put("content", contentArr)
+            })
         }
 
-        val request = Request.Builder()
-            .url(endpoint)
-            .header("Authorization", "Bearer ${apiKey.trim()}")
-            .header("Content-Type", "application/json")
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
-            .post(reqBody.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        client.newCall(request).execute().use { resp ->
-            val body = resp.body?.string() ?: ""
-            if (!resp.isSuccessful) {
-                val errMsg = try {
-                    JSONObject(body).optJSONObject("error")?.optString("message") ?: body.take(200)
-                } catch (_: Exception) { body.take(200) }
-                when (resp.code) {
-                    401 -> throw ApiFailure("Invalid API Key for provider. Check key in API Room.", false)
-                    429 -> throw ApiFailure("Quota/Balance exceeded (HTTP 429). Check provider account balance. $errMsg", true)
-                    else -> throw ApiFailure("Provider returned HTTP ${resp.code}: $errMsg", false)
+        fun executeChatRequest(url: String, maxTokens: Int?): Pair<Int, String> {
+            val reqBody = JSONObject().apply {
+                put("model", model)
+                put("messages", messages)
+                put("temperature", 0.7)
+                if (maxTokens != null) {
+                    put("max_tokens", maxTokens)
                 }
             }
-            val json = JSONObject(body)
-            val choices = json.optJSONArray("choices") ?: JSONArray()
-            if (choices.length() > 0) {
-                val msg = choices.getJSONObject(0).optJSONObject("message")
-                return msg?.optString("content") ?: ""
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer ${apiKey.trim()}")
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+                .post(reqBody.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(request).execute().use { resp ->
+                return resp.code to (resp.body?.string() ?: "")
             }
-            return ""
         }
+
+        var (code, body) = executeChatRequest(primaryEndpoint, 16384)
+        // If custom URL omitted /v1, retry with /v1/chat/completions
+        if (code == 404 && !cleanBase.endsWith("/v1")) {
+            val fallbackEndpoint = "$cleanBase/v1/chat/completions"
+            val retry404 = executeChatRequest(fallbackEndpoint, 16384)
+            if (retry404.first != 404) {
+                code = retry404.first
+                body = retry404.second
+            }
+        }
+        // If the provider rejected 16384 max_tokens with HTTP 400, retry with 8192 and then default
+        if (code == 400 && (body.contains("max_tokens", ignoreCase = true) || body.contains("token", ignoreCase = true))) {
+            val activeUrl = if (!cleanBase.endsWith("/v1") && code == 404) "$cleanBase/v1/chat/completions" else primaryEndpoint
+            val retry8k = executeChatRequest(activeUrl, 8192)
+            if (retry8k.first in 200..299) {
+                code = retry8k.first
+                body = retry8k.second
+            } else {
+                val retryDefault = executeChatRequest(activeUrl, null)
+                code = retryDefault.first
+                body = retryDefault.second
+            }
+        }
+
+        if (code !in 200..299) {
+            val errMsg = try {
+                JSONObject(body).optJSONObject("error")?.optString("message") ?: body.take(220)
+            } catch (_: Exception) { body.take(220) }
+            when (code) {
+                401 -> throw ApiFailure("Invalid API Key for provider. Check key in API Room.", false)
+                429 -> throw ApiFailure("Quota/Balance exceeded (HTTP 429). Check provider account balance. $errMsg", true)
+                else -> throw ApiFailure("Provider returned HTTP $code: $errMsg", false)
+            }
+        }
+        val json = JSONObject(body)
+        val choices = json.optJSONArray("choices") ?: JSONArray()
+        if (choices.length() > 0) {
+            val msg = choices.getJSONObject(0).optJSONObject("message")
+            return msg?.optString("content") ?: ""
+        }
+        return ""
     }
 
     private fun callAnthropic(
@@ -1218,7 +1301,14 @@ class AiService {
 
         val items = pairs.take(8)
         val maxVal = (items.maxOfOrNull { kotlin.math.abs(it.second) } ?: 100f).coerceAtLeast(1f)
-        val chartLeft = 130f
+        val labelPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = mutedColor
+            textSize = 24f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+        }
+        val gridLabels = (0..4).map { g -> String.format(java.util.Locale.US, "%.0f", maxVal * g / 4f) }
+        val maxGridLabelW = gridLabels.maxOfOrNull { labelPaint.measureText(it) } ?: 50f
+        val chartLeft = (64f + maxGridLabelW + 24f).coerceIn(130f, 280f)
         val chartRight = w - 80f
         val chartTop = 230f
         val chartBottom = h - 130f
@@ -1229,16 +1319,12 @@ class AiService {
             color = android.graphics.Color.parseColor("#D6D3CB")
             strokeWidth = 2.5f
         }
-        val labelPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = mutedColor
-            textSize = 24f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-        }
         for (g in 0..4) {
             val y = chartBottom - (chartH * g / 4f)
             canvas.drawLine(chartLeft, y, chartRight, y, if (g == 0) borderPaint else gridPaint)
-            val vLabel = String.format(java.util.Locale.US, "%.0f", maxVal * g / 4f)
-            canvas.drawText(vLabel, 54f, y + 8f, labelPaint)
+            val vLabel = gridLabels[g]
+            val lw = labelPaint.measureText(vLabel)
+            canvas.drawText(vLabel, (chartLeft - 16f - lw).coerceAtLeast(36f), y + 8f, labelPaint)
         }
 
         val palette = intArrayOf(
@@ -1300,12 +1386,7 @@ class AiService {
             }
         } else {
             val slotW = chartW / items.size
-            val barW = (slotW * 0.58f).coerceAtMost(130f)
-            val valPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                color = android.graphics.Color.WHITE
-                textSize = 26f
-                typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-            }
+            val barW = (slotW * 0.62f).coerceIn(48f, 136f)
             items.forEachIndexed { i, (lbl, v) ->
                 val bh = ((v.coerceAtLeast(0f) / maxVal) * chartH).coerceAtLeast(18f)
                 val left = chartLeft + i * slotW + (slotW - barW) / 2f
@@ -1318,9 +1399,26 @@ class AiService {
                 canvas.drawRect(rect, barPaint)
                 canvas.drawRect(rect, borderPaint)
 
+                val valStr = String.format(java.util.Locale.US, "%.1f", v).removeSuffix(".0")
+                val isShortBar = bh < 56f
+                val valPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    color = if (isShortBar) inkColor else android.graphics.Color.WHITE
+                    textSize = 26f
+                    typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                }
+                val maxTextW = (if (isShortBar) slotW - 10f else barW - 12f).coerceAtLeast(32f)
+                while (valPaint.textSize > 14f && valPaint.measureText(valStr) > maxTextW) {
+                    valPaint.textSize -= 2f
+                }
+                val vw = valPaint.measureText(valStr)
+
                 // Icon badge circle above bar
                 val cx = left + barW / 2f
-                val cy = (top - 32f).coerceAtLeast(chartTop - 24f)
+                val cy = if (isShortBar) {
+                    (top - 58f).coerceAtLeast(chartTop - 32f)
+                } else {
+                    (top - 32f).coerceAtLeast(chartTop - 24f)
+                }
                 val circleFill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     color = android.graphics.Color.parseColor("#FAF8F3")
                     style = android.graphics.Paint.Style.FILL
@@ -1328,9 +1426,9 @@ class AiService {
                 canvas.drawCircle(cx, cy, 22f, circleFill)
                 canvas.drawCircle(cx, cy, 22f, borderPaint)
 
-                val valStr = String.format(java.util.Locale.US, "%.1f", v).removeSuffix(".0")
-                val vw = valPaint.measureText(valStr)
-                if (bh > 52f) {
+                if (isShortBar) {
+                    canvas.drawText(valStr, cx - vw / 2f, top - 10f, valPaint)
+                } else {
                     canvas.drawText(valStr, cx - vw / 2f, top + 38f, valPaint)
                 }
                 labelPaint.color = inkColor

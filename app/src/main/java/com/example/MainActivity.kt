@@ -55,6 +55,7 @@ import com.example.ui.screens.ReadNoteScreen
 import com.example.ui.screens.RecycleBinScreen
 import com.example.ui.screens.SecurityAreaScreen
 import com.example.ui.screens.SettingsScreen
+import com.example.ui.screens.BackupRestoreScreen
 import com.example.ui.screens.StorageFileEditorScreen
 import com.example.ui.screens.TableEditorScreen
 import com.example.ui.screens.TempMailScreen
@@ -73,6 +74,7 @@ sealed class Screen {
         val returnScreen: Screen = MainWorkspace("All Notes")
     ) : Screen()
     data object Settings : Screen()
+    data object BackupRestore : Screen()
     data object SecurityArea : Screen()
     data object SecuritySettings : Screen()
     data object ThemeSettings : Screen()
@@ -128,11 +130,40 @@ class MainActivity : FragmentActivity() {
         return null
     }
 
+    private val incomingQuickNoteState = mutableStateOf(false)
+    private val incomingOpenNoteIdState = mutableStateOf<Long?>(null)
+
+    fun enterSmallWindowOrPip() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val params = android.app.PictureInPictureParams.Builder()
+                    .setAspectRatio(android.util.Rational(9, 16))
+                    .build()
+                val entered = enterPictureInPictureMode(params)
+                if (entered) return
+            }
+        } catch (_: Exception) {}
+        android.widget.Toast.makeText(
+            this,
+            "Tip: You can also use 'Small window' from Android Recents or tap 'Open Mini Overlay'!",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
+    }
+
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         extractSharedUri(intent)?.let { uri ->
             incomingShareUriState.value = uri
+        }
+        if (intent.getBooleanExtra("OPEN_QUICK_NOTE", false)) {
+            incomingQuickNoteState.value = true
+            intent.removeExtra("OPEN_QUICK_NOTE")
+        }
+        val noteId = intent.getLongExtra("OPEN_NOTE_ID", -1L)
+        if (noteId > 0L) {
+            incomingOpenNoteIdState.value = noteId
+            intent.removeExtra("OPEN_NOTE_ID")
         }
     }
 
@@ -176,6 +207,15 @@ class MainActivity : FragmentActivity() {
         if (savedInstanceState == null) {
             extractSharedUri(intent)?.let { uri ->
                 incomingShareUriState.value = uri
+            }
+            if (intent?.getBooleanExtra("OPEN_QUICK_NOTE", false) == true) {
+                incomingQuickNoteState.value = true
+                intent.removeExtra("OPEN_QUICK_NOTE")
+            }
+            val noteId = intent?.getLongExtra("OPEN_NOTE_ID", -1L) ?: -1L
+            if (noteId > 0L) {
+                incomingOpenNoteIdState.value = noteId
+                intent?.removeExtra("OPEN_NOTE_ID")
             }
         }
 
@@ -236,6 +276,8 @@ class MainActivity : FragmentActivity() {
             }
 
             val pendingShareUri by incomingShareUriState
+            val pendingQuickNote by incomingQuickNoteState
+            val pendingOpenNoteId by incomingOpenNoteIdState
 
             MyApplicationTheme(darkTheme = isDarkMode) {
                 CompositionLocalProvider(LocalAppBackdrop provides AppBackdropState(bgImage, bgDim)) {
@@ -251,6 +293,11 @@ class MainActivity : FragmentActivity() {
                             isDarkMode = isDarkMode,
                             incomingShareUri = pendingShareUri,
                             onConsumeIncomingShareUri = { incomingShareUriState.value = null },
+                            incomingQuickNote = pendingQuickNote,
+                            onConsumeIncomingQuickNote = { incomingQuickNoteState.value = false },
+                            incomingOpenNoteId = pendingOpenNoteId,
+                            onConsumeIncomingOpenNoteId = { incomingOpenNoteIdState.value = null },
+                            onEnterSmallWindowMode = { enterSmallWindowOrPip() },
                             onToggleDarkMode = {
                                 preferences.setThemeMode(if (isDarkMode) AppPreferences.THEME_DAY else AppPreferences.THEME_DARK)
                             }
@@ -271,6 +318,11 @@ fun AuNotesApp(
     isDarkMode: Boolean,
     incomingShareUri: android.net.Uri? = null,
     onConsumeIncomingShareUri: () -> Unit = {},
+    incomingQuickNote: Boolean = false,
+    onConsumeIncomingQuickNote: () -> Unit = {},
+    incomingOpenNoteId: Long? = null,
+    onConsumeIncomingOpenNoteId: () -> Unit = {},
+    onEnterSmallWindowMode: () -> Unit = {},
     onToggleDarkMode: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -288,6 +340,24 @@ fun AuNotesApp(
     var startAiVoiceAssistantImmediately by remember { mutableStateOf(false) }
     var returnToAiChatFromApiRoom by remember { mutableStateOf(false) }
     var agentSharedUri by remember { mutableStateOf<android.net.Uri?>(null) }
+
+    LaunchedEffect(incomingQuickNote) {
+        if (incomingQuickNote) {
+            onConsumeIncomingQuickNote()
+            currentScreen = Screen.EditNote(note = null, returnScreen = Screen.MainWorkspace(currentFolder))
+        }
+    }
+
+    LaunchedEffect(incomingOpenNoteId) {
+        val noteId = incomingOpenNoteId
+        if (noteId != null && noteId > 0L) {
+            onConsumeIncomingOpenNoteId()
+            val note = repository.getNoteByIdOnce(noteId)
+            if (note != null) {
+                currentScreen = Screen.ReadNote(note = note, returnScreen = Screen.MainWorkspace(currentFolder))
+            }
+        }
+    }
 
     // Security Vault unlocked state, hoisted here (rather than local to
     // SecurityAreaScreen) so "When app is closed" / "When screen is locked off"
@@ -403,6 +473,7 @@ fun AuNotesApp(
             }
             screenNow is Screen.ThemeSettings -> currentScreen = Screen.Settings
             screenNow is Screen.AgentSettings -> currentScreen = Screen.Settings
+            screenNow is Screen.BackupRestore -> currentScreen = Screen.Settings
             screenNow is Screen.SecuritySettings -> currentScreen = Screen.SecurityArea
             screenNow is Screen.MainWorkspace && screenNow.pickForHide -> currentScreen = Screen.SecurityArea
             screenNow is Screen.SecurityArea -> leaveSecurityArea()
@@ -673,10 +744,21 @@ fun AuNotesApp(
                     onOpenApiRoom = { currentScreen = Screen.ApiRoom },
                     onOpenThemeSettings = { currentScreen = Screen.ThemeSettings },
                     onOpenAgentSettings = { currentScreen = Screen.AgentSettings },
+                    onOpenBackupRestore = { currentScreen = Screen.BackupRestore },
+                    onEnterSmallWindowMode = onEnterSmallWindowMode,
                     onOpenRecycleBin = {
                         screenBeforeRecycleBin = Screen.Settings
                         currentScreen = Screen.RecycleBin
                     }
+                )
+            }
+
+            is Screen.BackupRestore -> {
+                BackupRestoreScreen(
+                    repository = repository,
+                    preferences = preferences,
+                    isDarkMode = isDarkMode,
+                    onBack = { currentScreen = Screen.Settings }
                 )
             }
 

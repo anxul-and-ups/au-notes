@@ -1382,6 +1382,36 @@ object AgentVisualsParser {
         }
     }
 
+    fun compactValueWithUnit(value: Float, rawUnit: String): String {
+        val numStr = if (value % 1f == 0f) {
+            String.format(Locale.US, "%.0f", value)
+        } else {
+            String.format(Locale.US, "%.1f", value).removeSuffix(".0")
+        }
+        val u = rawUnit.trim()
+        if (u.isEmpty()) return numStr
+        val lower = u.lowercase()
+        val hasUsd = lower.contains("usd") || lower.contains("$")
+        val hasInr = lower.contains("inr") || lower.contains("₹") || lower.contains("rs")
+        val prefix = when {
+            hasUsd -> "$"
+            hasInr -> "₹"
+            else -> ""
+        }
+        return when {
+            lower.contains("million") || lower == "m" || lower == "mn" -> "$prefix${numStr}M"
+            lower.contains("billion") || lower == "b" || lower == "bn" -> "$prefix${numStr}B"
+            lower.contains("trillion") || lower == "t" -> "$prefix${numStr}T"
+            lower.contains("thousand") || lower == "k" -> "$prefix${numStr}K"
+            lower.contains("crore") || lower == "cr" -> "$prefix${numStr}Cr"
+            lower.contains("lakh") -> "$prefix${numStr}L"
+            u == "%" || u == "°" || u == "x" || u == "X" -> "$numStr$u"
+            u == "$" || u == "₹" || u == "€" || u == "£" -> "$u$numStr"
+            u.length <= 3 -> "$numStr $u"
+            else -> numStr
+        }
+    }
+
     /**
      * Renders a Warm-Paper Editorial Typography Chart Bitmap (for Save to Gallery / Add to Note).
      */
@@ -1410,7 +1440,12 @@ object AgentVisualsParser {
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         }
         canvas.drawText("01", 60f, 76f, idxPaint)
-        val typeLbl = valid.type.uppercase()
+        val unitClean = valid.unit.trim()
+        val typeLbl = if (unitClean.length > 3) {
+            "${valid.type.uppercase()} • ${unitClean.uppercase()}"
+        } else {
+            valid.type.uppercase()
+        }
         val tw = idxPaint.measureText(typeLbl)
         canvas.drawText(typeLbl, width - 60f - tw, 76f, idxPaint)
         canvas.drawLine(60f, 94f, width - 60f, 94f, borderPaint)
@@ -1421,13 +1456,6 @@ object AgentVisualsParser {
             typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
         }
         canvas.drawText(valid.title.uppercase().take(44), 60f, 156f, titlePaint)
-
-        val topY = 230f
-        val bottomY = height - 120f
-        val leftX = 120f
-        val rightX = width - 70f
-        val chartW = rightX - leftX
-        val chartH = bottomY - topY
 
         val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.parseColor("#D6D3CB")
@@ -1447,6 +1475,16 @@ object AgentVisualsParser {
         val items = valid.items
         if (items.isEmpty()) return bmp
         val maxVal = valid.max.coerceAtLeast(1f)
+
+        val axisLabels = (0..4).map { g -> compactValueWithUnit(maxVal * g / 4f, valid.unit) }
+        val maxAxisW = axisLabels.maxOfOrNull { axisLabelPaint.measureText(it) } ?: 60f
+
+        val topY = 230f
+        val bottomY = height - 120f
+        val leftX = maxOf(130f, 60f + maxAxisW + 24f)
+        val rightX = width - 70f
+        val chartW = (rightX - leftX).coerceAtLeast(200f)
+        val chartH = bottomY - topY
 
         when (valid.type) {
             "pie" -> {
@@ -1472,7 +1510,8 @@ object AgentVisualsParser {
                     canvas.drawRect(box, slicePaint)
                     canvas.drawRect(box, borderPaint)
                     val pct = ((item.value / total) * 100f).toInt()
-                    canvas.drawText("${item.label}: ${item.value}${valid.unit} ($pct%)", leftX + chartW * 0.64f + 42f, ly, labelPaint)
+                    val vFormatted = compactValueWithUnit(item.value, valid.unit)
+                    canvas.drawText("${item.label}: $vFormatted ($pct%)", leftX + chartW * 0.64f + 42f, ly, labelPaint)
                     ly += 48f
                 }
             }
@@ -1480,6 +1519,9 @@ object AgentVisualsParser {
                 for (g in 0..4) {
                     val gy = bottomY - (chartH * g / 4f)
                     canvas.drawLine(leftX, gy, rightX, gy, if (g == 0) borderPaint else gridPaint)
+                    val gv = axisLabels[g]
+                    val gw = axisLabelPaint.measureText(gv)
+                    canvas.drawText(gv, leftX - 16f - gw, gy + 8f, axisLabelPaint)
                 }
                 canvas.drawLine(leftX, topY, leftX, bottomY, borderPaint)
                 val accentInt = parseColorSafe(items.firstOrNull()?.colorHex ?: "#EA580C", android.graphics.Color.parseColor("#EA580C"))
@@ -1522,19 +1564,24 @@ object AgentVisualsParser {
                     }
                     canvas.drawCircle(x, y, 12f, dotFill)
                     canvas.drawCircle(x, y, 12f, borderPaint)
-                    canvas.drawText("${item.value}${valid.unit}", x - 24f, y - 20f, labelPaint)
-                    canvas.drawText(item.label.take(12), x - 32f, bottomY + 42f, axisLabelPaint)
+                    val vFormatted = compactValueWithUnit(item.value, valid.unit)
+                    val vw = labelPaint.measureText(vFormatted)
+                    canvas.drawText(vFormatted, x - vw / 2f, y - 20f, labelPaint)
+                    val cleanLbl = item.label.take(12)
+                    val lw = axisLabelPaint.measureText(cleanLbl)
+                    canvas.drawText(cleanLbl, x - lw / 2f, bottomY + 42f, axisLabelPaint)
                 }
             }
             else -> {
                 for (g in 0..4) {
                     val gy = bottomY - (chartH * g / 4f)
                     canvas.drawLine(leftX, gy, rightX, gy, if (g == 0) borderPaint else gridPaint)
-                    val gv = String.format(Locale.US, "%.0f%s", maxVal * g / 4f, valid.unit)
-                    canvas.drawText(gv, 36f, gy + 8f, axisLabelPaint)
+                    val gv = axisLabels[g]
+                    val gw = axisLabelPaint.measureText(gv)
+                    canvas.drawText(gv, leftX - 16f - gw, gy + 8f, axisLabelPaint)
                 }
                 val slotW = chartW / items.size.coerceAtLeast(1)
-                val barW = (slotW * 0.58f).coerceAtMost(120f)
+                val barW = (slotW * 0.62f).coerceAtMost(132f)
                 val barPaint = Paint(Paint.ANTI_ALIAS_FLAG)
                 val whitePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                     color = android.graphics.Color.WHITE
@@ -1552,29 +1599,59 @@ object AgentVisualsParser {
                     canvas.drawRect(rect, barPaint)
                     canvas.drawRect(rect, borderPaint)
 
-                    // Icon circle above bar
-                    val badgeY = (top - 32f).coerceAtLeast(topY - 24f)
-                    val circleFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        color = android.graphics.Color.parseColor("#FAF8F3")
-                        style = Paint.Style.FILL
-                    }
-                    canvas.drawCircle(cx, badgeY, 22f, circleFill)
-                    canvas.drawCircle(cx, badgeY, 22f, borderPaint)
-                    BuiltInIcons.createScaledAndroidPath(item.icon, cx, badgeY, 22f)?.let { iconPath ->
-                        val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                            color = barCol
-                            style = Paint.Style.FILL
-                        }
-                        canvas.drawPath(iconPath, iconPaint)
+                    val valTxt = compactValueWithUnit(item.value, valid.unit)
+                    whitePaint.textSize = 24f
+                    var vw = whitePaint.measureText(valTxt)
+                    if (vw > barW - 14f && vw > 0f) {
+                        whitePaint.textSize = (24f * ((barW - 14f) / vw)).coerceAtLeast(14f)
+                        vw = whitePaint.measureText(valTxt)
                     }
 
-                    val valTxt = String.format(Locale.US, "%.1f%s", item.value, valid.unit).replace(".0%", "%")
-                    val vw = whitePaint.measureText(valTxt)
-                    if (bh > 48f) {
+                    if (bh >= 58f) {
+                        // Tall enough bar: icon badge above bar, crisp white value inside bar
+                        val badgeY = (top - 32f).coerceAtLeast(topY - 24f)
+                        val circleFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.parseColor("#FAF8F3")
+                            style = Paint.Style.FILL
+                        }
+                        canvas.drawCircle(cx, badgeY, 22f, circleFill)
+                        canvas.drawCircle(cx, badgeY, 22f, borderPaint)
+                        BuiltInIcons.createScaledAndroidPath(item.icon, cx, badgeY, 22f)?.let { iconPath ->
+                            val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                color = barCol
+                                style = Paint.Style.FILL
+                            }
+                            canvas.drawPath(iconPath, iconPaint)
+                        }
                         canvas.drawText(valTxt, cx - vw / 2f, top + 36f, whitePaint)
+                    } else {
+                        // Short bar: draw dark ink value cleanly above the bar and icon badge above that so nothing overflows
+                        val valAboveY = top - 14f
+                        val darkValPaint = TextPaint(whitePaint).apply {
+                            color = inkCol
+                            textSize = 22f
+                        }
+                        val dvw = darkValPaint.measureText(valTxt)
+                        canvas.drawText(valTxt, cx - dvw / 2f, valAboveY, darkValPaint)
+                        val badgeY = (valAboveY - 44f).coerceAtLeast(topY - 24f)
+                        val circleFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.parseColor("#FAF8F3")
+                            style = Paint.Style.FILL
+                        }
+                        canvas.drawCircle(cx, badgeY, 20f, circleFill)
+                        canvas.drawCircle(cx, badgeY, 20f, borderPaint)
+                        BuiltInIcons.createScaledAndroidPath(item.icon, cx, badgeY, 20f)?.let { iconPath ->
+                            val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                color = barCol
+                                style = Paint.Style.FILL
+                            }
+                            canvas.drawPath(iconPath, iconPaint)
+                        }
                     }
-                    val lw = labelPaint.measureText(item.label.take(12))
-                    canvas.drawText(item.label.take(12), cx - lw / 2f, bottomY + 44f, labelPaint)
+
+                    val cleanLbl = item.label.take(14)
+                    val lw = labelPaint.measureText(cleanLbl)
+                    canvas.drawText(cleanLbl, cx - lw / 2f, bottomY + 44f, labelPaint)
                 }
             }
         }
@@ -2651,22 +2728,28 @@ fun BarChartBlock(
         ComposeCanvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(if (isCompact) 155.dp else 230.dp)
+                .height(if (isCompact) 165.dp else 240.dp)
         ) {
-            val topPad = 38.dp.toPx()
-            val bottomPad = 30.dp.toPx()
-            val leftPad = 34.dp.toPx()
+            val topPad = 40.dp.toPx()
+            val bottomPad = 32.dp.toPx()
             val chartH = size.height - topPad - bottomPad
-            val chartW = size.width - leftPad
             val safeMax = max.coerceAtLeast(1f)
 
-            // 1. Grid lines (0, 25, 50, 75, 100%)
             val axisTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = android.graphics.Color.parseColor("#71717A")
-                textSize = if (isCompact) 20f else 24f
+                textSize = if (isCompact) 19f else 23f
                 typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             }
-            listOf(0f, 0.25f, 0.5f, 0.75f, 1f).forEach { pct ->
+            val gridSteps = listOf(0f, 0.25f, 0.5f, 0.75f, 1f)
+            val gridLabels = gridSteps.map { pct ->
+                AgentVisualsParser.compactValueWithUnit(safeMax * pct, unit)
+            }
+            val maxGridLabelW = gridLabels.maxOfOrNull { axisTextPaint.measureText(it) } ?: 34f
+            val leftPad = (maxGridLabelW + 16.dp.toPx()).coerceIn(38.dp.toPx(), size.width * 0.30f)
+            val chartW = (size.width - leftPad).coerceAtLeast(80f)
+
+            // 1. Grid lines (0, 25, 50, 75, 100%)
+            gridSteps.forEachIndexed { idx, pct ->
                 val y = topPad + chartH * (1f - pct)
                 drawLine(
                     color = if (pct == 0f) inkColor else gridColor,
@@ -2675,25 +2758,22 @@ fun BarChartBlock(
                     strokeWidth = if (pct == 0f) 2.5.dp.toPx() else 1.2.dp.toPx(),
                     pathEffect = if (pct == 0f) null else PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
                 )
-                val gLbl = String.format(Locale.US, "%.0f", safeMax * pct)
-                drawContext.canvas.nativeCanvas.drawText(gLbl, 2f, y + 6f, axisTextPaint)
+                val gLbl = gridLabels[idx]
+                val gw = axisTextPaint.measureText(gLbl)
+                val gx = (leftPad - 8.dp.toPx() - gw).coerceAtLeast(2f)
+                drawContext.canvas.nativeCanvas.drawText(gLbl, gx, y + 6f, axisTextPaint)
             }
 
             if (items.isEmpty()) return@ComposeCanvas
 
-            // 2. Bars + Icon Badges + Value Inside Bar
+            // 2. Bars + Icon Badges + Value Inside/Above Bar
             val slotW = chartW / items.size
-            val barW = (slotW * 0.58f).coerceAtMost(58.dp.toPx())
+            val barW = (slotW * 0.62f).coerceIn(24.dp.toPx(), 64.dp.toPx())
             val strokePx = 2.5.dp.toPx()
 
-            val valPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = android.graphics.Color.WHITE
-                textSize = if (isCompact) 22f else 27f
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            }
             val lblPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = android.graphics.Color.parseColor("#18181B")
-                textSize = if (isCompact) 21f else 25f
+                textSize = if (isCompact) 20f else 24f
                 typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             }
 
@@ -2721,10 +2801,27 @@ fun BarChartBlock(
                     style = Stroke(width = strokePx)
                 )
 
+                val valStr = AgentVisualsParser.compactValueWithUnit(item.value, unit)
+                val isShortBar = barH < 32.dp.toPx()
+                val valPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = if (isShortBar) android.graphics.Color.parseColor("#18181B") else android.graphics.Color.WHITE
+                    textSize = if (isCompact) 21f else 25f
+                    typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+                }
+                val maxTextW = (if (isShortBar) slotW - 4.dp.toPx() else barW - 6.dp.toPx()).coerceAtLeast(22f)
+                while (valPaint.textSize > 13f && valPaint.measureText(valStr) > maxTextW) {
+                    valPaint.textSize -= 1.5f
+                }
+                val vw = valPaint.measureText(valStr)
+
                 // Icon badge circle on top of bar
                 val centerX = x + barW / 2f
-                val circleY = (y - 16.dp.toPx()).coerceAtLeast(16.dp.toPx())
-                val circleR = if (isCompact) 10.dp.toPx() else 12.dp.toPx()
+                val circleR = if (isCompact) 9.dp.toPx() else 11.dp.toPx()
+                val circleY = if (isShortBar) {
+                    (y - 22.dp.toPx() - circleR).coerceAtLeast(circleR + 2f)
+                } else {
+                    (y - 14.dp.toPx()).coerceAtLeast(circleR + 2f)
+                }
                 drawCircle(color = Color(0xFFFAF8F3), radius = circleR, center = Offset(centerX, circleY))
                 drawCircle(color = inkColor, radius = circleR, center = Offset(centerX, circleY), style = Stroke(width = 2.dp.toPx()))
 
@@ -2732,15 +2829,15 @@ fun BarChartBlock(
                     drawPath(path = androidPath.asComposePath(), color = barColor)
                 }
 
-                // Value label inside bar
-                val valStr = String.format(Locale.US, "%.1f%s", item.value, unit).replace(".0%", "%")
-                val vw = valPaint.measureText(valStr)
-                if (barH > 26.dp.toPx()) {
-                    drawContext.canvas.nativeCanvas.drawText(valStr, centerX - vw / 2f, y + 20.dp.toPx(), valPaint)
+                // Value label inside bar or just above short bar
+                if (isShortBar) {
+                    drawContext.canvas.nativeCanvas.drawText(valStr, centerX - vw / 2f, (y - 5.dp.toPx()).coerceAtLeast(14f), valPaint)
+                } else {
+                    drawContext.canvas.nativeCanvas.drawText(valStr, centerX - vw / 2f, y + 19.dp.toPx(), valPaint)
                 }
 
                 // X-axis label under bar
-                val cleanLbl = item.label.take(10)
+                val cleanLbl = item.label.take(12)
                 val lw = lblPaint.measureText(cleanLbl)
                 drawContext.canvas.nativeCanvas.drawText(cleanLbl, centerX - lw / 2f, topPad + chartH + 20.dp.toPx(), lblPaint)
             }
@@ -3226,14 +3323,31 @@ fun HtmlArtifactCard(
     // Built artifacts (images already downloaded) arrive as "AUFILE:<path to local index.html>"
     val fileMode = htmlCode.startsWith("AUFILE:")
     val filePath = htmlCode.removePrefix("AUFILE:")
+    val resolvedHtml = remember(htmlCode) {
+        if (fileMode) {
+            runCatching {
+                val f = File(filePath)
+                if (f.exists()) com.example.data.ai.ArtifactBuilder.inlineForExport(f) else ""
+            }.getOrDefault("")
+        } else {
+            com.example.data.ai.ArtifactBuilder.harden(htmlCode)
+        }
+    }
     val loadPage: (WebView) -> Unit = { wv ->
         if (wv.tag != htmlCode) {
             wv.tag = htmlCode
-            if (fileMode) {
-                wv.settings.allowFileAccess = true
+            wv.settings.allowFileAccess = true
+            wv.settings.allowContentAccess = true
+            if (resolvedHtml.isNotBlank()) {
+                val baseUrl = if (fileMode) {
+                    val parent = File(filePath).parentFile
+                    if (parent != null) "file://${parent.absolutePath}/" else "https://aunotes.local/"
+                } else {
+                    "https://aunotes.local/"
+                }
+                wv.loadDataWithBaseURL(baseUrl, resolvedHtml, "text/html", "UTF-8", null)
+            } else if (fileMode) {
                 wv.loadUrl("file://" + filePath)
-            } else {
-                wv.loadDataWithBaseURL("https://aunotes.local/", htmlCode, "text/html", "UTF-8", null)
             }
         }
     }
@@ -3277,7 +3391,7 @@ fun HtmlArtifactCard(
                 Spacer(Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("Interactive HTML Artifact • Tap to open fullscreen", fontSize = 11.sp, color = fg.copy(alpha = 0.62f))
+                    Text("Interactive HTML Artifact • Swipe or tap arrows • Fullscreen", fontSize = 11.sp, color = fg.copy(alpha = 0.62f))
                 }
             }
             Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color(0xFFEA580C), modifier = Modifier.size(22.dp))
@@ -3289,7 +3403,7 @@ fun HtmlArtifactCard(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(240.dp)
+                .height(260.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .border(1.5.dp, borderCol, RoundedCornerShape(12.dp))
         ) {
@@ -3299,8 +3413,17 @@ fun HtmlArtifactCard(
                     WebView(ctx).apply {
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
-                        settings.loadWithOverviewMode = true
-                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = false
+                        settings.useWideViewPort = false
+                        settings.allowFileAccess = true
+                        settings.allowContentAccess = true
+                        setOnTouchListener { v, event ->
+                            when (event.actionMasked) {
+                                android.view.MotionEvent.ACTION_DOWN -> v.parent?.requestDisallowInterceptTouchEvent(true)
+                                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.parent?.requestDisallowInterceptTouchEvent(false)
+                            }
+                            false
+                        }
                         webViewClient = createSafeWebViewClient()
                         loadPage(this)
                     }
@@ -3455,8 +3578,10 @@ fun HtmlArtifactCard(
                             WebView(ctx).apply {
                                 settings.javaScriptEnabled = true
                                 settings.domStorageEnabled = true
-                                settings.loadWithOverviewMode = true
-                                settings.useWideViewPort = true
+                                settings.loadWithOverviewMode = false
+                                settings.useWideViewPort = false
+                                settings.allowFileAccess = true
+                                settings.allowContentAccess = true
                                 webViewClient = createSafeWebViewClient()
                                 loadPage(this)
                             }

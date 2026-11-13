@@ -57,12 +57,23 @@ object ApiConnectivityChecker {
                 "openrouter" -> checkBearerModels("https://openrouter.ai/api/v1/models", cleanKey)
                 "claude", "anthropic", "claude (anthropic)" -> checkAnthropic(cleanKey)
                 else -> {
-                    val cleanBase = baseUrl.trim().trimEnd('/')
-                    if (cleanBase.isBlank()) {
+                    val rawBase = baseUrl.trim().trimEnd('/')
+                    if (rawBase.isBlank()) {
                         ProviderCheckResult(false, 0, "Base URL is required for custom provider '$providerName'.")
                     } else {
-                        val endpoint = if (cleanBase.endsWith("/models")) cleanBase else "$cleanBase/models"
-                        checkBearerModels(endpoint, cleanKey)
+                        val normalizedBase = rawBase
+                            .removeSuffix("/chat/completions")
+                            .removeSuffix("/v1/chat/completions")
+                            .removeSuffix("/models")
+                            .trimEnd('/')
+                        val primaryEndpoint = "$normalizedBase/models"
+                        val firstTry = checkBearerModels(primaryEndpoint, cleanKey)
+                        if (!firstTry.ok && !normalizedBase.endsWith("/v1")) {
+                            val secondTry = checkBearerModels("$normalizedBase/v1/models", cleanKey)
+                            if (secondTry.ok) secondTry else firstTry
+                        } else {
+                            firstTry
+                        }
                     }
                 }
             }
@@ -179,17 +190,29 @@ object ApiConnectivityChecker {
                     ok = false,
                     statusCode = resp.code,
                     message = if (errMsg.isNotBlank()) "Rejected (HTTP ${resp.code}): $errMsg"
-                    else "Rejected by server (HTTP ${resp.code}). Check that the API key is valid."
+                    else "Rejected by server (HTTP ${resp.code}). Check that the API key and Base URL are valid."
                 )
             }
 
             val models = mutableListOf<String>()
             try {
-                val arr = JSONObject(body).optJSONArray("data")
-                if (arr != null) {
+                val trimmed = body.trim()
+                if (trimmed.startsWith("[")) {
+                    val arr = org.json.JSONArray(trimmed)
                     for (i in 0 until arr.length()) {
-                        val id = arr.optJSONObject(i)?.optString("id").orEmpty().trim()
-                        if (id.isNotBlank()) models.add(id)
+                        val obj = arr.optJSONObject(i)
+                        val id = (obj?.optString("id")?.ifBlank { obj.optString("name") } ?: arr.optString(i)).orEmpty().trim()
+                        if (id.isNotBlank()) models.add(id.removePrefix("models/"))
+                    }
+                } else {
+                    val root = JSONObject(trimmed)
+                    val arr = root.optJSONArray("data") ?: root.optJSONArray("models") ?: root.optJSONArray("items")
+                    if (arr != null) {
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.optJSONObject(i)
+                            val id = (obj?.optString("id")?.ifBlank { obj.optString("name") } ?: arr.optString(i)).orEmpty().trim()
+                            if (id.isNotBlank()) models.add(id.removePrefix("models/"))
+                        }
                     }
                 }
             } catch (_: Exception) { }

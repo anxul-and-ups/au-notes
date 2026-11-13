@@ -74,17 +74,24 @@ object ArtifactImages {
         if (download(url, out)) out else null
     }
 
-    /** Use a file the USER gave (inbox): downscale to a JPEG in app storage. */
+    /** Use a file the USER gave (inbox): downscale to a JPEG in app storage and fix EXIF rotation. */
     suspend fun fromLocal(context: Context, src: File): File? = withContext(Dispatchers.IO) {
-        val out = File(imagesDir(context), sha1("f:" + src.absolutePath + src.length()) + ".jpg")
+        val out = File(imagesDir(context), sha1("f:" + src.absolutePath + src.length() + "_v2") + ".jpg")
         if (out.exists() && out.length() > 0) return@withContext out
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(src.path, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
             val sample = Integer.highestOneBit(maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / MAX_SIDE))
-            val decoded = BitmapFactory.decodeFile(src.path, BitmapFactory.Options().apply { inSampleSize = sample })
+            val rawDecoded = BitmapFactory.decodeFile(src.path, BitmapFactory.Options().apply { inSampleSize = sample })
                 ?: return@withContext null
+            val exifOrientation = runCatching {
+                android.media.ExifInterface(src.absolutePath).getAttributeInt(
+                    android.media.ExifInterface.TAG_ORIENTATION,
+                    android.media.ExifInterface.ORIENTATION_NORMAL
+                )
+            }.getOrDefault(android.media.ExifInterface.ORIENTATION_NORMAL)
+            val decoded = applyExifOrientation(rawDecoded, exifOrientation)
             val flat = if (decoded.hasAlpha()) {
                 val b = Bitmap.createBitmap(decoded.width, decoded.height, Bitmap.Config.ARGB_8888)
                 Canvas(b).apply { drawColor(Color.WHITE); drawBitmap(decoded, 0f, 0f, null) }
@@ -94,6 +101,33 @@ object ArtifactImages {
             flat.recycle()
             if (out.length() > 0) out else null
         } catch (_: Throwable) { null }
+    }
+
+    private fun applyExifOrientation(bitmap: Bitmap, orientation: Int): Bitmap {
+        val matrix = android.graphics.Matrix()
+        when (orientation) {
+            android.media.ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            android.media.ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            android.media.ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            android.media.ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.preScale(-1f, 1f)
+            android.media.ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.preScale(1f, -1f)
+            android.media.ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.preScale(-1f, 1f)
+            }
+            android.media.ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.preScale(-1f, 1f)
+            }
+            else -> return bitmap
+        }
+        return try {
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            if (rotated != bitmap) bitmap.recycle()
+            rotated
+        } catch (_: Throwable) {
+            bitmap
+        }
     }
 
     // ------------------------------------------------------------------ candidates
@@ -208,7 +242,16 @@ object ArtifactImages {
 
                 val sample = Integer.highestOneBit(maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / MAX_SIDE))
                 val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return false
+                val rawDecoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return false
+                val exifOrientation = runCatching {
+                    java.io.ByteArrayInputStream(bytes).use { bais ->
+                        android.media.ExifInterface(bais).getAttributeInt(
+                            android.media.ExifInterface.TAG_ORIENTATION,
+                            android.media.ExifInterface.ORIENTATION_NORMAL
+                        )
+                    }
+                }.getOrDefault(android.media.ExifInterface.ORIENTATION_NORMAL)
+                val decoded = applyExifOrientation(rawDecoded, exifOrientation)
 
                 // JPEG has no alpha: flatten transparent PNG/WebP on white instead of black
                 val flat = if (decoded.hasAlpha()) {
@@ -379,7 +422,7 @@ object ArtifactBuilder {
         val extra = StringBuilder()
         if (!Regex("name\\s*=\\s*[\"']viewport[\"']", RegexOption.IGNORE_CASE).containsMatchIn(h))
             extra.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">")
-        extra.append("<style>:where(img,video,svg){max-width:100%}:where(img){height:auto}:where(body){overflow-wrap:anywhere}</style>")
+        extra.append("<style>:where(img,video,svg){max-width:100%}:where(img){height:auto;max-height:380px;object-fit:contain;border-radius:12px;display:block;margin:10px auto}:where(body){overflow-wrap:anywhere;box-sizing:border-box}</style>")
         h = if (head != null) h.replaceRange(head.range.last + 1, head.range.last + 1, extra.toString())
         else extra.toString() + h
         return h
