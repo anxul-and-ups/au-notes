@@ -180,7 +180,7 @@ object AgentTools {
                 AgentTool.Param("title", "STRING", "Deck title", required = true),
                 AgentTool.Param(
                     "slides_json", "STRING",
-                    "JSON array of slides. Each slide: {\"layout\":\"title|content|image_right|image_left|image_full|stats|timeline|bars|table|two_column|quote|closing\", \"section\":\"small label\", \"title\":\"max 8 words, *word* highlights\", \"subtitle\":\"\", \"text\":\"short paragraph\", \"bullets\":[\"full-information bullet\" or {\"head\":\"Term\",\"text\":\"explanation\"}], \"image_query\":\"3-8 specific words\" OR \"image_file\":\"inbox file name/number\", \"caption\":\"\", \"stats\":[{\"value\":\"80%\",\"label\":\"...\"}], \"items\":[{\"label\":\"1947\",\"text\":\"...\"}], \"bars\":[{\"label\":\"A\",\"value\":80}], \"unit\":\"%\", \"header\":[\"Col1\",\"Col2\"], \"rows\":[[\"a\",\"b\"]], \"left\":{\"title\":\"\",\"bullets\":[]}, \"right\":{\"title\":\"\",\"bullets\":[]}, \"quote\":\"\", \"author\":\"\"}",
+                    "Inline JSON ARRAY of slides: write it directly as an array inside args (NOT as a quoted, escaped string); escape any double quote used inside text. Each slide: {\"layout\":\"title|content|image_right|image_left|image_full|stats|timeline|bars|table|two_column|quote|closing\", \"section\":\"small label\", \"title\":\"max 8 words, *word* highlights\", \"subtitle\":\"\", \"text\":\"short paragraph\", \"bullets\":[\"full-information bullet\" or {\"head\":\"Term\",\"text\":\"explanation\"}], \"image_query\":\"3-8 specific words\" OR \"image_file\":\"inbox file name/number\", \"caption\":\"\", \"stats\":[{\"value\":\"80%\",\"label\":\"...\"}], \"items\":[{\"label\":\"1947\",\"text\":\"...\"}], \"bars\":[{\"label\":\"A\",\"value\":80}], \"unit\":\"%\", \"header\":[\"Col1\",\"Col2\"], \"rows\":[[\"a\",\"b\"]], \"left\":{\"title\":\"\",\"bullets\":[]}, \"right\":{\"title\":\"\",\"bullets\":[]}, \"quote\":\"\", \"author\":\"\"}",
                     required = true
                 ),
                 AgentTool.Param("theme", "STRING", "paper | olive | blue | red | dark (default paper)", required = false),
@@ -195,7 +195,7 @@ object AgentTools {
             params = listOf(
                 AgentTool.Param("title", "STRING", "Presentation deck title (e.g. 'Indian Army — Typography Slides')", required = true),
                 AgentTool.Param("accent_color", "STRING", "Single strong hex accent color for the deck (#EA580C orange, #3F6212 olive, #CA8A04 gold, #15803D green, #DC2626 red, #1D4ED8 blue)", required = false),
-                AgentTool.Param("slides_json", "STRING", "JSON array of slide objects or full deck JSON object", required = true)
+                AgentTool.Param("slides_json", "STRING", "Inline JSON ARRAY of slide objects (or a full deck JSON object) written directly inside args, not as a quoted string", required = true)
             )
         ),
         AgentTool(
@@ -440,6 +440,7 @@ object AgentTools {
             - Chart type: bar = few categories or percentages; line = change over time; pie = parts of a whole (max 6 slices); blocks = "X out of Y"; timeline = dated events; table = several attributes per item.
             - Chart data: use ONLY numbers the user gave, numbers already in the note, or numbers you verified by search. If the user gives a number, use it exactly. If numbers are missing, ask one short question or label the chart "illustrative" — never fabricate. `value` is a plain number (unit goes in `unit`); percent charts use max = 100; 2–8 items; labels 1–3 words; title max 6 words. If the user names colours use them exactly (green #15803D, red #DC2626, blue #2563EB, orange #EA580C), otherwise good = green, bad = red, neutral = blue/orange, with a different colour per item.
             - After adding a chart, add 1–2 sentences saying what stands out (not just "chart added").
+            - NEVER paste raw JSON, tool arguments or <tool_call> text into your answer to the user: either call the tool properly or answer in normal words.
             - If the user wants to change an image of an artifact ("image 2 galat hai"), call `replace_artifact_image`.
             """.trimIndent()
         ).append("\n")
@@ -455,6 +456,7 @@ object AgentTools {
                 - Pictures: if the user attached their own photos, USE THEM ALL, in order, via `image_file` (the inbox file name or number) on image layouts; never search the web for something the user already gave. For other pictures use `image_query` (3–8 specific words). At most 1 image per slide, about 8 images in total, never put image HTML in `text`. Charts and diagrams are drawn by the app (stats/bars/table), never as images.
                 - `slides_json` must be one valid JSON array string. Put `*word*` around one key word of a title to highlight it.
                 - After the tool succeeds, tell the user in 2–3 lines how many slides were made and which images were used or skipped.
+                - NEVER print the slide JSON, the tool arguments or a <tool_call> as text for the user. If you decide to make a deck, only call the tool (valid JSON: no trailing commas, escape quotes inside text); do not write the deck out as chat text.
                 """.trimIndent()
             ).append("\n")
         }
@@ -629,7 +631,108 @@ object AgentTools {
 
     private val toolTagRegex = Regex("<tool_call>\\s*(\\{[\\s\\S]*?\\})\\s*</tool_call>")
 
-    fun parse(reply: String): ParsedToolCall? {
+    /** Strict parse first; if the JSON is broken (big nested slide JSON often is) try to salvage name + title + every complete slide. */
+    fun parse(reply: String): ParsedToolCall? =
+        parseStrict(reply) ?: if (looksLikeToolCall(reply)) salvage(reply) else null
+
+    /** True when the reply is an attempt at a tool call, even if its JSON is broken. */
+    fun looksLikeToolCall(reply: String): Boolean {
+        val t = reply.trim()
+        if (t.contains("<tool_call>")) return true
+        val body = t.removePrefix("```json").removePrefix("```JSON").removePrefix("```").trim()
+        return body.startsWith("{") && body.contains("\"args\"") &&
+            Regex("\"name\"\\s*:\\s*\"[A-Za-z0-9_]+\"").containsMatchIn(body)
+    }
+
+    private val SALVAGE_TOOLS = setOf("create_html_slides", "create_slide_deck", "add_chart", "update_chart")
+
+    private fun salvage(reply: String): ParsedToolCall? {
+        val start = reply.indexOf("<tool_call>")
+        val body = (if (start >= 0) reply.substring(start + "<tool_call>".length) else reply).substringBefore("</tool_call>")
+        val name = Regex("\"name\"\\s*:\\s*\"([A-Za-z0-9_]+)\"").find(body)?.groupValues?.get(1) ?: return null
+        if (name !in SALVAGE_TOOLS) return null
+        val args = JSONObject()
+        for (k in listOf("title", "theme", "accent_color", "type", "chart_type", "unit", "subtitle")) {
+            Regex("\"$k\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(body)?.groupValues?.get(1)?.let { v -> args.put(k, unescapeJson(v)) }
+        }
+        val key = listOf("slides_json", "slides", "items", "data").firstOrNull { body.contains("\"$it\"") } ?: return null
+        var i = body.indexOf("\"$key\"") + key.length + 2
+        while (i < body.length && (body[i] == ':' || body[i].isWhitespace())) i++
+        if (i >= body.length) return null
+        val payload: String = if (body[i] == '"') {
+            // the model wrote the JSON as an escaped string: read to the closing quote, then unescape it
+            val sb = StringBuilder()
+            var j = i + 1
+            while (j < body.length) {
+                val c = body[j]
+                if (c == '\\' && j + 1 < body.length) { sb.append(c).append(body[j + 1]); j += 2; continue }
+                if (c == '"') break
+                sb.append(c); j++
+            }
+            unescapeJson(sb.toString())
+        } else body.substring(i)
+        val arr = salvageObjects(payload)
+        if (arr.length() == 0) return null
+        args.put(if (name == "add_chart" || name == "update_chart") "items" else "slides", arr)
+        return ParsedToolCall(name = name, args = args, textBefore = if (start > 0) reply.substring(0, start).trim() else "")
+    }
+
+    private fun unescapeJson(s: String): String {
+        val sb = StringBuilder()
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '\\' && i + 1 < s.length) {
+                when (val n = s[i + 1]) {
+                    'n' -> sb.append('\n')
+                    't' -> sb.append('\t')
+                    'r' -> {}
+                    'u' -> if (i + 5 < s.length) { runCatching { sb.append(s.substring(i + 2, i + 6).toInt(16).toChar()) }; i += 4 }
+                    else -> sb.append(n)
+                }
+                i += 2
+            } else { sb.append(c); i++ }
+        }
+        return sb.toString()
+    }
+
+    /** Collects every COMPLETE top-level {...} object of the first array in the text (a cut-off last object is dropped). */
+    private fun salvageObjects(text: String): JSONArray {
+        val out = JSONArray()
+        val s = text
+        var from = -1
+        if (s.trimStart().startsWith("{")) {
+            val si = s.indexOf("\"slides\"")
+            if (si >= 0) from = s.indexOf('[', si)
+        } else from = s.indexOf('[')
+        if (from < 0) return out
+        var depth = 0; var inStr = false; var esc = false; var objStart = -1
+        var p = from + 1
+        while (p < s.length) {
+            val c = s[p]
+            if (inStr) {
+                if (esc) esc = false else if (c == '\\') esc = true else if (c == '"') inStr = false
+            } else when (c) {
+                '"' -> inStr = true
+                '{' -> { if (depth == 0) objStart = p; depth++ }
+                '}' -> if (depth > 0) {
+                    depth--
+                    if (depth == 0 && objStart >= 0) {
+                        val piece = s.substring(objStart, p + 1)
+                        val obj = runCatching { JSONObject(piece) }.getOrNull()
+                            ?: runCatching { JSONObject(piece.replace(Regex(",\\s*([}\\]])"), "$1")) }.getOrNull()
+                        if (obj != null) out.put(obj)
+                        objStart = -1
+                    }
+                }
+                ']' -> if (depth == 0) return out
+            }
+            p++
+        }
+        return out
+    }
+
+    private fun parseStrict(reply: String): ParsedToolCall? {
         val m = toolTagRegex.find(reply)
         if (m != null) {
             return try {

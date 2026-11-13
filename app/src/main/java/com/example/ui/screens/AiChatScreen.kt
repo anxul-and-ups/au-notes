@@ -1643,7 +1643,7 @@ fun AiChatScreen(
                 val title = args.optString("title", "Slides").trim().ifBlank { "Slides" }
                 val slidesArr = args.optJSONArray("slides") ?: org.json.JSONArray()
                 if (slidesArr.length() == 0) {
-                    ToolOutcome("NOT DONE: slides_json was empty or not valid JSON. Send slides_json as one JSON array.")
+                    ToolOutcome("NOT DONE: no valid slides were received. Call create_html_slides again with slides_json written as a valid inline JSON array. Do NOT paste the JSON in chat.")
                 } else {
                     val fullHtml = com.example.data.ai.HtmlSlides.build(
                         title, slidesArr, args.optString("theme", "paper"), args.optString("accent_color", "")
@@ -2278,6 +2278,7 @@ fun AiChatScreen(
                 var results: List<NoteEntity>? = null
                 var pending: PendingAiAction? = null
                 var steps = 0
+                var toolRepairTries = 0
                 while (true) {
                     stepRunning(if (steps == 0) "Thinking & planning response" else "Preparing next action")
                     val reply = aiService.chatOnce(
@@ -2294,6 +2295,24 @@ fun AiChatScreen(
                     val isReplyError = reply.startsWith("Error:") || reply.startsWith("⚠️")
                     stepFinish(!isReplyError)
                     val call = if (enabled.isNotEmpty() && !isReplyError) AgentTools.parse(reply) else null
+                    if (call == null && enabled.isNotEmpty() && !isReplyError && AgentTools.looksLikeToolCall(reply)) {
+                        // The model tried to call a tool but its JSON was broken. Never show that JSON to the user:
+                        // ask the model to resend it correctly (max 2 times), then fall back to a friendly message.
+                        if (toolRepairTries < 2) {
+                            toolRepairTries++
+                            turns.add(ConversationTurn("user", prompt))
+                            turns.add(ConversationTurn("bot", reply.take(1500)))
+                            prompt = "[TOOL CALL ERROR]\nYour last <tool_call> contained invalid JSON, so nothing was created. " +
+                                "Send the SAME tool call again with VALID JSON: write the slides/items directly as an inline JSON array inside args " +
+                                "(not as a quoted string), escape every double quote used inside text as \\\", no trailing commas, no comments. " +
+                                "Keep each bullet short. Output ONLY the <tool_call>...</tool_call>, nothing else."
+                            images = emptyList()
+                            continue
+                        } else {
+                            finalText = "⚠️ Tool call galat format me aa gaya (JSON toot gaya), isliye kuch bana nahi. Ek baar phir se bolo, ya slides kam rakhne ko bolo."
+                            break
+                        }
+                    }
                     if (call == null) { finalText = reply; break }
                     if (steps >= 12) { finalText = call.textBefore.ifBlank { "Done! I have completed the requested actions." }; break }
                     steps++
