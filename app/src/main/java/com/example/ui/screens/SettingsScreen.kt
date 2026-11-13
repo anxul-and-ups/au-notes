@@ -289,6 +289,46 @@ fun SettingsScreen(
                 }
             }
 
+            // Floating Window Overlay Setting
+            GlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                isDarkMode = isDarkMode,
+                elevation = 3.dp,
+                onClick = {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && !android.provider.Settings.canDrawOverlays(context)) {
+                        val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + context.packageName))
+                        context.startActivity(intent)
+                        android.widget.Toast.makeText(context, "Please enable Overlay Permission for Floating Window", android.widget.Toast.LENGTH_LONG).show()
+                    } else {
+                        val intent = android.content.Intent(context, com.example.ui.util.FloatingWindowService::class.java)
+                        context.startService(intent)
+                        android.widget.Toast.makeText(context, "Floating Window started! Tap bubble to open app.", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF10B981).copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(androidx.compose.material.icons.Icons.Default.Visibility, null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text("Floating Window", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                            Text("Quick overlay bubble across apps", fontSize = 11.sp, color = Color(0xFF10B981))
+                        }
+                    }
+                    Icon(Icons.Default.ChevronRight, null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
+                }
+            }
+
             Spacer(modifier = Modifier.height(10.dp))
 
             // Theme Settings (day / dark / system + custom photo background)
