@@ -630,18 +630,53 @@ object AgentTools {
     private val toolTagRegex = Regex("<tool_call>\\s*(\\{[\\s\\S]*?\\})\\s*</tool_call>")
 
     fun parse(reply: String): ParsedToolCall? {
-        val m = toolTagRegex.find(reply) ?: return null
-        return try {
-            val obj = JSONObject(m.groupValues[1])
-            val name = obj.optString("name").trim()
-            if (name.isBlank()) null
-            else ParsedToolCall(
-                name = name,
-                args = obj.optJSONObject("args") ?: JSONObject(),
-                textBefore = reply.substring(0, m.range.first).trim()
-            )
-        } catch (_: Exception) {
-            null
+        val m = toolTagRegex.find(reply)
+        if (m != null) {
+            return try {
+                val obj = JSONObject(m.groupValues[1])
+                val name = obj.optString("name").trim()
+                if (name.isBlank()) null
+                else ParsedToolCall(
+                    name = name,
+                    args = obj.optJSONObject("args") ?: obj.optJSONObject("arguments") ?: JSONObject(),
+                    textBefore = reply.substring(0, m.range.first).trim()
+                )
+            } catch (_: Exception) {
+                null
+            }
         }
+
+        var t = reply.trim()
+        if (t.startsWith("```")) {
+            t = t.removePrefix("```json").removePrefix("```JSON").removePrefix("```").removeSuffix("```").trim()
+        }
+
+        val firstBrace = t.indexOf('{')
+        val lastBrace = t.lastIndexOf('}')
+        if (firstBrace >= 0 && lastBrace > firstBrace) {
+            val jsonStr = t.substring(firstBrace, lastBrace + 1)
+            return try {
+                val obj = JSONObject(jsonStr)
+                val name = obj.optString("name").trim()
+                if (name.isBlank()) {
+                    null
+                } else {
+                    val argsObj = obj.optJSONObject("args") ?: obj.optJSONObject("arguments") ?: run {
+                        val a = JSONObject(jsonStr)
+                        a.remove("name")
+                        a
+                    }
+                    val textBefore = if (firstBrace > 0) t.substring(0, firstBrace).trim() else ""
+                    ParsedToolCall(
+                        name = name,
+                        args = argsObj,
+                        textBefore = textBefore
+                    )
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+        return null
     }
 }
