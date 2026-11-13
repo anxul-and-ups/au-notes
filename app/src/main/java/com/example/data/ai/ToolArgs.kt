@@ -58,8 +58,31 @@ object ToolArgs {
 
     private fun parse(s: String): Any? {
         var t = s.trim()
-        if (t.startsWith("```")) t = t.removePrefix("```json").removePrefix("```JSON").removePrefix("```").removeSuffix("```").trim()
+        if (t.startsWith("```")) {
+            t = t.removePrefix("```json").removePrefix("```JSON").removePrefix("```").removeSuffix("```").trim()
+        }
+        val firstBrack = t.indexOf('[')
+        val firstBrace = t.indexOf('{')
+        if (firstBrack >= 0 && (firstBrace < 0 || firstBrack < firstBrace)) {
+            val lastBrack = t.lastIndexOf(']')
+            if (lastBrack > firstBrack) {
+                t = t.substring(firstBrack, lastBrack + 1)
+            }
+        } else if (firstBrace >= 0) {
+            val lastBrace = t.lastIndexOf('}')
+            if (lastBrace > firstBrace) {
+                t = t.substring(firstBrace, lastBrace + 1)
+            }
+        }
+        val cleaned = t.replace(Regex(",\\s*([}\\]])"), "$1")
+
         return runCatching {
+            when {
+                cleaned.startsWith("[") -> JSONArray(cleaned)
+                cleaned.startsWith("{") -> JSONObject(cleaned)
+                else -> null
+            }
+        }.getOrNull() ?: runCatching {
             when {
                 t.startsWith("[") -> JSONArray(t)
                 t.startsWith("{") -> JSONObject(t)
