@@ -289,6 +289,9 @@ fun MyDocumentsScreen(
         }
     }
 
+    var renamingFile by remember { mutableStateOf<File?>(null) }
+    var renameInput by remember { mutableStateOf("") }
+
     // Long-press / ⋮ menu
     menuFor?.let { f ->
         AlertDialog(
@@ -296,7 +299,14 @@ fun MyDocumentsScreen(
             title = { Text(f.name, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) },
             text = { Text("${MyDocuments.humanSize(f.length())} • Stored safely in My Documents", fontSize = 12.sp) },
             confirmButton = {
-                TextButton(onClick = { shareDocument(context, f); menuFor = null }) { Text("Share") }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        renameInput = f.nameWithoutExtension
+                        renamingFile = f
+                        menuFor = null
+                    }) { Text("Rename", color = CrimsonPrimary, fontWeight = FontWeight.Bold) }
+                    TextButton(onClick = { shareDocument(context, f); menuFor = null }) { Text("Share") }
+                }
             },
             dismissButton = {
                 Row {
@@ -308,6 +318,48 @@ fun MyDocumentsScreen(
                     }) { Text("Remove", color = Color(0xFFEF4444)) }
                     TextButton(onClick = { menuFor = null }) { Text("Close") }
                 }
+            }
+        )
+    }
+
+    renamingFile?.let { targetFile ->
+        AlertDialog(
+            onDismissRequest = { renamingFile = null },
+            title = { Text("Rename Document", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Extension (.${targetFile.extension}) will be kept automatically if omitted.",
+                        fontSize = 11.5.sp,
+                        color = sub
+                    )
+                    OutlinedTextField(
+                        value = renameInput,
+                        onValueChange = { renameInput = it },
+                        label = { Text("File name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val renamed = MyDocuments.rename(context, targetFile, renameInput)
+                        renamingFile = null
+                        refresh()
+                        Toast.makeText(
+                            context,
+                            if (renamed != null) "Renamed to ${renamed.name}" else "Could not rename file",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                ) {
+                    Text("Save Name", color = CrimsonPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renamingFile = null }) { Text("Cancel") }
             }
         )
     }

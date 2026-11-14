@@ -1,0 +1,206 @@
+master upgrade prompt
+==================
+aisa kar ye slide deck wala feature abhi remove hi karde aur aisa karde ki ye html artifact ready kiya kare matlb ek html page multiple pages type using users context 
+
+agar user ne koi pdf diya hai to use beautiful explained html website mean page me render karde aur vahi se sahi se preview le sake user 
+
+aur isme ye bug hai ki  kabhbi kabhi koi model note create nahi karta na edit karta hai 
+kabhi kabhi sirf khali note bana deta hai fir models change karne padte hain to yahi sab hai yrr
+
+
+aur fir use edit bhi nahi karta 
+
+aur ye hatade jo tools ka option hai use vahan se remove karde aur note wala option work nahi kar rha note attatch  nahi hote 
+
+aur agent ka response live show ho  ki kya coding kar rha hai kaunsa kaam kar rha hai kya code likh rha hai jisse user ko pata chalta rhe ki ye stuck ya loop me nahi fasa hai 
+
+
+aur abhi abhi bade bade context per fail ho jata hai ye 
+
+aur abhi ye app vaha per show nahi hota  open with per 
+
+like mere files app me koi document hai aur use other app se open karta hu to vaha z archiver deep seek chatgpt ye aa jate hain lekin apna app nai ata 
+
+to yha app show hona chahiye 
+
+
+aur file editor ko ekdam master level bana 
+vo sari chije hatade jo abhi hain 
+usme sirf files wala icon ho jis per tap karne se files import ho jaye aur vo ek proper note editor me open ho matlab note me save na ho bas note editor me open ho 
+
+
+aur edit karne per save karne per uska main ui vaisa hoga jaise ki my documents ka ui hai 
+vaha per edited files hogi jaha se file name rename kiya ja sake my documents me save kia ja sake aur notes me bhi save Kiya ja sake aur aisa bhi kar dena ki jo my documents ka feature hai usme bhi file rename ho sake 
+
+
+
+aur jo agent chat screen hai uske andar ka jo sidebar hai usme jaha pe api ke models show hote hain vo box bada hai use collapse ka aur vaisa option rakh jisse size vaisa hi sake qki ye kafi jagah leta hai 
+
+aur chat rename ho sake 
+
+aur vo tool ka off karde remove karde jisme show hota hai create nte edit note is sab ka permission bot ko dena vo hata de 
+
+
+
+aur html ka screen kaam hi nahi kar rha agar bot koi html artifact ready karre to bhaut bekar screen me dikhta hai ise bhi fix kar 
+
+
+aur jo mainscreen per side bar haii jisme sabse niche ANXUL persnol vfx ya jo likha hua hai use remove kar aur vaha per developer contacts set karde 
+
+
+aur side bar me se settings ka option remove karde aur recycle bin ka aur voice command ka bhi 
+
+aur aisa kar  jo accountant wala feature hai use overwrite kar matlab 
+
+doodh vagaira ka hisab nahi karna ye sab khatm kar 
+
+ab ais karna hai ki 
+
+logo ka hisab kitab usme karna hai 
+
+kisko kab rupay diye kitne diye kyu diye uska name uska number 
+lekin ye sab ekdam organized hona chahiye 
+
+
+ab ye nahi pta ki ye kaisa hoga 
+
+and ek dashboard per paise ka hisab total type 
+
+and sabse jyada kis per udhar hain 
+
+and ek page per kab kisse liye 
+
+aur jaha jisne udhar liye hain 
+fir usne agar vo lauta diya to cancel karne ka option and kab lauta diya 
+
+matlab ekdam master level ka hona chahiye ye feature 
+
+aur jaha note me readmode me jo i wala icon hai jiske andar ye info milti hai ki kitne words ya character ye etc hain to vaha per ye bhi add kar ki kitne characters directly pasted hain ye note kitne times open hua hai aur kitni der ke liye open hua hai kis date kis time ko kitni typing hui hai 
+kitne characters words likhe hain 
+ye sab ek new screen per dikhne chahiye 
+
+and settings ke andar sari main settings upar rahini chahiye 
+aur ye jo native optioin hai ise remove kar sirf  open mini overlay rhnede 
+
+aur json wala option bhi iske andar se nikal de aur 
+recycle bin hi name rakh uska trash bin mat kar 
+
+
+and alarm set karne ka feature bhi ekdam advanced rakh 
+
+aur jo sidebar per alarm ki red light blink karti hai use alarm me jakar off bhi kiya ja sake 
+
+and alarm set karne ka ui ekdam advanced bana de 
+
+aur jo sidebar ke andar alarm hai uska hui bhi usme show hona chahiye note card me ki kis note ka alarm kab hia aur jaha per device files show hoti hain alarm per lagane ke liye 
+uska ui advanced rakh aur search option bhi daal aur jaha se timer set karte hain vo samjh nahi ata 
+
+uska vo easy peasy style rakh
+
+and ye bhi abhi bhaut der leta hai agent reply Dene 
+
+
+aur agar jo mice hai chat box me jaha se use karke chat box me bola jata hai use aisa kar vo  blue color ka open na hokar vahi open hua kare jisse voice agent bhi sunta hai 
+aur tab stop hua kare jab me stop kiya karu 
+aur ek mast sa premuim animation bana kar mic use karte time koi jyda neon ai type design nahi 
+
+
+
+aur jo html viewer hai uska design pura hi palat de 
+
+ye abhi work nahi karta to aisa kar ise aisa bana html js css ka ya jo use karna hai uska use karke ye har code render kar sake
+
+and isme zoom vagiara ka option rakh full page me open karne ka 
+aur baki sare options remove karde bas rakh
+
+import from notes and import from file 
+
+aur preview puri screen per sahi se zoom vagiara ho sake 
+
+
+aur agar app me aisa koi feature hai j net se chalta hai and user ne use bina data ke open kar diya toh app crash hone ki jagah
+
+network error wala info show  kare 
+
+aur mainscreen ka jo sidebar hai use close ya open karne per bekar sa animation create hota hai use fix karke aisa kar ek mast sa ios like side  pop up type animation create hua kare 
+
+
+aur landscape mode me bhi app ke sare feature work karne chahiye 
+
+aur note write mode ke andar jo copy box hai vo ekdam hardcore aur accurate nahi agar me remove kardu toh pura gayab ho jata hai aur comma etc show hone lagte hain
+aur write karte time starting ke words  usme upar ghush jate hain 
+
+and title bhii shi se edit nahi ho pata 
+
+aur agar ye bana diya toh niche likhne ka option hi nahi rhta kahi tap hi nahi hota 
+
+to fas jata hu fir 
+ye jab remove hota hai  agar kasie bhi karke me iske niche aa gaya toh fir 
+
+text remove karunga toh ye bhi text me change ho jata hai 
+
+and aisa hi same image ke sath hota hai agar koi image note me laga di to uske side ya up down likhne ki jagah hi nahi rhti hai 
+
+
+and ek brand new image control bar create karo jaise alight motion editing app me hai 
+ek button jisse size bada chota ho sake and ek button jisse app idhar udhar ho sake 
+
+
+
+aur settings ke andar jo native voice aur ai voice ka option hai jisse ye select Kiya jata hai ki note ki voice me red hoga use off kardo aur native default rhne do 
+
+
+aur jaha per write mode me tools hai usme aur usme jo options hain 
+unme ek option hai capital T aur us per cross hai t italic me hai uska koi kaam nahi hai use remove kardo 
+
+and yahi per ek pencil icon draw wala advanced feature add kardo
+
+
+aur sabse main feature ki ek aisa feature craete karo page wala jaisa real notebooks me hota hai 
+
+white page aur lines vagiara per user sahi se likh sake ekdam ms word jaisa 
+
+
+
+and mainscreen per jo note search option hai aur uske barabar me jo deep ka option hai vo tabhi show hona chahiye jab 
+us search per tap kar diya ho 
+
+
+note me readmode ke andar bhi ek search ka option ho uske andar copy wala button remove karke search icon add karo jisse us note ke andar ka search Kiya ja sake and dono ke searched advanced hone chhahye jaise chrome me hota hai ki isse kitne words hain arrow ka use karke up down ho sake vahi words highlight ho sake 
+
+
+and readmode me nomral tap karke rakhte hain kisi word vagiara per chrome me aur us per select hone lgta hai copy vagiara wala to vo idhar bhi enable kar dena 
+
+and jab kisi cheej per lock dalte hain to lock screen bekar si hai aur 3 buttons tak pata lagta hai ki vo dala hai ya nahi code 
+
+aur jo sequirty area ke andar jo pin change ka option hai vaha per current pin na maga kare sirf new pin mage proffesniol screen ho iski bhi 
+new pin then uske baad alag screen yajo bhi ho fir confirm pin 
+and aisa hi sequirty question ke sath acha sa screen 
+
+and alarm ka dekh lena ki kaise kya hota hai kab bajna hai kitni der ka stop matlab jo ek proffesniol alarm me hota hai 
+
+
+and mainly coding knowledge ka khaas dhyaan rkhna model apne server ki badhiya coding ka use kare 
+
+
+and har model har tool call kar sake 
+
+and jo ye screen per dikhne wala laga rakhe hain 
+create md create slide 
+
+aagar user in per tap karta hai to bot ka reply aaye english me ki kis cheej  per banana  chahta he 
+
+
+aur agar user ne englsh me coversation start ki hai to agent bhi english ka hi user kare 
+aur agar hindi me  ki hai to hindi me 
+aur jab  user use kahe ki ab is langauge me baat karo like hinglish ya english to use mi baat kare 
+
+
+and jaha se chat send karte hain vaha se search mode bhi remove karde 
+
+
+and agar note write karte time jyada image ya ki long image add karliya hia toh 
+
+note end Tak scroll hi nai hota and ab toh pdf me images bhi render nahi ho rahin 
+
+export karne per sab blanck show hota hai 

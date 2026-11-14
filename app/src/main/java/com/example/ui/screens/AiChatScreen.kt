@@ -1201,25 +1201,43 @@ fun AiChatScreen(
             }
             "list_folders" -> ToolOutcome((systemFolders + preferences.customFolders.value).joinToString(", "))
             "create_note" -> {
-                val title = args.optString("title", "Untitled Note")
-                val content = args.optString("content", "")
-                val category = args.optString("category", "General")
-                val folderArg = args.optString("folder", "").trim()
-                var rich = NoteAgentFormatter.convertToRichNote(content, defaultTitle = title, forcedCategory = category)
-                val folderMatch = (systemFolders + preferences.customFolders.value).find { it.equals(folderArg, true) }
-                if (folderMatch != null) rich = rich.copy(folder = folderMatch, originalFolder = folderMatch)
-                val newId = repository.saveNote(rich)
-                val saved = repository.getNoteByIdOnce(newId)
-                if (saved != null) trackNote(saved)
-                ToolOutcome("Created note id=$newId title=\"${rich.title}\".", noteResults = saved?.let { listOf(it) })
+                val title = args.optString("title", "Untitled Note").trim().ifBlank { "Untitled Note" }
+                val content = sequenceOf(
+                    args.optString("content", ""),
+                    args.optString("body", ""),
+                    args.optString("text", ""),
+                    args.optString("markdown", ""),
+                    args.optString("code", ""),
+                    args.optString("new_content", "")
+                ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                if (content.isBlank()) {
+                    ToolOutcome("NOT DONE: 'content' was empty. Call create_note again and pass the FULL note body/code inside the 'content' parameter.")
+                } else {
+                    val category = args.optString("category", "General")
+                    val folderArg = args.optString("folder", "").trim()
+                    var rich = NoteAgentFormatter.convertToRichNote(content, defaultTitle = title, forcedCategory = category)
+                    val folderMatch = (systemFolders + preferences.customFolders.value).find { it.equals(folderArg, true) }
+                    if (folderMatch != null) rich = rich.copy(folder = folderMatch, originalFolder = folderMatch)
+                    val newId = repository.saveNote(rich)
+                    val saved = repository.getNoteByIdOnce(newId)
+                    if (saved != null) trackNote(saved)
+                    ToolOutcome("Created note id=$newId title=\"${rich.title}\" (${rich.content.length} chars).", noteResults = saved?.let { listOf(it) })
+                }
             }
             "edit_note" -> {
                 val target = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
-                val newContent = args.optString("new_content", "")
+                val newContent = sequenceOf(
+                    args.optString("new_content", ""),
+                    args.optString("content", ""),
+                    args.optString("body", ""),
+                    args.optString("text", ""),
+                    args.optString("markdown", ""),
+                    args.optString("code", "")
+                ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
                 val append = args.optString("mode", "replace").equals("append", true)
                 when {
                     target == null || !agentVisible(target) -> ToolOutcome("Note not found or not accessible. Use search_notes to get a valid id.")
-                    newContent.isBlank() -> ToolOutcome("new_content was empty — ask the user what to change.")
+                    newContent.isBlank() -> ToolOutcome("NOT DONE: new_content was empty. Call edit_note again with the full content inside 'new_content'.")
                     else -> {
                         val rich = NoteAgentFormatter.convertToRichNote(newContent, defaultTitle = target.title)
                         val updated = if (append) {
@@ -1760,50 +1778,75 @@ fun AiChatScreen(
                 val unit = args.optString("unit", "").trim()
                 val noteIdArg = args.optLong("note_id", -1L).takeIf { it > 0 }
                 val addToNote = args.optBoolean("add_to_note", false) || noteIdArg != null
+                val seriesArr = args.optJSONArray("series")
+                val categoriesArr = args.optJSONArray("categories") ?: args.optJSONArray("labels")
                 val itemsArr = args.optJSONArray("items") ?: args.optJSONArray("data") ?: org.json.JSONArray()
-                val validTypes = setOf("bar", "pie", "line", "table", "blocks", "timeline", "pyramid")
+                val validTypes = setOf("bar", "pie", "line", "area", "donut", "radar", "column", "table", "blocks", "timeline", "pyramid")
                 if (type !in validTypes) {
-                    ToolOutcome("NOT DONE: Invalid chart type '$type'. Must be one of: bar, pie, line, table, blocks, timeline, pyramid.")
-                } else if (itemsArr.length() == 0) {
-                    ToolOutcome("NOT DONE: Chart items array cannot be empty.")
+                    ToolOutcome("NOT DONE: Invalid chart type '$type'. Must be one of: bar, line, area, pie, donut, radar, table, blocks, timeline, pyramid.")
+                } else if (itemsArr.length() == 0 && (seriesArr == null || seriesArr.length() == 0)) {
+                    ToolOutcome("NOT DONE: Chart items or series array cannot be empty.")
                 } else {
                     val labels = org.json.JSONArray()
                     val values = org.json.JSONArray()
                     val normalizedItems = org.json.JSONArray()
-                    for (i in 0 until itemsArr.length()) {
-                        val obj = itemsArr.optJSONObject(i) ?: continue
-                        val lbl = obj.optString("label", "Item ${i + 1}").trim()
-                        val v = obj.optDouble("value", 0.0).let { if (it.isNaN() || it < 0.0) 0.0 else it }
-                        labels.put(lbl)
-                        values.put(v)
-                        normalizedItems.put(org.json.JSONObject().apply {
-                            put("label", lbl)
-                            put("value", v)
-                            val icon = obj.optString("icon", "").trim()
-                            if (icon.isNotBlank()) put("icon", icon)
-                            val color = obj.optString("color", "").trim()
-                            if (color.isNotBlank()) put("color", color)
-                            val desc = obj.optString("description", obj.optString("subtitle", "")).trim()
-                            if (desc.isNotBlank()) {
-                                put("description", desc)
-                                put("subtitle", desc)
-                            }
-                        })
+                    if (itemsArr.length() > 0) {
+                        for (i in 0 until itemsArr.length()) {
+                            val obj = itemsArr.optJSONObject(i) ?: continue
+                            val lbl = obj.optString("label", "Item ${i + 1}").trim()
+                            val v = obj.optDouble("value", 0.0).let { if (it.isNaN() || it < 0.0) 0.0 else it }
+                            labels.put(lbl)
+                            values.put(v)
+                            normalizedItems.put(org.json.JSONObject().apply {
+                                put("label", lbl)
+                                put("value", v)
+                                val icon = obj.optString("icon", "").trim()
+                                if (icon.isNotBlank()) put("icon", icon)
+                                val color = obj.optString("color", "").trim()
+                                if (color.isNotBlank()) put("color", color)
+                                val desc = obj.optString("description", obj.optString("subtitle", "")).trim()
+                                if (desc.isNotBlank()) {
+                                    put("description", desc)
+                                    put("subtitle", desc)
+                                }
+                            })
+                        }
+                    } else if (seriesArr != null && seriesArr.length() > 0) {
+                        val firstSeries = seriesArr.optJSONObject(0)?.optJSONArray("data") ?: org.json.JSONArray()
+                        for (i in 0 until firstSeries.length()) {
+                            val lbl = categoriesArr?.optString(i)?.takeIf { it.isNotBlank() } ?: "Item ${i + 1}"
+                            val v = firstSeries.optDouble(i, 0.0).let { if (it.isNaN()) 0.0 else it }
+                            labels.put(lbl)
+                            values.put(v)
+                            normalizedItems.put(org.json.JSONObject().apply {
+                                put("label", lbl)
+                                put("value", v)
+                            })
+                        }
                     }
                     val chartJson = org.json.JSONObject().apply {
                         put("type", type)
                         put("title", title)
                         if (subtitle.isNotBlank()) put("subtitle", subtitle)
                         if (unit.isNotBlank()) put("unit", unit)
+                        if (categoriesArr != null) put("categories", categoriesArr) else put("categories", labels)
+                        if (seriesArr != null) {
+                            put("series", seriesArr)
+                        } else {
+                            put("series", org.json.JSONArray().put(org.json.JSONObject().apply {
+                                put("name", title)
+                                put("data", values)
+                            }))
+                        }
                         put("labels", labels)
                         put("values", values)
                         put("items", normalizedItems)
                     }
-                    latestArtifactBlocks.add("\n```chart\n${chartJson.toString(2)}\n```\n")
+                    latestArtifactBlocks.add("\n```json:apex\n${chartJson.toString(2)}\n```\n")
                     var noteOut: ToolOutcome? = null
                     if (addToNote) {
                         noteOut = insertMarkdownBlockIntoTargetNote(
-                            fenceLang = "chart",
+                            fenceLang = "json:apex",
                             blockBody = chartJson.toString(2),
                             defaultTitle = title,
                             targetNoteId = noteIdArg,
@@ -1812,7 +1855,7 @@ fun AiChatScreen(
                         )
                     }
                     ToolOutcome(
-                        "DONE: Rendered editorial $type chart \"$title\" (${normalizedItems.length()} items) in chat${if (noteOut != null) " and embedded live inside the note" else ""}.",
+                        "DONE: Rendered interactive ApexCharts $type chart \"$title\" (${normalizedItems.length()} data points) in chat${if (noteOut != null) " and embedded live inside the note" else ""}.",
                         noteResults = noteOut?.noteResults
                     )
                 }
@@ -2424,6 +2467,12 @@ fun AiChatScreen(
                     finalText.contains("```slides") ||
                     finalText.contains("```typography_slides") ||
                     finalText.contains("```chart") ||
+                    finalText.contains("```json:apex") ||
+                    finalText.contains("```apex") ||
+                    finalText.contains("```mermaid") ||
+                    finalText.contains("```flowchart") ||
+                    finalText.contains("```mindmap") ||
+                    finalText.contains("```sequence") ||
                     finalText.contains("```diagram") ||
                     finalText.contains("```organised_file") ||
                     finalText.contains("```html") ||
@@ -3555,7 +3604,7 @@ fun AiChatScreen(
                                         }
                                 )
 
-                                // Bottom Control Row: [+] [Tools] [SEARCH Mode Toggle Pill] [Notes Picker Icon] ------ [Mic] [Waveform / Send]
+                                // Bottom Control Row: [+] [Notes Picker Icon] ------ [Mic] [Waveform / Send]
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -3565,7 +3614,7 @@ fun AiChatScreen(
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         // Circular + attachment button
                                         Box(
@@ -3586,69 +3635,7 @@ fun AiChatScreen(
                                             )
                                         }
 
-                                        // Agent Tools button
-                                        Box(
-                                            modifier = Modifier
-                                                .size(38.dp)
-                                                .clip(CircleShape)
-                                                .background(if (isDarkMode) Color(0xFF28282F) else Color(0xFFEEECE6))
-                                                .clickable { showToolsSheet = true },
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Tune,
-                                                contentDescription = "Configure Agent Tools",
-                                                tint = if (isDarkMode) Color(0xFFE4E4E7) else Color(0xFF27272A),
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-
-                                        // Dedicated SEARCH Mode ON/OFF Toggle Pill in the Chat Action Bar
-                                        Row(
-                                            modifier = Modifier
-                                                .height(38.dp)
-                                                .clip(RoundedCornerShape(19.dp))
-                                                .background(
-                                                    if (searchModeEnabled) Color(0xFFD97757)
-                                                    else if (isDarkMode) Color(0xFF28282F)
-                                                    else Color(0xFFEEECE6)
-                                                )
-                                                .border(
-                                                    width = if (searchModeEnabled) 0.dp else 1.dp,
-                                                    color = if (searchModeEnabled) Color.Transparent
-                                                    else if (isDarkMode) Color(0x26FFFFFF) else Color(0x16000000),
-                                                    shape = RoundedCornerShape(19.dp)
-                                                )
-                                                .clickable {
-                                                    val next = !searchModeEnabled
-                                                    preferences.setSearchModeEnabled(next)
-                                                    Toast.makeText(
-                                                        context,
-                                                        if (next) "SEARCH Mode ON: Smart web search enabled" else "SEARCH Mode OFF: Fast knowledge & tools mode",
-                                                        Toast.LENGTH_SHORT
-                                                    ).show()
-                                                }
-                                                .padding(horizontal = 11.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Language,
-                                                contentDescription = "Toggle Web Search Mode",
-                                                tint = if (searchModeEnabled) Color.White
-                                                else if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
-                                                modifier = Modifier.size(15.dp)
-                                            )
-                                            Text(
-                                                text = if (searchModeEnabled) "SEARCH ON" else "Search",
-                                                fontSize = 11.5.sp,
-                                                fontWeight = if (searchModeEnabled) FontWeight.Bold else FontWeight.SemiBold,
-                                                color = if (searchModeEnabled) Color.White
-                                                else if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A)
-                                            )
-                                        }
-
-                                        // Notes Picker Icon Button right next to Search Mode
+                                        // Notes Picker Icon Button
                                         val hasAttachedNotes = attachedNotes.isNotEmpty()
                                         Row(
                                             modifier = Modifier
@@ -3666,9 +3653,9 @@ fun AiChatScreen(
                                                     shape = RoundedCornerShape(19.dp)
                                                 )
                                                 .clickable { showNoteAttachDialog = true }
-                                                .padding(horizontal = 10.dp),
+                                                .padding(horizontal = 12.dp),
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Description,
@@ -3677,14 +3664,13 @@ fun AiChatScreen(
                                                 else if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
                                                 modifier = Modifier.size(16.dp)
                                             )
-                                            if (hasAttachedNotes) {
-                                                Text(
-                                                    text = "${attachedNotes.size}",
-                                                    fontSize = 11.5.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color.White
-                                                )
-                                            }
+                                            Text(
+                                                text = if (hasAttachedNotes) "Notes (${attachedNotes.size})" else "Notes",
+                                                fontSize = 11.5.sp,
+                                                fontWeight = if (hasAttachedNotes) FontWeight.Bold else FontWeight.SemiBold,
+                                                color = if (hasAttachedNotes) Color.White
+                                                else if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A)
+                                            )
                                         }
                                     }
 
@@ -4296,8 +4282,9 @@ fun AiChatScreen(
                         }
                     }
 
-                    // 3. Multi-Provider Model Selector + Search Models + Live Refresh
+                    // 3. Multi-Provider Model Selector + Search Models + Live Refresh (Collapsible)
                     Spacer(modifier = Modifier.height(14.dp))
+                    var modelsSectionExpanded by remember { mutableStateOf(false) }
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -4307,17 +4294,41 @@ fun AiChatScreen(
                             .padding(14.dp)
                     ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { modelsSectionExpanded = !modelsSectionExpanded },
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "MODELS & PROVIDERS (${allProviderModels.size})",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.8.sp,
-                                color = secondaryInk
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = if (modelsSectionExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = if (modelsSectionExpanded) "Collapse Models" else "Expand Models",
+                                    tint = warmAccent,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Column {
+                                    Text(
+                                        text = "MODELS & PROVIDERS (${allProviderModels.size})",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 0.8.sp,
+                                        color = secondaryInk
+                                    )
+                                    Text(
+                                        text = if (activeModelForCurrentProvider != null) "$activeProvider • $activeModelForCurrentProvider" else activeProvider,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = primaryInk,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -4325,6 +4336,7 @@ fun AiChatScreen(
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(warmAccent.copy(alpha = 0.14f))
                                     .clickable(enabled = !isRefreshingSidebarModels) {
+                                        modelsSectionExpanded = true
                                         coroutineScope.launch {
                                             isRefreshingSidebarModels = true
                                             var totalFound = 0
@@ -4376,169 +4388,173 @@ fun AiChatScreen(
                             }
                         }
 
-                        // Provider filter chips (All + each configured provider like Token Harbour, Gemini, OpenRouter...)
-                        if (configuredProviders.size > 1) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                val filterTabs = listOf("All") + configuredProviders
-                                filterTabs.forEach { tab ->
-                                    val isTabSelected = sidebarProviderFilter.equals(tab, ignoreCase = true)
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(9.dp))
-                                            .background(
-                                                if (isTabSelected) warmAccent
-                                                else if (isDarkMode) Color(0xFF23232C)
-                                                else Color(0xFFEDEAE2)
-                                            )
-                                            .clickable {
-                                                sidebarProviderFilter = tab
-                                                if (tab != "All") {
-                                                    preferences.setActiveProvider(tab)
-                                                    val firstModel = detectedModelsMap[tab]?.firstOrNull()?.removePrefix("models/")
-                                                        ?: providerEntries[tab]?.model?.removePrefix("models/")
-                                                    if (!firstModel.isNullOrBlank()) {
-                                                        preferences.setSelectedModel(firstModel)
-                                                    }
-                                                }
-                                            }
-                                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                                    ) {
-                                        Text(
-                                            text = tab,
-                                            fontSize = 11.sp,
-                                            fontWeight = if (isTabSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isTabSelected) Color.White else primaryInk
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // Search Models Input Bar
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = sidebarModelSearchQuery,
-                            onValueChange = { sidebarModelSearchQuery = it },
-                            placeholder = {
-                                Text("Search models or provider...", fontSize = 11.5.sp, color = secondaryInk)
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Default.Search, contentDescription = null, tint = secondaryInk, modifier = Modifier.size(16.dp))
-                            },
-                            trailingIcon = {
-                                if (sidebarModelSearchQuery.isNotBlank()) {
-                                    IconButton(onClick = { sidebarModelSearchQuery = "" }, modifier = Modifier.size(22.dp)) {
-                                        Icon(Icons.Default.Close, contentDescription = "Clear search", tint = secondaryInk, modifier = Modifier.size(14.dp))
-                                    }
-                                }
-                            },
-                            singleLine = true,
-                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, color = primaryInk),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = warmAccent,
-                                unfocusedBorderColor = cardBorder,
-                                focusedContainerColor = if (isDarkMode) Color(0xFF202028) else Color(0xFFF7F5F0),
-                                unfocusedContainerColor = if (isDarkMode) Color(0xFF202028) else Color(0xFFF7F5F0)
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 44.dp)
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        val filteredModels = remember(allProviderModels, sidebarProviderFilter, sidebarModelSearchQuery) {
-                            allProviderModels.filter { (prov, mod) ->
-                                val matchesProv = sidebarProviderFilter == "All" || prov.equals(sidebarProviderFilter, ignoreCase = true)
-                                val q = sidebarModelSearchQuery.trim()
-                                val matchesQuery = q.isBlank() || mod.contains(q, ignoreCase = true) || prov.contains(q, ignoreCase = true)
-                                matchesProv && matchesQuery
-                            }
-                        }
-
-                        if (filteredModels.isEmpty()) {
-                            Text(
-                                text = if (allProviderModels.isEmpty()) "No models detected yet. Tap 'Detect' above or add your API key in API Room."
-                                else "No models matching \"$sidebarModelSearchQuery\".",
-                                fontSize = 11.5.sp,
-                                color = secondaryInk,
-                                modifier = Modifier.padding(vertical = 6.dp)
-                            )
-                        } else {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 230.dp)
-                                    .verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(5.dp)
-                            ) {
-                                filteredModels.forEach { (prov, m) ->
-                                    val isCurrent = activeProvider.equals(prov, ignoreCase = true) &&
-                                        activeModelForCurrentProvider?.equals(m, ignoreCase = true) == true
+                        AnimatedVisibility(visible = modelsSectionExpanded) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                // Provider filter chips (All + each configured provider like Token Harbour, Gemini, OpenRouter...)
+                                if (configuredProviders.size > 1) {
+                                    Spacer(modifier = Modifier.height(8.dp))
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(
-                                                if (isCurrent) warmAccent.copy(alpha = 0.16f)
-                                                else if (isDarkMode) Color(0xFF22222A)
-                                                else Color(0xFFF5F3EE)
-                                            )
-                                            .border(
-                                                width = if (isCurrent) 1.dp else 0.5.dp,
-                                                color = if (isCurrent) warmAccent else Color.Transparent,
-                                                shape = RoundedCornerShape(10.dp)
-                                            )
-                                            .clickable {
-                                                preferences.setActiveProvider(prov)
-                                                preferences.setSelectedModel(m)
-                                                if (prov != "Gemini") {
-                                                    val existing = providerEntries[prov]
-                                                    if (existing != null) {
-                                                        preferences.saveApiProvider(
-                                                            name = existing.name,
-                                                            apiKey = existing.apiKey,
-                                                            baseUrl = existing.baseUrl,
-                                                            model = m,
-                                                            isCustom = existing.isCustom
-                                                        )
-                                                    }
-                                                }
-                                                Toast.makeText(context, "Active: $prov • $m", Toast.LENGTH_SHORT).show()
-                                            }
-                                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                            .horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = m,
-                                                fontSize = 12.sp,
-                                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (isCurrent) warmAccent else primaryInk,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = prov,
-                                                fontSize = 9.5.sp,
-                                                color = secondaryInk,
-                                                maxLines = 1
-                                            )
+                                        val filterTabs = listOf("All") + configuredProviders
+                                        filterTabs.forEach { tab ->
+                                            val isTabSelected = sidebarProviderFilter.equals(tab, ignoreCase = true)
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(9.dp))
+                                                    .background(
+                                                        if (isTabSelected) warmAccent
+                                                        else if (isDarkMode) Color(0xFF23232C)
+                                                        else Color(0xFFEDEAE2)
+                                                    )
+                                                    .clickable {
+                                                        sidebarProviderFilter = tab
+                                                        if (tab != "All") {
+                                                            preferences.setActiveProvider(tab)
+                                                            val firstModel = detectedModelsMap[tab]?.firstOrNull()?.removePrefix("models/")
+                                                                ?: providerEntries[tab]?.model?.removePrefix("models/")
+                                                            if (!firstModel.isNullOrBlank()) {
+                                                                preferences.setSelectedModel(firstModel)
+                                                            }
+                                                        }
+                                                    }
+                                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                                            ) {
+                                                Text(
+                                                    text = tab,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = if (isTabSelected) FontWeight.Bold else FontWeight.Medium,
+                                                    color = if (isTabSelected) Color.White else primaryInk
+                                                )
+                                            }
                                         }
-                                        if (isCurrent) {
-                                            Icon(
-                                                imageVector = Icons.Default.CheckCircle,
-                                                contentDescription = "Selected Model",
-                                                tint = warmAccent,
-                                                modifier = Modifier.size(16.dp)
-                                            )
+                                    }
+                                }
+
+                                // Search Models Input Bar
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = sidebarModelSearchQuery,
+                                    onValueChange = { sidebarModelSearchQuery = it },
+                                    placeholder = {
+                                        Text("Search models or provider...", fontSize = 11.5.sp, color = secondaryInk)
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Search, contentDescription = null, tint = secondaryInk, modifier = Modifier.size(16.dp))
+                                    },
+                                    trailingIcon = {
+                                        if (sidebarModelSearchQuery.isNotBlank()) {
+                                            IconButton(onClick = { sidebarModelSearchQuery = "" }, modifier = Modifier.size(22.dp)) {
+                                                Icon(Icons.Default.Close, contentDescription = "Clear search", tint = secondaryInk, modifier = Modifier.size(14.dp))
+                                            }
+                                        }
+                                    },
+                                    singleLine = true,
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, color = primaryInk),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = warmAccent,
+                                        unfocusedBorderColor = cardBorder,
+                                        focusedContainerColor = if (isDarkMode) Color(0xFF202028) else Color(0xFFF7F5F0),
+                                        unfocusedContainerColor = if (isDarkMode) Color(0xFF202028) else Color(0xFFF7F5F0)
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 44.dp)
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                                val filteredModels = remember(allProviderModels, sidebarProviderFilter, sidebarModelSearchQuery) {
+                                    allProviderModels.filter { (prov, mod) ->
+                                        val matchesProv = sidebarProviderFilter == "All" || prov.equals(sidebarProviderFilter, ignoreCase = true)
+                                        val q = sidebarModelSearchQuery.trim()
+                                        val matchesQuery = q.isBlank() || mod.contains(q, ignoreCase = true) || prov.contains(q, ignoreCase = true)
+                                        matchesProv && matchesQuery
+                                    }
+                                }
+
+                                if (filteredModels.isEmpty()) {
+                                    Text(
+                                        text = if (allProviderModels.isEmpty()) "No models detected yet. Tap 'Detect' above or add your API key in API Room."
+                                        else "No models matching \"$sidebarModelSearchQuery\".",
+                                        fontSize = 11.5.sp,
+                                        color = secondaryInk,
+                                        modifier = Modifier.padding(vertical = 6.dp)
+                                    )
+                                } else {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 230.dp)
+                                            .verticalScroll(rememberScrollState()),
+                                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        filteredModels.forEach { (prov, m) ->
+                                            val isCurrent = activeProvider.equals(prov, ignoreCase = true) &&
+                                                activeModelForCurrentProvider?.equals(m, ignoreCase = true) == true
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(
+                                                        if (isCurrent) warmAccent.copy(alpha = 0.16f)
+                                                        else if (isDarkMode) Color(0xFF22222A)
+                                                        else Color(0xFFF5F3EE)
+                                                    )
+                                                    .border(
+                                                        width = if (isCurrent) 1.dp else 0.5.dp,
+                                                        color = if (isCurrent) warmAccent else Color.Transparent,
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    )
+                                                    .clickable {
+                                                        preferences.setActiveProvider(prov)
+                                                        preferences.setSelectedModel(m)
+                                                        if (prov != "Gemini") {
+                                                            val existing = providerEntries[prov]
+                                                            if (existing != null) {
+                                                                preferences.saveApiProvider(
+                                                                    name = existing.name,
+                                                                    apiKey = existing.apiKey,
+                                                                    baseUrl = existing.baseUrl,
+                                                                    model = m,
+                                                                    isCustom = existing.isCustom
+                                                                )
+                                                            }
+                                                        }
+                                                        Toast.makeText(context, "Active: $prov • $m", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = m,
+                                                        fontSize = 12.sp,
+                                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                                        color = if (isCurrent) warmAccent else primaryInk,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Text(
+                                                        text = prov,
+                                                        fontSize = 9.5.sp,
+                                                        color = secondaryInk,
+                                                        maxLines = 1
+                                                    )
+                                                }
+                                                if (isCurrent) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.CheckCircle,
+                                                        contentDescription = "Selected Model",
+                                                        tint = warmAccent,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -4643,6 +4659,9 @@ fun AiChatScreen(
                     }
                     Spacer(modifier = Modifier.height(8.dp))
 
+                    var renamingSession by remember { mutableStateOf<ChatSession?>(null) }
+                    var renameTitleInput by remember { mutableStateOf("") }
+
                     if (savedSessions.isEmpty()) {
                         Box(
                             modifier = Modifier
@@ -4700,18 +4719,68 @@ fun AiChatScreen(
                                             color = secondaryInk
                                         )
                                     }
-                                    IconButton(
-                                        onClick = {
-                                            sessionManager.deleteSession(session.id)
-                                            savedSessions.removeAll { it.id == session.id }
-                                        },
-                                        modifier = Modifier.size(26.dp)
-                                    ) {
-                                        Icon(Icons.Default.Delete, contentDescription = "Delete Chat", tint = secondaryInk, modifier = Modifier.size(15.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        IconButton(
+                                            onClick = {
+                                                renamingSession = session
+                                                renameTitleInput = session.title
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(Icons.Default.Edit, contentDescription = "Rename Chat", tint = secondaryInk, modifier = Modifier.size(14.dp))
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                sessionManager.deleteSession(session.id)
+                                                savedSessions.removeAll { it.id == session.id }
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete Chat", tint = secondaryInk, modifier = Modifier.size(15.dp))
+                                        }
                                     }
                                 }
                             }
                         }
+                    }
+
+                    if (renamingSession != null) {
+                        androidx.compose.material3.AlertDialog(
+                            onDismissRequest = { renamingSession = null },
+                            title = { Text("Rename Conversation", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+                            text = {
+                                OutlinedTextField(
+                                    value = renameTitleInput,
+                                    onValueChange = { renameTitleInput = it },
+                                    singleLine = true,
+                                    placeholder = { Text("Conversation title") },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            },
+                            confirmButton = {
+                                androidx.compose.material3.TextButton(
+                                    onClick = {
+                                        val target = renamingSession
+                                        val newTitle = renameTitleInput.trim()
+                                        if (target != null && newTitle.isNotBlank()) {
+                                            sessionManager.renameSession(target.id, newTitle)
+                                            val idx = savedSessions.indexOfFirst { it.id == target.id }
+                                            if (idx >= 0) {
+                                                savedSessions[idx] = savedSessions[idx].copy(title = newTitle)
+                                            }
+                                        }
+                                        renamingSession = null
+                                    }
+                                ) {
+                                    Text("Save", fontWeight = FontWeight.Bold, color = warmAccent)
+                                }
+                            },
+                            dismissButton = {
+                                androidx.compose.material3.TextButton(onClick = { renamingSession = null }) {
+                                    Text("Cancel")
+                                }
+                            }
+                        )
                     }
                     Spacer(modifier = Modifier.height(24.dp))
                 }

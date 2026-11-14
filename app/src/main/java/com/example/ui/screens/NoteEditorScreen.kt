@@ -1027,8 +1027,11 @@ fun NoteEditorScreen(
         listType = if (currentListKind == "check") "none" else currentListKind
     }
 
+    var pageStyle by remember { mutableStateOf("standard") } // "standard" | "ruled" | "word_white"
+    var showDrawingModal by remember { mutableStateOf(false) }
+
     // DAY MODE CONTRAST FIX: Default text color in Day mode is dark (Color(0xFF111111))
-    val defaultTextColor = if (isDarkMode) Color.White else Color(0xFF111111)
+    val defaultTextColor = if (pageStyle == "word_white") Color(0xFF111111) else if (isDarkMode) Color.White else Color(0xFF111111)
     // Base text colour: the note's saved colour, but never one that disappears into the background
     // (a note saved in day mode with black text used to stay black in dark mode). Colours the user
     // picked for a selection (spans) are untouched.
@@ -1036,8 +1039,9 @@ fun NoteEditorScreen(
         val parsed = try { Color(android.graphics.Color.parseColor(selectedColorHex)) } catch (e: Exception) { null }
         when {
             parsed == null -> defaultTextColor
-            isDarkMode && parsed.luminance() < 0.12f -> defaultTextColor
-            !isDarkMode && parsed.luminance() > 0.88f -> defaultTextColor
+            pageStyle == "word_white" && parsed.luminance() > 0.85f -> Color(0xFF111111)
+            pageStyle != "word_white" && isDarkMode && parsed.luminance() < 0.12f -> defaultTextColor
+            pageStyle != "word_white" && !isDarkMode && parsed.luminance() > 0.88f -> defaultTextColor
             else -> parsed
         }
     }
@@ -1238,13 +1242,45 @@ fun NoteEditorScreen(
                     }
                 }
 
-                // Note Body Scrollable Area
+                // Note Body Scrollable Area (supports Standard, Ruled Notebook, and MS Word White Page styles)
+                val ruledLineColor = if (pageStyle == "word_white") Color(0xFFCBD5E1) else if (isDarkMode) Color(0x26FFFFFF) else Color(0x22000000)
+                val marginLineColor = Color(0xFFEF4444).copy(alpha = 0.35f)
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
+                        .then(
+                            if (pageStyle == "word_white") {
+                                Modifier
+                                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color.White)
+                                    .border(1.dp, Color(0xFFD4D4D8), RoundedCornerShape(12.dp))
+                            } else Modifier
+                        )
                         .verticalScroll(mainScrollState, enabled = !isTouchingImage)
-                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                        .drawBehind {
+                            if (pageStyle == "ruled") {
+                                val stepPx = (fontSize * 1.5f).dp.toPx().coerceAtLeast(24.dp.toPx())
+                                var y = stepPx * 2f
+                                while (y < size.height) {
+                                    drawLine(
+                                        color = ruledLineColor,
+                                        start = androidx.compose.ui.geometry.Offset(0f, y),
+                                        end = androidx.compose.ui.geometry.Offset(size.width, y),
+                                        strokeWidth = 1.dp.toPx()
+                                    )
+                                    y += stepPx
+                                }
+                                drawLine(
+                                    color = marginLineColor,
+                                    start = androidx.compose.ui.geometry.Offset(28.dp.toPx(), 0f),
+                                    end = androidx.compose.ui.geometry.Offset(28.dp.toPx(), size.height),
+                                    strokeWidth = 1.2.dp.toPx()
+                                )
+                            }
+                        }
+                        .padding(horizontal = if (pageStyle == "word_white") 14.dp else 8.dp, vertical = 8.dp)
                 ) {
 
                     // Inline Attached Images (with Move, Resize, Crop, Rename support - PART F Item 5)
@@ -1390,10 +1426,13 @@ fun NoteEditorScreen(
                     val embeddedVisualFences = remember(contentValue.text) {
                         if (!contentValue.text.contains("```")) emptyList()
                         else CodeFences.find(contentValue.text).filter {
-                            it.lang.trim().lowercase() in setOf(
+                            val l = it.lang.trim().lowercase()
+                            l in setOf(
                                 "slides", "typography_slides", "slide_deck",
-                                "chart", "graph", "diagram", "svg", "organised_file", "html"
-                            )
+                                "chart", "graph", "json:apex", "apex", "apexcharts",
+                                "diagram", "svg", "mermaid", "flowchart", "mindmap", "sequence",
+                                "organised_file", "html"
+                            ) || l.startsWith("json:apex")
                         }
                     }
                     if (embeddedVisualFences.isNotEmpty()) {
@@ -1409,12 +1448,12 @@ fun NoteEditorScreen(
                                     } else null
                                 }
                                 val chartSpec = remember(vf.code, langLower) {
-                                    if (langLower in setOf("chart", "graph")) {
+                                    if (langLower in setOf("chart", "graph", "json:apex", "apex", "apexcharts") || langLower.startsWith("json:apex")) {
                                         com.example.ui.components.AgentVisualsParser.parseChart(vf.code)
                                     } else null
                                 }
                                 val diagramSpec = remember(vf.code, langLower) {
-                                    if (langLower in setOf("diagram", "svg")) {
+                                    if (langLower in setOf("diagram", "svg", "mermaid", "flowchart", "mindmap", "sequence")) {
                                         com.example.ui.components.AgentVisualsParser.parseDiagram(vf.code)
                                     } else null
                                 }
@@ -2004,11 +2043,14 @@ fun NoteEditorScreen(
                     }
                     }
 
-                    // Safe Bottom Space: tapping anywhere in this empty area opens the keyboard and moves cursor to the end
+                    // Dynamic Safe Bottom Space: scales with inline images and positive Y offsets so notes with multiple/tall images scroll all the way down
+                    val inlineImgCount = attachments.count { it.id.isNotBlank() }
+                    val maxPosY = attachments.maxOfOrNull { it.posY.coerceAtLeast(0f) }?.toInt() ?: 0
+                    val dynamicBottomDp = (320 + inlineImgCount * 240 + maxPosY).coerceIn(320, 2400).dp
                     Spacer(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(300.dp)
+                            .height(dynamicBottomDp)
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null
@@ -2155,7 +2197,48 @@ fun NoteEditorScreen(
                                 }
                             }
 
-                            Spacer(Modifier.height(8.dp))
+                            // Alight Motion-style smooth Scale, X-Offset, and Y-Offset sliders
+                            if (!activeEditAtt.locked) {
+                                Spacer(Modifier.height(4.dp))
+                                val maxHorizDp = with(density) { (fieldWidthPx * (1f - activeEditAtt.widthFraction.coerceIn(0.22f, 1f))).toDp().value.coerceAtLeast(1f) }
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Scale", fontSize = 10.sp, color = Color.Gray, modifier = Modifier.width(38.dp))
+                                    androidx.compose.material3.Slider(
+                                        value = activeEditAtt.widthFraction.coerceIn(0.22f, 1f),
+                                        onValueChange = { v ->
+                                            attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(widthFraction = v) else it }
+                                        },
+                                        valueRange = 0.22f..1f,
+                                        modifier = Modifier.weight(1f).height(26.dp),
+                                        colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = CrimsonPrimary, activeTrackColor = CrimsonPrimary)
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Pos X", fontSize = 10.sp, color = Color.Gray, modifier = Modifier.width(38.dp))
+                                    androidx.compose.material3.Slider(
+                                        value = activeEditAtt.posX.coerceIn(0f, maxHorizDp),
+                                        onValueChange = { v ->
+                                            attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(posX = v) else it }
+                                        },
+                                        valueRange = 0f..maxHorizDp,
+                                        modifier = Modifier.weight(1f).height(26.dp),
+                                        colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = CrimsonPrimary, activeTrackColor = CrimsonPrimary)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Pos Y", fontSize = 10.sp, color = Color.Gray, modifier = Modifier.width(38.dp))
+                                    androidx.compose.material3.Slider(
+                                        value = activeEditAtt.posY.coerceIn(-250f, 900f),
+                                        onValueChange = { v ->
+                                            attachments = attachments.map { if (it.id == activeEditAtt.id) it.copy(posY = v) else it }
+                                        },
+                                        valueRange = -250f..900f,
+                                        modifier = Modifier.weight(1f).height(26.dp),
+                                        colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = CrimsonPrimary, activeTrackColor = CrimsonPrimary)
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(6.dp))
 
                             // Alignment & Reposition Controls
                             Row(
@@ -2363,7 +2446,6 @@ Row(
                                 }
                             }
                             ToolDivider(isDarkMode)
-                            QBtn(Icons.Default.FormatClear, "Clear formatting", false) { clearFormattingOnSelection() }
                             QBtn(Icons.Default.MoreHoriz, "More text styles", false) { showFormatSheet = true }
                         }
                         Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(1.dp).background(if (isDarkMode) Color(0x22FFFFFF) else Color(0x14000000)))
@@ -2378,12 +2460,6 @@ Row(
                         // (Text styles now live in the quick format bar above the keyboard)
                         EditorTool(icon = Icons.Default.FormatListNumbered, label = "Paragraph style",
                             active = currentListKind != "none" && currentListKind != "check" || alignment != "left", idleTint = idleTint) { showParagraphStyleSheet = true }
-
-                        ToolDivider(isDarkMode)
-
-                        EditorTool(icon = Icons.Default.FormatClear, label = "Clear formatting", active = false, idleTint = idleTint) {
-                            clearFormattingOnSelection()
-                        }
 
                         ToolDivider(isDarkMode)
 
@@ -2412,6 +2488,50 @@ Row(
                             painter = painterResource(R.drawable.ic_svg_media), label = "Insert image",
                             active = false, idleTint = idleTint
                         ) { imagePickerLauncher.launch("image/*") }
+
+                        ToolDivider(isDarkMode)
+
+                        // Freehand Pencil / Sketch Drawing Tool
+                        EditorTool(
+                            icon = Icons.Default.Edit, label = "Draw sketch",
+                            active = showDrawingModal, idleTint = idleTint
+                        ) { showDrawingModal = true }
+
+                        ToolDivider(isDarkMode)
+
+                        // Page Style Switcher (Standard / Ruled Notebook / MS Word White Page)
+                        Box(
+                            modifier = Modifier
+                                .height(34.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (pageStyle != "standard") CrimsonPrimary.copy(alpha = 0.18f) else Color.Transparent)
+                                .clickable {
+                                    pageStyle = when (pageStyle) {
+                                        "standard" -> "ruled"
+                                        "ruled" -> "word_white"
+                                        else -> "standard"
+                                    }
+                                    val label = when (pageStyle) {
+                                        "ruled" -> "Ruled Notebook Page"
+                                        "word_white" -> "MS Word White Page"
+                                        else -> "Standard Page"
+                                    }
+                                    Toast.makeText(context, "Page Style: $label", Toast.LENGTH_SHORT).show()
+                                }
+                                .padding(horizontal = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = when (pageStyle) {
+                                    "ruled" -> "Ruled"
+                                    "word_white" -> "A4 White"
+                                    else -> "Page"
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (pageStyle != "standard") CrimsonPrimary else idleTint
+                            )
+                        }
 
                         ToolDivider(isDarkMode)
 
@@ -2752,6 +2872,207 @@ Row(
             )
         }
         PdfToolSheet(note = snapshot, isDarkMode = isDarkMode, onDismiss = { showPdfMode = false })
+    }
+
+    // Freehand Pencil / Sketch Pad Dialog
+    if (showDrawingModal) {
+        var strokes by remember { mutableStateOf<List<Triple<List<androidx.compose.ui.geometry.Offset>, Color, Float>>>(emptyList()) }
+        var currentPoints by remember { mutableStateOf<List<androidx.compose.ui.geometry.Offset>>(emptyList()) }
+        var strokeColor by remember { mutableStateOf(Color(0xFF18181B)) }
+        var strokeWidth by remember { mutableStateOf(6f) }
+        var canvasSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize(800, 600)) }
+
+        Dialog(
+            onDismissRequest = { showDrawingModal = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(if (isDarkMode) Color(0xFF141418) else Color(0xFFF5F3EE))
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Freehand Sketch Pad",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isDarkMode) Color.White else Color.Black
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { if (strokes.isNotEmpty()) strokes = strokes.dropLast(1) }) {
+                            Text("Undo", color = CrimsonPrimary)
+                        }
+                        TextButton(onClick = { strokes = emptyList(); currentPoints = emptyList() }) {
+                            Text("Clear", color = Color(0xFFEF4444))
+                        }
+                        TextButton(onClick = { showDrawingModal = false }) {
+                            Text("Cancel", color = Color.Gray)
+                        }
+                        Button(
+                            colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
+                            onClick = {
+                                if (strokes.isEmpty() && currentPoints.isEmpty()) {
+                                    showDrawingModal = false
+                                    return@Button
+                                }
+                                val w = canvasSize.width.coerceAtLeast(400)
+                                val h = canvasSize.height.coerceAtLeast(300)
+                                val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                                val c = android.graphics.Canvas(bmp)
+                                c.drawColor(android.graphics.Color.WHITE)
+                                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                                    style = android.graphics.Paint.Style.STROKE
+                                    strokeCap = android.graphics.Paint.Cap.ROUND
+                                    strokeJoin = android.graphics.Paint.Join.ROUND
+                                }
+                                val allStrokes = if (currentPoints.size > 1) strokes + Triple(currentPoints, strokeColor, strokeWidth) else strokes
+                                allStrokes.forEach { (pts, col, sw) ->
+                                    if (pts.size > 1) {
+                                        paint.color = android.graphics.Color.argb(
+                                            (col.alpha * 255).toInt(),
+                                            (col.red * 255).toInt(),
+                                            (col.green * 255).toInt(),
+                                            (col.blue * 255).toInt()
+                                        )
+                                        paint.strokeWidth = sw
+                                        val path = android.graphics.Path()
+                                        path.moveTo(pts.first().x, pts.first().y)
+                                        for (k in 1 until pts.size) {
+                                            path.lineTo(pts[k].x, pts[k].y)
+                                        }
+                                        c.drawPath(path, paint)
+                                    }
+                                }
+                                val dir = java.io.File(context.filesDir, "attachments").apply { if (!exists()) mkdirs() }
+                                val outFile = java.io.File(dir, "sketch_${System.currentTimeMillis()}.png")
+                                java.io.FileOutputStream(outFile).use { out ->
+                                    bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 95, out)
+                                }
+                                val imgId = ImageMarkers.newId()
+                                val att = RichTextFormatter.AttachmentInfo(
+                                    uri = outFile.absolutePath,
+                                    fileName = outFile.name,
+                                    mimeType = "image/png",
+                                    sizeBytes = outFile.length(),
+                                    order = attachments.size,
+                                    id = imgId,
+                                    widthFraction = 0.85f
+                                )
+                                pushUndo()
+                                attachments = attachments + att
+                                val marker = ImageMarkers.marker(imgId)
+                                val oldText = contentValue.text
+                                val newText = if (oldText.isBlank()) marker else "${oldText.trimEnd()}\n$marker\n"
+                                spans = RichTextFormatter.adjustSpansForEdit(spans, oldText, newText)
+                                contentValue = TextFieldValue(newText, selection = TextRange(newText.length))
+                                showDrawingModal = false
+                                Toast.makeText(context, "Sketch added to note", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Text("Insert", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // Color & Brush Size Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(
+                        Color(0xFF18181B),
+                        Color(0xFFEF4444),
+                        Color(0xFF2563EB),
+                        Color(0xFF16A34A),
+                        Color(0xFFD97757),
+                        Color(0xFF9333EA)
+                    ).forEach { col ->
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(col)
+                                .border(
+                                    width = if (strokeColor == col) 2.5.dp else 1.dp,
+                                    color = if (strokeColor == col) CrimsonPrimary else Color.Gray.copy(alpha = 0.4f),
+                                    shape = CircleShape
+                                )
+                                .clickable { strokeColor = col }
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    androidx.compose.material3.Slider(
+                        value = strokeWidth,
+                        onValueChange = { strokeWidth = it },
+                        valueRange = 2f..22f,
+                        modifier = Modifier.weight(1f),
+                        colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = CrimsonPrimary, activeTrackColor = CrimsonPrimary)
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White)
+                        .border(1.5.dp, Color(0xFFD4D4D8), RoundedCornerShape(14.dp))
+                        .onSizeChanged { canvasSize = it }
+                        .pointerInput(strokeColor, strokeWidth) {
+                            detectDragGestures(
+                                onDragStart = { offset ->
+                                    currentPoints = listOf(offset)
+                                },
+                                onDrag = { change, _ ->
+                                    change.consume()
+                                    currentPoints = currentPoints + change.position
+                                },
+                                onDragEnd = {
+                                    if (currentPoints.size > 1) {
+                                        strokes = strokes + Triple(currentPoints, strokeColor, strokeWidth)
+                                    }
+                                    currentPoints = emptyList()
+                                }
+                            )
+                        }
+                ) {
+                    androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                        val allStrokes = if (currentPoints.size > 1) strokes + Triple(currentPoints, strokeColor, strokeWidth) else strokes
+                        allStrokes.forEach { (pts, col, sw) ->
+                            if (pts.size > 1) {
+                                val path = androidx.compose.ui.graphics.Path().apply {
+                                    moveTo(pts.first().x, pts.first().y)
+                                    for (k in 1 until pts.size) {
+                                        lineTo(pts[k].x, pts[k].y)
+                                    }
+                                }
+                                drawPath(
+                                    path = path,
+                                    color = col,
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                        width = sw,
+                                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Image Edit Modal (Move, Crop, Resize, Rename - PART F Item 5)

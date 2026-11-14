@@ -221,33 +221,84 @@ fun PinLockDialog(
                         }
                     }
                 } else {
-                    // 4 Neumorphic Inset PIN Wells / Extruded Indicators
+                    // 4 Professional PIN Boxes — all 4 boxes visibly light up before unlocking
                     val displayedPin = if (!requireSetup) enteredPin else if (setupStep == 0) setupPin else setupConfirmPin
 
+                    androidx.compose.runtime.LaunchedEffect(enteredPin, requireSetup) {
+                        if (!requireSetup && enteredPin.length == 4) {
+                            kotlinx.coroutines.delay(150)
+                            if (enteredPin == correctPin) {
+                                wrongAttempts = 0
+                                onUnlocked()
+                            } else {
+                                registerWrongAttempt()
+                            }
+                        }
+                    }
+
+                    androidx.compose.runtime.LaunchedEffect(setupPin, setupConfirmPin, setupStep, requireSetup) {
+                        if (requireSetup) {
+                            if (setupStep == 0 && setupPin.length == 4) {
+                                kotlinx.coroutines.delay(150)
+                                setupStep = 1
+                            } else if (setupStep == 1 && setupConfirmPin.length == 4) {
+                                kotlinx.coroutines.delay(150)
+                                if (setupConfirmPin == setupPin) {
+                                    setupStep = 2
+                                } else {
+                                    setupError = "PINs didn't match. Try again."
+                                    setupPin = ""
+                                    setupConfirmPin = ""
+                                    setupStep = 0
+                                }
+                            }
+                        }
+                    }
+
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         repeat(4) { index ->
                             val isFilled = index < displayedPin.length
-                            GlassCard(
-                                modifier = Modifier.size(18.dp),
-                                shape = CircleShape,
-                                isDarkMode = isDarkMode,
-                                isInset = !isFilled,
-                                elevation = if (isFilled) 3.dp else 0.dp
+                            val isCurrent = index == displayedPin.length
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 46.dp, height = 52.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(
+                                        if (isFilled) CrimsonPrimary.copy(alpha = 0.16f)
+                                        else if (isDarkMode) Color(0xFF151821) else Color(0xFFF1F5F9)
+                                    )
+                                    .border(
+                                        width = if (isFilled || isCurrent) 2.dp else 1.dp,
+                                        color = when {
+                                            isFilled -> CrimsonPrimary
+                                            isCurrent -> CrimsonPrimary.copy(alpha = 0.55f)
+                                            isDarkMode -> Color(0x33FFFFFF)
+                                            else -> Color(0x22000000)
+                                        },
+                                        shape = RoundedCornerShape(14.dp)
+                                    ),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .then(
-                                            if (isFilled) {
-                                                Modifier.background(
-                                                    Brush.radialGradient(listOf(CrimsonPrimary, Color(0xFFCC1F41)))
-                                                )
-                                            } else Modifier
-                                        )
-                                )
+                                if (isFilled) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(16.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                Brush.radialGradient(listOf(CrimsonPrimary, Color(0xFFCC1F41)))
+                                            )
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(if (isDarkMode) Color.White.copy(alpha = 0.2f) else Color.Black.copy(alpha = 0.18f))
+                                    )
+                                }
                             }
                         }
                     }
@@ -300,19 +351,8 @@ fun PinLockDialog(
                                                     else -> {
                                                         if (setupStep == 0 && setupPin.length < 4) {
                                                             setupPin += digit
-                                                            if (setupPin.length == 4) setupStep = 1
                                                         } else if (setupStep == 1 && setupConfirmPin.length < 4) {
                                                             setupConfirmPin += digit
-                                                            if (setupConfirmPin.length == 4) {
-                                                                if (setupConfirmPin == setupPin) {
-                                                                    setupStep = 2
-                                                                } else {
-                                                                    setupError = "PINs didn't match. Try again."
-                                                                    setupPin = ""
-                                                                    setupConfirmPin = ""
-                                                                    setupStep = 0
-                                                                }
-                                                            }
                                                         }
                                                     }
                                                 }
@@ -351,16 +391,8 @@ fun PinLockDialog(
                                                     }
                                                     else -> {
                                                         if (enteredPin.length < 4) {
-                                                            val next = enteredPin + digit
-                                                            enteredPin = next
-                                                            if (next.length == 4) {
-                                                                if (next == correctPin) {
-                                                                    wrongAttempts = 0
-                                                                    onUnlocked()
-                                                                } else {
-                                                                    registerWrongAttempt()
-                                                                }
-                                                            }
+                                                            enteredPin += digit
+                                                            errorMessage = null
                                                         }
                                                     }
                                                 }

@@ -694,7 +694,7 @@ object NoteExporter {
 
         // Remaining attachments (legacy notes without inline position, or non-image files).
         allAtts.forEach { att ->
-            if (att.id.isNotBlank() && att.mimeType.startsWith("image/")) {
+            if (att.id in placedInline) {
                 return@forEach
             }
             pager.y += 12f

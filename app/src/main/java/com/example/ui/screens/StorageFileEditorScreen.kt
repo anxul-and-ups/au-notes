@@ -1,966 +1,625 @@
 package com.example.ui.screens
 
-import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
+import android.content.Intent
 import android.net.Uri
-import android.os.Build
-import android.os.Environment
 import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material.icons.filled.DriveFileMove
-import androidx.compose.material.icons.filled.DriveFileRenameOutline
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.OpenInNew
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import com.example.ui.util.FileManagerStore
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
-import com.example.R
-import com.example.ui.components.GlassBackground
-import com.example.ui.components.GlassCard
-import com.example.ui.components.NeuIconButton
+import androidx.core.content.FileProvider
+import com.example.data.documents.MyDocuments
 import com.example.ui.theme.CrimsonPrimary
+import com.example.ui.theme.NeuDarkBg
+import com.example.ui.theme.NeuDarkBorder
+import com.example.ui.theme.NeuDarkSurface
+import com.example.ui.theme.NeuLightBg
+import com.example.ui.theme.NeuLightBorder
+import com.example.ui.theme.NeuLightSurface
+import com.example.ui.theme.TextDarkPrimary
+import com.example.ui.theme.TextDarkSecondary
+import com.example.ui.theme.TextWhitePrimary
+import com.example.ui.theme.TextWhiteSecondary
+import com.example.ui.theme.TextWhiteTertiary
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
 import java.io.File
-import java.io.FileOutputStream
+import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Locale
 
-data class RealStorageItem(
+data class EditedFileItem(
+    val file: File,
     val name: String,
-    val file: File? = null,
-    val uri: Uri? = null,
-    val sizeString: String,
-    val path: String,
-    val lastModified: Long,
-    val isPdf: Boolean = false,
-    val isDirectory: Boolean = false
+    val extension: String,
+    val sizeBytes: Long,
+    val modifiedAt: Long
 )
+
+object EditedFilesStore {
+    private const val DIR_NAME = "edited_files"
+
+    fun rootDir(context: Context): File {
+        val dir = File(context.filesDir, DIR_NAME)
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    fun listFiles(context: Context): List<EditedFileItem> {
+        val dir = rootDir(context)
+        return (dir.listFiles() ?: emptyArray())
+            .filter { it.isFile }
+            .sortedByDescending { it.lastModified() }
+            .map { file ->
+                EditedFileItem(
+                    file = file,
+                    name = file.name,
+                    extension = file.extension.lowercase(Locale.ROOT),
+                    sizeBytes = file.length(),
+                    modifiedAt = file.lastModified()
+                )
+            }
+    }
+
+    fun saveEditedFile(context: Context, requestedName: String, content: String): File {
+        val dir = rootDir(context)
+        val cleanName = requestedName.trim()
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .ifBlank { "Edited_${System.currentTimeMillis()}.txt" }
+        val finalName = if (cleanName.contains('.')) cleanName else "$cleanName.txt"
+        val target = File(dir, finalName)
+        target.writeText(content)
+        target.setLastModified(System.currentTimeMillis())
+        return target
+    }
+
+    fun renameEditedFile(file: File, newName: String): File? {
+        val clean = newName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        if (clean.isBlank()) return null
+        val ext = file.extension
+        val finalName = if (clean.contains('.')) clean else if (ext.isNotBlank()) "$clean.$ext" else clean
+        val dest = File(file.parentFile, finalName)
+        if (dest.absolutePath == file.absolutePath) return file
+        return if (file.renameTo(dest)) dest else null
+    }
+
+    fun deleteEditedFile(file: File): Boolean = runCatching { file.delete() }.getOrDefault(false)
+}
 
 @Composable
 fun StorageFileEditorScreen(
-    isDarkMode: Boolean,
+    isDarkMode: Boolean = false,
     onBack: () -> Unit,
     onOpenPdf: (Uri) -> Unit = {},
-    onOpenFileInEditor: (title: String, content: String, category: String) -> Unit
+    onOpenFileInEditor: (title: String, content: String, category: String) -> Unit = { _, _, _ -> },
+    onSaveToNote: (title: String, content: String, category: String) -> Unit = { _, _, _ -> }
 ) {
+    BackHandler { onBack() }
     val context = LocalContext.current
-    var hasUnderstoodIntro by remember {
-        val prefs = context.getSharedPreferences("au_file_editor_prefs", Context.MODE_PRIVATE)
-        mutableStateOf(prefs.getBoolean("intro_understood", false))
-    }
+    val scope = rememberCoroutineScope()
 
+    val bgPrimary = if (isDarkMode) NeuDarkBg else NeuLightBg
+    val bgCard = if (isDarkMode) NeuDarkSurface else NeuLightSurface
+    val bgSecondary = if (isDarkMode) Color(0xFF141418) else Color(0xFFEFECE4)
+    val borderCol = if (isDarkMode) NeuDarkBorder else NeuLightBorder
+    val textPrimary = if (isDarkMode) TextWhitePrimary else TextDarkPrimary
+    val textSecondary = if (isDarkMode) TextWhiteSecondary else TextDarkSecondary
+    val textMuted = if (isDarkMode) TextWhiteTertiary else Color(0xFF71717A)
+    val accent = CrimsonPrimary
+    val danger = Color(0xFFEF4444)
+
+    var editedFiles by remember { mutableStateOf<List<EditedFileItem>>(emptyList()) }
     var searchQuery by remember { mutableStateOf("") }
-    var selectedFileItem by remember { mutableStateOf<RealStorageItem?>(null) }
-    var fileContentEdit by remember { mutableStateOf("") }
-    var isEditingInPlace by remember { mutableStateOf(false) }
-
-    var showCreateDialog by remember { mutableStateOf(false) }
-    var newFileName by remember { mutableStateOf("") }
-
-    var fileList by remember { mutableStateOf<List<RealStorageItem>>(emptyList()) }
-    var showDetailsDialog by remember { mutableStateOf<RealStorageItem?>(null) }
-
-    // ---- file management: folders, move, rename, lock (persisted by FileManagerStore) ----
-    val store = remember { FileManagerStore(context) }
-    var storeVersion by remember { mutableStateOf(0) } // bump to re-read store-backed state
-    var activeFolder by remember { mutableStateOf("All") }
-    var menuItemPath by remember { mutableStateOf<String?>(null) }
-    var moveTarget by remember { mutableStateOf<RealStorageItem?>(null) }
-    var renameTarget by remember { mutableStateOf<RealStorageItem?>(null) }
+    var renameTarget by remember { mutableStateOf<EditedFileItem?>(null) }
     var renameInput by remember { mutableStateOf("") }
-    var showNewFolderDialog by remember { mutableStateOf(false) }
-    var newFolderInput by remember { mutableStateOf("") }
-    var deleteTarget by remember { mutableStateOf<RealStorageItem?>(null) }
+    var deleteTarget by remember { mutableStateOf<EditedFileItem?>(null) }
 
-    fun refreshFiles() {
-        val list = mutableListOf<RealStorageItem>()
-        // App internal docs and storage files
-        val internalDocsDir = File(context.filesDir, "documents").apply { mkdirs() }
-        internalDocsDir.listFiles()?.forEach { f ->
-            list.add(
-                RealStorageItem(
-                    name = f.name,
-                    file = f,
-                    sizeString = "${(f.length() / 1024).coerceAtLeast(1)} KB",
-                    path = f.absolutePath,
-                    lastModified = f.lastModified(),
-                    isPdf = f.name.endsWith(".pdf", ignoreCase = true),
-                    isDirectory = f.isDirectory
-                )
-            )
-        }
-
-        // Attachments directory
-        val attachmentsDir = File(context.filesDir, "attachments").apply { mkdirs() }
-        attachmentsDir.listFiles()?.forEach { f ->
-            list.add(
-                RealStorageItem(
-                    name = f.name,
-                    file = f,
-                    sizeString = "${(f.length() / 1024).coerceAtLeast(1)} KB",
-                    path = f.absolutePath,
-                    lastModified = f.lastModified(),
-                    isPdf = f.name.endsWith(".pdf", ignoreCase = true),
-                    isDirectory = f.isDirectory
-                )
-            )
-        }
-
-        // External Downloads directory if accessible
-        try {
-            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (downloadsDir != null && downloadsDir.exists()) {
-                downloadsDir.listFiles()?.filter { !it.name.startsWith(".") && (it.extension in listOf("txt", "pdf", "py", "json", "html", "md", "csv", "log") || it.isDirectory) }?.take(25)?.forEach { f ->
-                    list.add(
-                        RealStorageItem(
-                            name = f.name,
-                            file = f,
-                            sizeString = "${(f.length() / 1024).coerceAtLeast(1)} KB",
-                            path = f.absolutePath,
-                            lastModified = f.lastModified(),
-                            isPdf = f.name.endsWith(".pdf", ignoreCase = true),
-                            isDirectory = f.isDirectory
-                        )
-                    )
-                }
-            }
-        } catch (ignored: Exception) {}
-
-        fileList = list.distinctBy { it.path }.sortedByDescending { it.lastModified }
+    fun refreshList() {
+        editedFiles = EditedFilesStore.listFiles(context)
     }
 
     LaunchedEffect(Unit) {
-        refreshFiles()
+        refreshList()
     }
 
-    val openFileLauncher = rememberLauncherForActivityResult(
+    fun importAndOpenUriInEditor(uri: Uri) {
+        scope.launch {
+            var resolvedName = "Imported_File.txt"
+            var resolvedContent = ""
+            val mime = context.contentResolver.getType(uri).orEmpty()
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (cursor.moveToFirst() && nameIdx >= 0) {
+                            resolvedName = cursor.getString(nameIdx) ?: resolvedName
+                        }
+                    }
+                    if (resolvedName == "Imported_File.txt") {
+                        resolvedName = uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { null } ?: resolvedName
+                    }
+                }
+            }
+            if (mime == "application/pdf" || resolvedName.endsWith(".pdf", ignoreCase = true)) {
+                onOpenPdf(uri)
+                return@launch
+            }
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
+                    resolvedContent = try {
+                        String(bytes, Charsets.UTF_8)
+                    } catch (_: Exception) {
+                        bytes.decodeToString()
+                    }
+                }
+            }
+            val ext = resolvedName.substringAfterLast('.', "txt").lowercase()
+            val category = when (ext) {
+                "html", "htm", "json", "xml", "py", "kt", "js", "ts", "css", "sh", "sql" -> "Code"
+                else -> "General"
+            }
+            // Open directly inside the full NoteEditorScreen without cluttering main Notes database
+            onOpenFileInEditor(resolvedName, resolvedContent, category)
+        }
+    }
+
+    val openDocLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            try {
-                var displayName = "Document"
-                var sizeBytes = 0L
-                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (cursor.moveToFirst()) {
-                        if (nameIdx >= 0) displayName = cursor.getString(nameIdx) ?: displayName
-                        if (sizeIdx >= 0) sizeBytes = cursor.getLong(sizeIdx)
-                    }
-                }
-
-                val isPdf = displayName.endsWith(".pdf", ignoreCase = true)
-                if (isPdf) {
-                    // Safe import: a byte-for-byte copy lives in app storage, so it can be moved,
-                    // locked and re-opened later even after the picker permission is gone.
-                    val target = if (activeFolder != "All" && activeFolder != "Unfiled") activeFolder else null
-                    val copy = store.importIntoAppStorage(uri, target)
-                    if (copy != null) {
-                        refreshFiles()
-                        storeVersion++
-                        Toast.makeText(context, "Imported ${copy.name}", Toast.LENGTH_SHORT).show()
-                        onOpenPdf(Uri.fromFile(copy))
-                    } else {
-                        Toast.makeText(context, "Could not import this PDF", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    val content = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
-                    val item = RealStorageItem(
-                        name = displayName,
-                        uri = uri,
-                        sizeString = "${(sizeBytes / 1024).coerceAtLeast(1)} KB",
-                        path = uri.toString(),
-                        lastModified = System.currentTimeMillis(),
-                        isPdf = false
-                    )
-                    selectedFileItem = item
-                    fileContentEdit = content
-                    isEditingInPlace = true
-                }
-            } catch (e: Exception) {
-                Toast.makeText(context, "Failed to read file: ${e.message}", Toast.LENGTH_SHORT).show()
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
             }
+            importAndOpenUriInEditor(uri)
         }
     }
 
-    val storeFolders = remember(storeVersion) { store.folders() }
-    val filteredList = remember(fileList, searchQuery, activeFolder, storeVersion) {
-        fileList.filter {
-            (it.name.contains(searchQuery, ignoreCase = true) || it.path.contains(searchQuery, ignoreCase = true)) &&
-                when (activeFolder) {
-                    "All" -> true
-                    "Unfiled" -> store.folderOf(it.path) == null
-                    else -> store.folderOf(it.path) == activeFolder
-                }
-        }
+    val filteredFiles = remember(editedFiles, searchQuery) {
+        val q = searchQuery.trim().lowercase()
+        if (q.isEmpty()) editedFiles
+        else editedFiles.filter { it.name.lowercase().contains(q) || it.extension.contains(q) }
     }
 
-    GlassBackground(isDarkMode = isDarkMode) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-        ) {
-            Column(
+    Surface(modifier = Modifier.fillMaxSize(), color = bgPrimary) {
+        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+            // Clean Top Bar: Back + Title + Import File Icon
+            Row(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Top App Bar
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        NeuIconButton(
-                            icon = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            isDarkMode = isDarkMode,
-                            size = 38.dp,
-                            iconSize = 18.dp,
-                            tint = if (isDarkMode) Color.White else Color.Black,
-                            onClick = onBack
+                    IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = textPrimary)
+                    }
+                    Column {
+                        Text(
+                            text = "File Editor",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = textPrimary
                         )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = "File Editor",
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isDarkMode) Color.White else Color(0xFF111111)
-                            )
-                            Text(
-                                text = "Device Storage & File Extractor",
-                                fontSize = 11.sp,
-                                color = CrimsonPrimary
-                            )
-                        }
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        IconButton(onClick = { openFileLauncher.launch(arrayOf("*/*")) }) {
-                            Icon(
-                                imageVector = Icons.Default.FolderOpen,
-                                contentDescription = "Import/Extract File",
-                                tint = CrimsonPrimary,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
-
-                        IconButton(onClick = { showCreateDialog = true }) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = "Create New File",
-                                tint = if (isDarkMode) Color.White else Color.Black,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
+                        Text(
+                            text = "${editedFiles.size} edited file${if (editedFiles.size == 1) "" else "s"} • Tap Import File to open any file",
+                            fontSize = 11.sp,
+                            color = textSecondary
+                        )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // PART B Item 4: Stylish Intro Card (Explaining what File Editor does)
-                if (!hasUnderstoodIntro) {
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp),
-                        isDarkMode = isDarkMode,
-                        elevation = 6.dp
-                    ) {
-                        Column(modifier = Modifier.padding(18.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    painter = painterResource(R.drawable.ic_file_editor),
-                                    contentDescription = null,
-                                    tint = CrimsonPrimary,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text(
-                                    text = "Welcome to File Editor",
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isDarkMode) Color.White else Color(0xFF111111)
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "File Editor allows you to directly explore device files, preview PDFs, edit text & code files (.txt, .py, .html, .json), and extract content seamlessly into AU Notes.",
-                                fontSize = 13.sp,
-                                color = if (isDarkMode) Color.White.copy(alpha = 0.8f) else Color(0xFF444444),
-                                lineHeight = 18.sp
-                            )
-                            Spacer(modifier = Modifier.height(14.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                GlassCard(
-                                    shape = RoundedCornerShape(10.dp),
-                                    isDarkMode = isDarkMode,
-                                    onClick = {
-                                        hasUnderstoodIntro = true
-                                        context.getSharedPreferences("au_file_editor_prefs", Context.MODE_PRIVATE)
-                                            .edit().putBoolean("intro_understood", true).apply()
-                                    }
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .background(Brush.linearGradient(listOf(CrimsonPrimary, Color(0xFFFF5E7E))))
-                                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text("Understood", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(14.dp))
-                }
-
-                // In-Place Editor Mode
-                if (isEditingInPlace && selectedFileItem != null) {
-                    val item = selectedFileItem!!
-                    GlassCard(
+                // Import File button on top bar
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = {
+                            onOpenFileInEditor("Untitled_${System.currentTimeMillis() % 10000}.txt", "", "General")
+                        },
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        shape = RoundedCornerShape(16.dp),
-                        isDarkMode = isDarkMode
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(bgCard)
+                            .border(1.dp, borderCol, RoundedCornerShape(12.dp))
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = item.name,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp,
-                                        color = CrimsonPrimary
-                                    )
-                                    Text(
-                                        text = item.sizeString,
-                                        fontSize = 11.sp,
-                                        color = Color.Gray
-                                    )
-                                }
-
-                                Row {
-                                    IconButton(onClick = {
-                                        // Save back to file
-                                        try {
-                                            if (store.isLocked(item.path)) {
-                                                Toast.makeText(context, "File is locked — unlock to save changes", Toast.LENGTH_SHORT).show()
-                                                return@IconButton
-                                            }
-                                            if (item.file != null) {
-                                                item.file.writeText(fileContentEdit)
-                                                Toast.makeText(context, "File Saved!", Toast.LENGTH_SHORT).show()
-                                            } else if (item.uri != null) {
-                                                context.contentResolver.openOutputStream(item.uri, "wt")?.use { out ->
-                                                    out.write(fileContentEdit.toByteArray())
-                                                }
-                                                Toast.makeText(context, "File Saved to Storage!", Toast.LENGTH_SHORT).show()
-                                            }
-                                            refreshFiles()
-                                        } catch (e: Exception) {
-                                            Toast.makeText(context, "Save error: ${e.message}", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }) {
-                                        Icon(Icons.Default.Save, contentDescription = "Save", tint = Color(0xFF4CAF50))
-                                    }
-
-                                    FilledTonalButton(
-                                        onClick = {
-                                            val ext = item.name.substringAfterLast(".", "")
-                                            val category = when (ext.lowercase()) {
-                                                "py", "kt", "js", "html", "css", "java", "json" -> "Code"
-                                                else -> "General"
-                                            }
-                                            onOpenFileInEditor(item.name, fileContentEdit, category)
-                                        }
-                                    ) {
-                                        Text("Open in Note Editor", fontSize = 12.sp)
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(10.dp))
-
-                            OutlinedTextField(
-                                value = fileContentEdit,
-                                onValueChange = { if (!store.isLocked(item.path)) fileContentEdit = it },
-                                readOnly = store.isLocked(item.path),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                                textStyle = androidx.compose.ui.text.TextStyle(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 13.sp,
-                                    color = if (isDarkMode) Color.White else Color.Black
-                                ),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = CrimsonPrimary,
-                                    unfocusedBorderColor = if (isDarkMode) Color(0x33FFFFFF) else Color(0x33000000)
-                                )
-                            )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            TextButton(onClick = { isEditingInPlace = false }) {
-                                Text("Close In-Place Editor", color = CrimsonPrimary)
-                            }
-                        }
+                        Icon(
+                            Icons.Default.NoteAdd,
+                            contentDescription = "New File",
+                            tint = accent,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
-                } else {
-                    // Search Bar
-                    OutlinedTextField(
+
+                    Button(
+                        onClick = { openDocLauncher.launch(arrayOf("*/*")) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = accent,
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = "Import File", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Import File", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            HorizontalDivider(color = borderCol)
+
+            // Search bar
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(bgCard)
+                    .border(1.dp, borderCol, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Search, contentDescription = null, tint = textMuted, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    BasicTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = { Text("Search storage files...", fontSize = 13.sp, color = Color.Gray) },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = CrimsonPrimary) },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = CrimsonPrimary,
-                            unfocusedBorderColor = if (isDarkMode) Color(0x33FFFFFF) else Color(0x33000000)
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // File folders (app-managed). "All" shows everything, "Unfiled" what has no folder.
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        (listOf("All", "Unfiled") + storeFolders).forEach { name ->
-                            val selected = activeFolder == name
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(if (selected) CrimsonPrimary else (if (isDarkMode) Color(0x1AFFFFFF) else Color(0x0F000000)))
-                                    .clickable { activeFolder = name }
-                                    .padding(horizontal = 12.dp, vertical = 7.dp)
-                            ) {
-                                Text(
-                                    name, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                                    color = if (selected) Color.White else (if (isDarkMode) Color.White else Color(0xFF222222))
-                                )
+                        textStyle = TextStyle(color = textPrimary, fontSize = 14.sp),
+                        cursorBrush = SolidColor(accent),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        decorationBox = { inner ->
+                            if (searchQuery.isEmpty()) {
+                                Text("Search edited files...", color = textMuted, fontSize = 14.sp)
                             }
+                            inner()
                         }
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(CrimsonPrimary.copy(alpha = 0.15f))
-                                .clickable { showNewFolderDialog = true }
-                                .padding(horizontal = 12.dp, vertical = 7.dp)
-                        ) { Text("+ Folder", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary) }
+                    )
+                    if (searchQuery.isNotEmpty()) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Clear",
+                            tint = textMuted,
+                            modifier = Modifier.size(18.dp).clickable { searchQuery = "" }
+                        )
                     }
+                }
+            }
 
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // File List
-                    if (filteredList.isEmpty()) {
+            if (filteredFiles.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f),
+                                .size(68.dp)
+                                .clip(CircleShape)
+                                .background(accent.copy(alpha = 0.12f)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    painter = painterResource(R.drawable.ic_file_editor),
-                                    contentDescription = null,
-                                    tint = Color.Gray,
-                                    modifier = Modifier.size(48.dp)
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text("No files found", color = Color.Gray, fontSize = 14.sp)
-                                Text("Tap '+' to create a new file or folder icon to import.", color = CrimsonPrimary, fontSize = 12.sp)
-                            }
+                            Icon(
+                                Icons.Default.FolderOpen,
+                                contentDescription = null,
+                                tint = accent,
+                                modifier = Modifier.size(34.dp)
+                            )
                         }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = if (searchQuery.isBlank()) "No Edited Files Yet" else "No Matching Files",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = textPrimary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Tap 'Import File' in the top bar to pick any file from your phone and edit it directly in the full Note Editor.",
+                            fontSize = 12.sp,
+                            color = textSecondary,
+                            lineHeight = 18.sp
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = { openDocLauncher.launch(arrayOf("*/*")) },
+                            colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.White),
+                            shape = RoundedCornerShape(12.dp)
                         ) {
-                            items(filteredList) { item ->
-                                GlassCard(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(12.dp),
-                                    isDarkMode = isDarkMode,
-                                    elevation = 2.dp,
-                                    onClick = {
-                                        if (item.isPdf) {
-                                            if (item.file != null) {
-                                                onOpenPdf(Uri.fromFile(item.file))
-                                            } else if (item.uri != null) {
-                                                onOpenPdf(item.uri)
-                                            }
-                                        } else if (item.isDirectory) {
-                                            Toast.makeText(context, "Folders can't be opened here", Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            try {
-                                                val text = if (item.file != null) {
-                                                    item.file.readText()
-                                                } else if (item.uri != null) {
-                                                    context.contentResolver.openInputStream(item.uri)?.bufferedReader()?.use { it.readText() } ?: ""
-                                                } else ""
-
-                                                selectedFileItem = item
-                                                fileContentEdit = text
-                                                isEditingInPlace = true
-                                            } catch (e: Exception) {
-                                                Toast.makeText(context, "Cannot read file: ${e.message}", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    }
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Icon(
-                                                imageVector = if (item.isPdf) Icons.Default.PictureAsPdf else if (item.isDirectory) Icons.Default.Folder else Icons.Default.Description,
-                                                contentDescription = null,
-                                                tint = if (item.isPdf) Color(0xFFFF5252) else if (item.isDirectory) Color(0xFFFFCA28) else CrimsonPrimary,
-                                                modifier = Modifier.size(24.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(12.dp))
-                                            Column {
-                                                Text(
-                                                    text = item.name,
-                                                    fontSize = 14.sp,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = if (isDarkMode) Color.White else Color(0xFF111111)
-                                                )
-                                                Text(
-                                                    text = "${item.sizeString} • ${Date(item.lastModified).toLocaleString()}",
-                                                    fontSize = 11.sp,
-                                                    color = Color.Gray
-                                                )
-                                            }
-                                        }
-
-                                        val locked = remember(storeVersion, item.path) { store.isLocked(item.path) }
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            if (locked) {
-                                                Icon(Icons.Default.Lock, contentDescription = "Locked", tint = CrimsonPrimary, modifier = Modifier.size(16.dp))
-                                            }
-                                            Box {
-                                                IconButton(onClick = { menuItemPath = item.path }, modifier = Modifier.size(32.dp)) {
-                                                    Icon(Icons.Default.MoreVert, contentDescription = "Actions", tint = Color.Gray, modifier = Modifier.size(20.dp))
-                                                }
-                                                DropdownMenu(expanded = menuItemPath == item.path, onDismissRequest = { menuItemPath = null }) {
-                                                    // Open — every file type
-                                                    DropdownMenuItem(
-                                                        text = { Text("Open") },
-                                                        leadingIcon = { Icon(Icons.Default.OpenInNew, null) },
-                                                        onClick = {
-                                                            menuItemPath = null
-                                                            if (item.isPdf) {
-                                                                if (item.file != null) onOpenPdf(Uri.fromFile(item.file)) else item.uri?.let(onOpenPdf)
-                                                            } else if (!item.isDirectory) {
-                                                                try {
-                                                                    val text = item.file?.readText()
-                                                                        ?: item.uri?.let { u -> context.contentResolver.openInputStream(u)?.bufferedReader()?.use { it.readText() } }
-                                                                        ?: ""
-                                                                    selectedFileItem = item
-                                                                    fileContentEdit = text
-                                                                    isEditingInPlace = true
-                                                                } catch (e: Exception) {
-                                                                    Toast.makeText(context, "Cannot read file: ${e.message}", Toast.LENGTH_SHORT).show()
-                                                                }
-                                                            }
-                                                        }
-                                                    )
-                                                    // Edit — only text-like files that are not locked
-                                                    if (!item.isPdf && !item.isDirectory && !locked) {
-                                                        DropdownMenuItem(
-                                                            text = { Text("Edit") },
-                                                            leadingIcon = { Icon(Icons.Default.Edit, null) },
-                                                            onClick = {
-                                                                menuItemPath = null
-                                                                try {
-                                                                    val text = item.file?.readText() ?: ""
-                                                                    selectedFileItem = item
-                                                                    fileContentEdit = text
-                                                                    isEditingInPlace = true
-                                                                } catch (e: Exception) {
-                                                                    Toast.makeText(context, "Cannot read file: ${e.message}", Toast.LENGTH_SHORT).show()
-                                                                }
-                                                            }
-                                                        )
-                                                    }
-                                                    if (!item.isDirectory) {
-                                                        // Move — blocked while locked
-                                                        DropdownMenuItem(
-                                                            text = { Text(if (locked) "Move (locked)" else "Move to folder") },
-                                                            leadingIcon = { Icon(Icons.Default.DriveFileMove, null) },
-                                                            enabled = !locked,
-                                                            onClick = { menuItemPath = null; moveTarget = item }
-                                                        )
-                                                        // Rename — only files inside app storage
-                                                        if (item.file != null && store.isAppManaged(item.file)) {
-                                                            DropdownMenuItem(
-                                                                text = { Text(if (locked) "Rename (locked)" else "Rename") },
-                                                                leadingIcon = { Icon(Icons.Default.DriveFileRenameOutline, null) },
-                                                                enabled = !locked,
-                                                                onClick = { menuItemPath = null; renameInput = item.name; renameTarget = item }
-                                                            )
-                                                        }
-                                                        DropdownMenuItem(
-                                                            text = { Text(if (locked) "Unlock" else "Lock") },
-                                                            leadingIcon = { Icon(if (locked) Icons.Default.LockOpen else Icons.Default.Lock, null) },
-                                                            onClick = {
-                                                                menuItemPath = null
-                                                                store.setLocked(item.path, !locked)
-                                                                storeVersion++
-                                                                Toast.makeText(context, if (!locked) "Locked ${item.name}" else "Unlocked ${item.name}", Toast.LENGTH_SHORT).show()
-                                                            }
-                                                        )
-                                                    }
-                                                    DropdownMenuItem(
-                                                        text = { Text("Details") },
-                                                        leadingIcon = { Icon(Icons.Default.Info, null) },
-                                                        onClick = { menuItemPath = null; showDetailsDialog = item }
-                                                    )
-                                                    if (item.file != null && !item.isDirectory) {
-                                                        DropdownMenuItem(
-                                                            text = { Text(if (locked) "Delete (locked)" else "Delete", color = if (locked) Color.Gray else Color.Red) },
-                                                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = if (locked) Color.Gray else Color.Red) },
-                                                            enabled = !locked,
-                                                            onClick = { menuItemPath = null; deleteTarget = item }
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Select File from Storage", fontWeight = FontWeight.Bold)
                         }
                     }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(filteredFiles, key = { it.file.absolutePath }) { item ->
+                        EditedFileCard(
+                            item = item,
+                            isDarkMode = isDarkMode,
+                            onOpenInEditor = {
+                                val text = runCatching { item.file.readText() }.getOrDefault("")
+                                val ext = item.extension.lowercase()
+                                val cat = if (ext in listOf("html", "htm", "json", "xml", "py", "kt", "js", "ts", "css")) "Code" else "General"
+                                onOpenFileInEditor(item.name, text, cat)
+                            },
+                            onRename = {
+                                renameTarget = item
+                                renameInput = item.name
+                            },
+                            onSaveToMyDocuments = {
+                                scope.launch {
+                                    val saved = withContext(Dispatchers.IO) {
+                                        MyDocuments.importFile(context, item.file, item.name)
+                                    }
+                                    if (saved != null) {
+                                        Toast.makeText(context, "Saved '${saved.name}' to My Documents!", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "Could not save to My Documents", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            onSaveToNotes = {
+                                val content = runCatching { item.file.readText() }.getOrDefault("")
+                                onSaveToNote(item.name.substringBeforeLast('.').ifBlank { item.name }, content, "General")
+                                Toast.makeText(context, "Saved '${item.name}' to Notes!", Toast.LENGTH_SHORT).show()
+                            },
+                            onShare = {
+                                runCatching {
+                                    val uri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.provider",
+                                        item.file
+                                    )
+                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = com.example.ui.util.NoteExporter.mimeFor(".${item.extension.lowercase()}")
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(sendIntent, "Share ${item.name}"))
+                                }.onFailure {
+                                    Toast.makeText(context, "Unable to share file", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            onDelete = { deleteTarget = item }
+                        )
+                    }
+                    item { Spacer(modifier = Modifier.height(24.dp)) }
                 }
             }
         }
     }
 
-    // ---- Move dialog: destination list of available folders ----
-    moveTarget?.let { item ->
-        val outside = item.file != null && !store.isAppManaged(item.file)
-        AlertDialog(
-            onDismissRequest = { moveTarget = null },
-            title = { Text("Move \"${item.name}\"", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    if (outside || item.file == null) {
-                        Text(
-                            "This file belongs to other storage, so Android doesn't allow moving it. " +
-                                "A copy will be placed in the chosen folder inside AU Notes; the original stays where it is.",
-                            fontSize = 12.sp, color = Color.Gray
-                        )
-                        Spacer(Modifier.height(10.dp))
-                    }
-                    val options = listOf<Pair<String, String?>>("Unfiled (no folder)" to null) + storeFolders.map { it to it }
-                    options.forEach { (label, target) ->
-                        val current = store.folderOf(item.path)
-                        TextButton(
-                            onClick = {
-                                var path = item.path
-                                if (outside) {
-                                    val copy = item.file?.let { store.importFile(it, target) }
-                                    if (copy == null) {
-                                        Toast.makeText(context, "Could not copy file", Toast.LENGTH_SHORT).show()
-                                        moveTarget = null
-                                        return@TextButton
-                                    }
-                                    path = copy.absolutePath
-                                } else if (item.uri != null) {
-                                    val copy = store.importIntoAppStorage(item.uri, target)
-                                    if (copy == null) {
-                                        Toast.makeText(context, "Could not copy file", Toast.LENGTH_SHORT).show()
-                                        moveTarget = null
-                                        return@TextButton
-                                    }
-                                    path = copy.absolutePath
-                                } else {
-                                    store.assign(path, target)
-                                }
-                                moveTarget = null
-                                refreshFiles()
-                                storeVersion++
-                                Toast.makeText(context, if (target == null) "Moved to Unfiled" else "Moved to $target", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Folder, null, tint = Color(0xFFFFCA28), modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(10.dp))
-                                Text(
-                                    label,
-                                    fontWeight = if (current == target) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (current == target) CrimsonPrimary else Color.Unspecified
-                                )
-                            }
-                        }
-                    }
-                    if (storeFolders.isEmpty()) {
-                        Text("No folders yet — close this and tap \"+ Folder\" to create one.", fontSize = 12.sp, color = Color.Gray)
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { moveTarget = null }) { Text("Cancel") } }
-        )
-    }
-
-    renameTarget?.let { item ->
+    if (renameTarget != null) {
+        val target = renameTarget!!
         AlertDialog(
             onDismissRequest = { renameTarget = null },
-            title = { Text("Rename file", fontWeight = FontWeight.Bold) },
+            containerColor = bgCard,
+            title = { Text("Rename File", color = textPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 OutlinedTextField(
                     value = renameInput,
                     onValueChange = { renameInput = it },
-                    singleLine = true,
                     label = { Text("File name") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
-                    onClick = {
-                        val clean = renameInput.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
-                        val f = item.file
-                        if (f == null || clean.isEmpty() || store.isLocked(item.path)) {
-                            renameTarget = null
-                        } else {
-                            val dest = File(f.parentFile, clean)
-                            if (dest.exists()) {
-                                Toast.makeText(context, "A file with that name already exists", Toast.LENGTH_SHORT).show()
-                            } else if (f.renameTo(dest)) {
-                                store.onRenamed(f.absolutePath, dest.absolutePath)
-                                renameTarget = null
-                                refreshFiles()
-                                storeVersion++
-                            } else {
-                                Toast.makeText(context, "Rename failed", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
-                ) { Text("Rename") }
-            },
-            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Cancel") } }
-        )
-    }
-
-    if (showNewFolderDialog) {
-        AlertDialog(
-            onDismissRequest = { showNewFolderDialog = false; newFolderInput = "" },
-            title = { Text("New file folder", fontWeight = FontWeight.Bold) },
-            text = {
-                OutlinedTextField(
-                    value = newFolderInput,
-                    onValueChange = { newFolderInput = it },
                     singleLine = true,
-                    label = { Text("Folder name") },
                     modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
                 Button(
-                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
                     onClick = {
-                        if (store.createFolder(newFolderInput)) {
-                            activeFolder = newFolderInput.trim()
-                            storeVersion++
-                            showNewFolderDialog = false
-                            newFolderInput = ""
+                        val renamed = EditedFilesStore.renameEditedFile(target.file, renameInput)
+                        if (renamed != null) {
+                            refreshList()
+                            Toast.makeText(context, "Renamed to ${renamed.name}", Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, "Enter a new, unique folder name", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Could not rename file", Toast.LENGTH_SHORT).show()
                         }
-                    }
-                ) { Text("Create") }
-            },
-            dismissButton = { TextButton(onClick = { showNewFolderDialog = false; newFolderInput = "" }) { Text("Cancel") } }
-        )
-    }
-
-    deleteTarget?.let { item ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("Delete file?") },
-            text = { Text("\"${item.name}\" will be deleted permanently.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (!store.isLocked(item.path)) {
-                        item.file?.delete()
-                        store.onDeleted(item.path)
-                        refreshFiles()
-                        storeVersion++
-                        Toast.makeText(context, "Deleted ${item.name}", Toast.LENGTH_SHORT).show()
-                    }
-                    deleteTarget = null
-                }) { Text("Delete", color = Color.Red, fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } }
-        )
-    }
-
-    // Create File Dialog
-    if (showCreateDialog) {
-        AlertDialog(
-            onDismissRequest = { showCreateDialog = false },
-            title = { Text("Create File in Storage", fontWeight = FontWeight.Bold) },
-            text = {
-                OutlinedTextField(
-                    value = newFileName,
-                    onValueChange = { newFileName = it },
-                    label = { Text("Filename (e.g. script.py, notes.txt)") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
-                    onClick = {
-                        if (newFileName.isNotBlank()) {
-                            val docsDir = File(context.filesDir, "documents").apply { mkdirs() }
-                            val newFile = File(docsDir, newFileName.trim())
-                            newFile.writeText("")
-                            showCreateDialog = false
-                            newFileName = ""
-                            refreshFiles()
-                            Toast.makeText(context, "Created ${newFile.name}", Toast.LENGTH_SHORT).show()
-                        }
-                    }
+                        renameTarget = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.White)
                 ) {
-                    Text("Create")
+                    Text("Save", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showCreateDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { renameTarget = null }) {
+                    Text("Cancel", color = textSecondary)
+                }
             }
         )
     }
 
-    // Details Dialog
-    showDetailsDialog?.let { item ->
+    if (deleteTarget != null) {
+        val target = deleteTarget!!
         AlertDialog(
-            onDismissRequest = { showDetailsDialog = null },
-            title = { Text("File Details", fontWeight = FontWeight.Bold) },
+            onDismissRequest = { deleteTarget = null },
+            containerColor = bgCard,
+            title = { Text("Delete Edited File?", color = textPrimary, fontWeight = FontWeight.Bold) },
             text = {
-                Column {
-                    Text("Name: ${item.name}", fontWeight = FontWeight.SemiBold)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Path: ${item.path}", fontSize = 12.sp, color = Color.Gray)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Size: ${item.sizeString}", fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Modified: ${Date(item.lastModified).toLocaleString()}", fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Folder: ${store.folderOf(item.path) ?: "Unfiled"}", fontSize = 12.sp)
-                    Text("Status: ${if (store.isLocked(item.path)) "Locked" else "Unlocked"}", fontSize = 12.sp)
-                }
+                Text("Delete '${target.name}' from Edited Files?", color = textSecondary, fontSize = 13.sp)
             },
             confirmButton = {
-                TextButton(onClick = { showDetailsDialog = null }) { Text("Close") }
+                Button(
+                    onClick = {
+                        EditedFilesStore.deleteEditedFile(target.file)
+                        refreshList()
+                        deleteTarget = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = danger)
+                ) {
+                    Text("Delete", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text("Cancel", color = textSecondary)
+                }
             }
         )
+    }
+}
+
+@Composable
+private fun EditedFileCard(
+    item: EditedFileItem,
+    isDarkMode: Boolean,
+    onOpenInEditor: () -> Unit,
+    onRename: () -> Unit,
+    onSaveToMyDocuments: () -> Unit,
+    onSaveToNotes: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val bgCard = if (isDarkMode) NeuDarkSurface else NeuLightSurface
+    val bgSecondary = if (isDarkMode) Color(0xFF141418) else Color(0xFFEFECE4)
+    val borderCol = if (isDarkMode) NeuDarkBorder else NeuLightBorder
+    val textPrimary = if (isDarkMode) TextWhitePrimary else TextDarkPrimary
+    val textSecondary = if (isDarkMode) TextWhiteSecondary else TextDarkSecondary
+    val accent = CrimsonPrimary
+    val danger = Color(0xFFEF4444)
+
+    val dateFormat = remember { SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(bgCard)
+            .border(1.dp, borderCol, RoundedCornerShape(14.dp))
+            .clickable { onOpenInEditor() }
+            .padding(14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(accent.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = item.extension.uppercase().take(4).ifBlank { "TXT" },
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = accent,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.name,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "${MyDocuments.humanSize(item.sizeBytes)} • Edited ${dateFormat.format(Date(item.modifiedAt))}",
+                    fontSize = 11.sp,
+                    color = textSecondary
+                )
+            }
+
+            IconButton(onClick = onRename, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename", tint = textSecondary, modifier = Modifier.size(18.dp))
+            }
+            IconButton(onClick = onShare, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.Share, contentDescription = "Share", tint = textSecondary, modifier = Modifier.size(18.dp))
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", tint = danger, modifier = Modifier.size(18.dp))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+        HorizontalDivider(color = borderCol.copy(alpha = 0.6f))
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(accent.copy(alpha = 0.14f))
+                    .clickable { onOpenInEditor() }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Text("Edit in Note Editor", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = accent)
+            }
+
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(bgSecondary)
+                    .border(1.dp, borderCol, RoundedCornerShape(8.dp))
+                    .clickable { onSaveToMyDocuments() }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Text("Save to My Documents", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = textPrimary)
+            }
+
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(bgSecondary)
+                    .border(1.dp, borderCol, RoundedCornerShape(8.dp))
+                    .clickable { onSaveToNotes() }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Text("Save to Notes", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = textSecondary)
+            }
+        }
     }
 }

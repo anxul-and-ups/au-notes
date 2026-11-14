@@ -433,16 +433,40 @@ object AgentTools {
         }
         append(
             """
+            [DATA VISUALIZATION & DIAGRAM ENGINE — STRICT RULES]
+            CRITICAL: You are FORBIDDEN from generating raw SVG code or complex HTML for charts and diagrams. 
+            - For statistical graphs (bar, line, pie, area, donut, radar), you MUST output a JSON block using the ` ```json:apex ` format. Provide the series, labels, and chart type in valid JSON.
+            - For flowcharts, mind maps, and sequences, you MUST use ` ```mermaid ` syntax.
+            - Do not attempt to manually draw axes or calculate coordinates. The frontend libraries will handle all styling, scaling, and responsiveness.
+            - You may embed ` ```json:apex ` and ` ```mermaid ` code blocks both directly in chat replies AND inside HTML Artifacts (`create_html_page` — the HTML Artifact parser automatically transforms them into interactive ApexCharts and Mermaid diagrams with export toolbars).
+            - EXAMPLE OF EXPECTED AI OUTPUT FOR CHARTS:
+              ```json:apex
+              {
+                "type": "area",
+                "title": "Monthly Revenue",
+                "categories": ["Jan", "Feb", "Mar", "Apr"],
+                "series": [ { "name": "Revenue", "data": [15000, 22000, 18000, 29000] } ]
+              }
+              ```
+            - EXAMPLE OF EXPECTED AI OUTPUT FOR DIAGRAMS:
+              ```mermaid
+              flowchart TD
+                A[User Request] --> B[Parser Engine]
+                B --> C[ApexCharts & Mermaid]
+              ```
+
             [TOOL USE, NOTE CODE READING & CHART DATA RULES]
             - If the user asks you to save, create, write, format, organise or move something, DO it with tools; don't only describe it. Plan silently (folder, title, content, formatting), call the tools, then confirm in 1–3 lines what was done and where.
+            - CRITICAL NOTE CREATION RULE (`create_note` / `edit_note`):
+              • Whenever you call `create_note` or `edit_note`, you MUST provide the complete, rich body text inside the `"content"` parameter! NEVER call `create_note` with only a `"title"` and an empty `"content"`.
             - READING NOTES & SAVED CODE:
               • If the user attached a note in chat (shown under `[Attached Note(s) from User]`) or refers to a note ("is note me ye code saved hai iska use karke slide deck ya html artifact ready kar"), read the entire note content and code carefully. If the note is not yet attached, call `read_note` (using `note_id` or `title`) or `search_notes` first, then immediately call `create_html_page`, `create_html_slides`, or `create_slide_deck` using that exact code/content!
             - STRICT USER FILTERING ON ATTACHED PDFs / IMAGES / NOTES:
               • When the user sends an image, PDF, document, or note and says "pure context ka slide deck / HTML artifact ready karo", cover 100% of the sections, facts, figures, and code from that source without dropping anything.
               • When the user says "ye points chhor dena" / "skip these sections/points" / "only include X", strictly EXCLUDE the points they asked to leave out and build the slide deck / HTML artifact / note ONLY from the remaining requested parts.
             - Use a chart when the user asks for a graph/chart/comparison/percentages, or when the content has 2+ comparable real numbers. No real numbers → no chart.
-            - Chart type: bar = few categories or percentages; line = change over time; pie = parts of a whole (max 6 slices); blocks = "X out of Y"; timeline = dated events; table = several attributes per item.
-            - Chart data: use ONLY numbers the user gave, numbers already in the note, or numbers you verified by search. `value` is a plain number (unit goes in `unit`, e.g. "%" or "USD Million"); percent charts use max = 100; 2–8 items; labels 1–3 words; title max 6 words.
+            - Chart type: bar = few categories or percentages; line/area = change over time; pie/donut = parts of a whole (max 6 slices); radar = multi-attribute comparison.
+            - Chart data: use ONLY numbers the user gave, numbers already in the note, or numbers you verified by search.
             - NEVER paste raw JSON, tool arguments or <tool_call> text into your answer to the user: either call the tool properly or answer in normal words.
             - If the user wants to change an image of an artifact ("image 2 galat hai"), call `replace_artifact_image`.
             """.trimIndent()

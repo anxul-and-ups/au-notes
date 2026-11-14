@@ -239,20 +239,24 @@ data class ChartSeriesItem(
 )
 
 data class ChartDataSpec(
-    val type: String, // "bar", "line", "pie", "blocks", "timeline", "pyramid", "table", "flowchart"
+    val type: String, // "bar", "line", "pie", "area", "donut", "radar", "blocks", "timeline", "pyramid", "table", "flowchart"
     val title: String,
     val xAxisLabel: String = "",
     val yAxisLabel: String = "",
     val unit: String = "%",
     val max: Float = 100f,
     val items: List<ChartSeriesItem> = emptyList(),
-    val flowSteps: List<String> = emptyList()
+    val flowSteps: List<String> = emptyList(),
+    val apexJson: String = "",
+    val isBroken: Boolean = false
 )
 
 data class DiagramSpec(
     val title: String,
     val subtitle: String = "",
-    val svgContent: String
+    val svgContent: String,
+    val mermaidCode: String = "",
+    val isBroken: Boolean = false
 )
 
 data class OrganisedFileSpec(
@@ -506,85 +510,267 @@ object AgentVisualsParser {
     }
 
     fun parseChart(rawJson: String): ChartDataSpec? {
+        val clean = rawJson.trim()
+            .removePrefix("```json:apex")
+            .removePrefix("```apexcharts")
+            .removePrefix("```apexchart")
+            .removePrefix("```apex")
+            .removePrefix("```chart")
+            .removePrefix("```graph")
+            .removePrefix("```json")
+            .removePrefix("```")
+            .removeSuffix("```")
+            .trim()
+        if (clean.isBlank()) {
+            return ChartDataSpec(
+                type = "bar",
+                title = "Chart",
+                apexJson = rawJson,
+                isBroken = true
+            )
+        }
         return try {
-            val clean = rawJson.trim()
-                .removePrefix("```chart")
-                .removePrefix("```graph")
-                .removePrefix("```json")
-                .removePrefix("```")
-                .removeSuffix("```")
-                .trim()
             val obj = JSONObject(clean)
-            val type = obj.optString("chart_type", obj.optString("type", "bar")).lowercase()
-            val title = obj.optString("title", "BENCHMARK COMPARISON")
+            val chartSubObj = obj.optJSONObject("chart")
+            val type = obj.optString(
+                "chart_type",
+                obj.optString("type", chartSubObj?.optString("type", "bar") ?: "bar")
+            ).lowercase()
+            val titleObj = obj.optJSONObject("title")
+            val title = if (titleObj != null) {
+                titleObj.optString("text", "DATA VISUALIZATION")
+            } else {
+                obj.optString("title", "DATA VISUALIZATION")
+            }
             val xAxis = obj.optString("xAxisLabel", obj.optString("xAxis", ""))
             val yAxis = obj.optString("yAxisLabel", obj.optString("yAxis", ""))
-            val unit = obj.optString("unit", "%")
+            val unit = obj.optString("unit", "")
             val max = obj.optDouble("max", 100.0).toFloat()
-            val dataArr = obj.optJSONArray("items") ?: obj.optJSONArray("data") ?: JSONArray()
             val items = mutableListOf<ChartSeriesItem>()
-            for (i in 0 until dataArr.length()) {
-                val d = dataArr.optJSONObject(i) ?: continue
-                val label = d.optString("label", d.optString("name", "Item ${i + 1}"))
-                val value = d.optDouble("value", 0.0).toFloat()
-                val color = d.optString("color", editorialAccentPalette[i % editorialAccentPalette.size])
-                val icon = d.optString("icon", if (i == 0) "sparkle" else "star")
-                val subtitle = d.optString("subtitle", d.optString("detail", ""))
-                items.add(ChartSeriesItem(label, value, color, icon, subtitle))
+
+            // 1. Check ApexCharts `series` + `categories` / `labels` format
+            val seriesArr = obj.optJSONArray("series")
+            val xaxisObj = obj.optJSONObject("xaxis")
+            val categoriesArr = obj.optJSONArray("categories")
+                ?: xaxisObj?.optJSONArray("categories")
+                ?: obj.optJSONArray("labels")
+
+            if (seriesArr != null && seriesArr.length() > 0) {
+                val firstEl = seriesArr.opt(0)
+                if (firstEl is Number) {
+                    // Pie / Donut / Radial series: [44, 55, 13]
+                    for (i in 0 until seriesArr.length()) {
+                        val v = seriesArr.optDouble(i, Double.NaN)
+                        if (v.isNaN()) continue
+                        val lbl = categoriesArr?.optString(i)?.takeIf { it.isNotBlank() } ?: "Slice ${i + 1}"
+                        items.add(
+                            ChartSeriesItem(
+                                label = lbl,
+                                value = v.toFloat(),
+                                colorHex = editorialAccentPalette[i % editorialAccentPalette.size]
+                            )
+                        )
+                    }
+                } else if (firstEl is JSONObject) {
+                    // Standard ApexCharts series: [{ "name": "Revenue", "data": [15000, 22000, ...] }]
+                    val sData = firstEl.optJSONArray("data") ?: JSONArray()
+                    for (i in 0 until sData.length()) {
+                        val pt = sData.opt(i)
+                        val v = when (pt) {
+                            is Number -> pt.toFloat()
+                            is JSONObject -> pt.optDouble("y", pt.optDouble("value", Double.NaN)).toFloat()
+                            else -> Float.NaN
+                        }
+                        if (v.isNaN()) continue
+                        val lbl = when {
+                            pt is JSONObject && pt.optString("x").isNotBlank() -> pt.optString("x")
+                            categoriesArr != null && i < categoriesArr.length() -> categoriesArr.optString(i, "Item ${i + 1}")
+                            else -> "Item ${i + 1}"
+                        }
+                        items.add(
+                            ChartSeriesItem(
+                                label = lbl,
+                                value = v,
+                                colorHex = editorialAccentPalette[i % editorialAccentPalette.size],
+                                subtitle = firstEl.optString("name", "")
+                            )
+                        )
+                    }
+                }
             }
+
+            // 2. Fallback to legacy `items` / `data` array
+            if (items.isEmpty()) {
+                val dataArr = obj.optJSONArray("items") ?: obj.optJSONArray("data") ?: JSONArray()
+                for (i in 0 until dataArr.length()) {
+                    val d = dataArr.optJSONObject(i) ?: continue
+                    val label = d.optString("label", d.optString("name", "Item ${i + 1}"))
+                    val value = d.optDouble("value", Double.NaN).toFloat()
+                    if (value.isNaN()) continue
+                    val color = d.optString("color", editorialAccentPalette[i % editorialAccentPalette.size])
+                    val icon = d.optString("icon", if (i == 0) "sparkle" else "star")
+                    val subtitle = d.optString("subtitle", d.optString("detail", ""))
+                    items.add(ChartSeriesItem(label, value, color, icon, subtitle))
+                }
+            }
+
             val stepsArr = obj.optJSONArray("steps") ?: obj.optJSONArray("flowSteps") ?: JSONArray()
             val steps = mutableListOf<String>()
             for (i in 0 until stepsArr.length()) {
                 val st = stepsArr.optString(i).trim()
                 if (st.isNotEmpty()) steps.add(st)
             }
-            if (items.isEmpty() && steps.isEmpty()) null
-            else validateChartSpec(
+
+            if (items.isEmpty() && steps.isEmpty()) {
                 ChartDataSpec(
                     type = type,
                     title = title,
-                    xAxisLabel = xAxis,
-                    yAxisLabel = yAxis,
-                    unit = unit,
-                    max = max,
-                    items = items,
-                    flowSteps = steps
+                    apexJson = clean,
+                    isBroken = true
                 )
-            )
+            } else {
+                // Build normalized ApexCharts JSON if the input used the legacy items format
+                val normalizedApexJson = if (seriesArr != null) {
+                    clean
+                } else {
+                    JSONObject().apply {
+                        put("type", type)
+                        put("title", title)
+                        if (unit.isNotBlank()) put("unit", unit)
+                        val cats = JSONArray()
+                        val vals = JSONArray()
+                        val cols = JSONArray()
+                        items.forEach { it ->
+                            cats.put(it.label)
+                            vals.put(it.value.toDouble())
+                            cols.put(it.colorHex.ifBlank { "#EA580C" })
+                        }
+                        put("categories", cats)
+                        put("labels", cats)
+                        put("colors", cols)
+                        if (type == "pie" || type == "donut" || type == "radialbar") {
+                            put("series", vals)
+                        } else {
+                            put(
+                                "series",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("name", title.ifBlank { "Series 1" })
+                                        .put("data", vals)
+                                )
+                            )
+                        }
+                    }.toString(2)
+                }
+                validateChartSpec(
+                    ChartDataSpec(
+                        type = type,
+                        title = title,
+                        xAxisLabel = xAxis,
+                        yAxisLabel = yAxis,
+                        unit = unit,
+                        max = max,
+                        items = items,
+                        flowSteps = steps,
+                        apexJson = normalizedApexJson,
+                        isBroken = false
+                    )
+                )
+            }
         } catch (_: Exception) {
-            null
+            ChartDataSpec(
+                type = "bar",
+                title = "Chart",
+                apexJson = clean,
+                isBroken = true
+            )
         }
     }
 
     fun parseDiagram(raw: String): DiagramSpec? {
+        val clean = raw.trim()
+            .removePrefix("```mermaid")
+            .removePrefix("```flowchart")
+            .removePrefix("```mindmap")
+            .removePrefix("```sequence")
+            .removePrefix("```diagram")
+            .removePrefix("```svg")
+            .removePrefix("```")
+            .removeSuffix("```")
+            .trim()
+        if (clean.isBlank()) {
+            return DiagramSpec(
+                title = "Diagram",
+                svgContent = "",
+                mermaidCode = raw,
+                isBroken = true
+            )
+        }
         return try {
-            val clean = raw.trim()
-                .removePrefix("```diagram")
-                .removePrefix("```svg")
-                .removePrefix("```")
-                .removeSuffix("```")
-                .trim()
             if (clean.startsWith("{")) {
                 val obj = JSONObject(clean)
                 val svg = obj.optString("svg", "")
-                if (svg.isBlank()) null
-                else DiagramSpec(
-                    title = obj.optString("title", "Vector Diagram"),
-                    subtitle = obj.optString("subtitle", ""),
-                    svgContent = svg
-                )
+                val mermaid = obj.optString("mermaid", obj.optString("code", ""))
+                if (svg.isBlank() && mermaid.isBlank()) {
+                    DiagramSpec(title = "Diagram", svgContent = "", mermaidCode = clean, isBroken = true)
+                } else {
+                    DiagramSpec(
+                        title = obj.optString("title", "Flow Diagram"),
+                        subtitle = obj.optString("subtitle", ""),
+                        svgContent = svg,
+                        mermaidCode = mermaid,
+                        isBroken = false
+                    )
+                }
             } else if (clean.contains("<svg", ignoreCase = true)) {
                 val svgStart = clean.indexOf("<svg", ignoreCase = true)
-                val header = if (svgStart > 0) clean.substring(0, svgStart).trim() else "Editorial Vector Diagram"
+                val header = if (svgStart > 0) clean.substring(0, svgStart).trim() else "Vector Diagram"
                 val svgBody = clean.substring(svgStart)
                 DiagramSpec(
-                    title = header.lines().firstOrNull()?.removePrefix("#")?.trim()?.ifBlank { "Editorial Vector Diagram" } ?: "Editorial Vector Diagram",
+                    title = header.lines().firstOrNull()?.removePrefix("#")?.trim()?.ifBlank { "Vector Diagram" } ?: "Vector Diagram",
                     subtitle = "",
-                    svgContent = svgBody
+                    svgContent = svgBody,
+                    mermaidCode = "",
+                    isBroken = false
                 )
-            } else null
+            } else {
+                // Mermaid syntax validation
+                val firstLine = clean.lines().map { it.trim() }.firstOrNull { it.isNotEmpty() && !it.startsWith("%%") } ?: ""
+                val validMermaidStart = firstLine.startsWith("graph ", ignoreCase = true) ||
+                    firstLine.equals("graph", ignoreCase = true) ||
+                    firstLine.startsWith("flowchart ", ignoreCase = true) ||
+                    firstLine.equals("flowchart", ignoreCase = true) ||
+                    firstLine.startsWith("sequenceDiagram", ignoreCase = true) ||
+                    firstLine.startsWith("mindmap", ignoreCase = true) ||
+                    firstLine.startsWith("stateDiagram", ignoreCase = true) ||
+                    firstLine.startsWith("classDiagram", ignoreCase = true) ||
+                    firstLine.startsWith("erDiagram", ignoreCase = true) ||
+                    firstLine.startsWith("gantt", ignoreCase = true) ||
+                    firstLine.startsWith("pie", ignoreCase = true) ||
+                    clean.contains("-->") ||
+                    clean.contains("->>") ||
+                    clean.contains("---")
+                val inferredTitle = when {
+                    firstLine.startsWith("sequenceDiagram", ignoreCase = true) -> "Sequence Diagram"
+                    firstLine.startsWith("mindmap", ignoreCase = true) -> "Mind Map"
+                    firstLine.startsWith("stateDiagram", ignoreCase = true) -> "State Diagram"
+                    else -> "Flowchart Diagram"
+                }
+                DiagramSpec(
+                    title = inferredTitle,
+                    subtitle = "Mermaid.js",
+                    svgContent = "",
+                    mermaidCode = clean,
+                    isBroken = !validMermaidStart
+                )
+            }
         } catch (_: Exception) {
-            null
+            DiagramSpec(
+                title = "Diagram",
+                svgContent = "",
+                mermaidCode = clean,
+                isBroken = true
+            )
         }
     }
 
@@ -2846,7 +3032,68 @@ fun BarChartBlock(
 }
 
 // =============================================================================================
-// AGENT CHART CARD (SUPPORTS BAR, PIE, LINE, BLOCKS, TIMELINE, PYRAMID, TABLE)
+// JAVASCRIPT BRIDGE FOR EXPORTING PNG / SVG & COPYING JSON / CODE FROM CHART WEBIEWS
+// =============================================================================================
+
+private class AUChartBridge(private val context: Context) {
+    @android.webkit.JavascriptInterface
+    fun copyText(text: String) {
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            runCatching {
+                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("Chart Code", text))
+                Toast.makeText(context, "Copied to clipboard!", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    @android.webkit.JavascriptInterface
+    fun saveSvg(svgContent: String, fileName: String) {
+        val safeName = fileName.ifBlank { "chart_${System.currentTimeMillis()}.svg" }
+            .let { if (it.endsWith(".svg", true)) it else "$it.svg" }
+        Thread {
+            val saved = runCatching {
+                val tmp = File(context.cacheDir, safeName)
+                tmp.writeText(svgContent, Charsets.UTF_8)
+                NoteExporter.saveToDevice(context, tmp, safeName, "image/svg+xml")
+            }.getOrNull()
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                Toast.makeText(
+                    context,
+                    if (saved != null) "Saved SVG to ${saved.displayPath}" else "Could not export SVG",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }.start()
+    }
+
+    @android.webkit.JavascriptInterface
+    fun savePngDataUrl(dataUrl: String, fileName: String) {
+        val safeName = fileName.ifBlank { "chart_${System.currentTimeMillis()}.png" }
+            .let { if (it.endsWith(".png", true)) it else "$it.png" }
+        Thread {
+            val ok = runCatching {
+                val b64 = dataUrl.substringAfter("base64,", "")
+                if (b64.isBlank()) return@runCatching false
+                val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@runCatching false
+                val res = AgentVisualsParser.saveBitmapToGallery(context, bmp, safeName)
+                bmp.recycle()
+                res
+            }.getOrDefault(false)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                Toast.makeText(
+                    context,
+                    if (ok) "Exported PNG to Gallery!" else "Could not export PNG",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }.start()
+    }
+}
+
+// =============================================================================================
+// AGENT CHART CARD (POWERED BY LOCAL OFFLINE APEXCHARTS ENGINE + CUSTOM TOOLBAR)
 // =============================================================================================
 
 @Composable
@@ -2858,13 +3105,112 @@ fun AgentChartCard(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val cardBg = if (isDarkMode) Color(0xFF17171B) else Color(0xFFFAF8F5)
+    val borderCol = if (isDarkMode) Color(0xFF2C2C34) else Color(0xFFD6D3CB)
+    val fg = if (isDarkMode) Color(0xFFF4F1EA) else Color(0xFF18181B)
+
+    if (spec.isBroken) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 6.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(cardBg)
+                .border(1.dp, Color(0xFFEF4444).copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                .padding(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Chart could not be generated",
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFEF4444)
+            )
+        }
+        return
+    }
+
     val validSpec = remember(spec) { AgentVisualsParser.validateChartSpec(spec) }
     val renderedBitmap = remember(validSpec) {
         AgentVisualsParser.renderChartBitmap(validSpec, 1200, 820)
     }
-    val cardBg = if (isDarkMode) Color(0xFF17171B) else Color(0xFFFAF8F5)
-    val borderCol = if (isDarkMode) Color(0xFF2C2C34) else Color(0xFFD6D3CB)
-    val fg = if (isDarkMode) Color(0xFFF4F1EA) else Color(0xFF18181B)
+    var chartWebViewRef by remember { mutableStateOf<WebView?>(null) }
+
+    val jsonToCopy = remember(validSpec) {
+        validSpec.apexJson.ifBlank { AgentVisualsParser.chartSpecToJson(validSpec) }
+    }
+
+    val apexHtml = remember(validSpec, isDarkMode) {
+        val b64 = android.util.Base64.encodeToString(
+            jsonToCopy.toByteArray(Charsets.UTF_8),
+            android.util.Base64.NO_WRAP
+        )
+        val bgHex = if (isDarkMode) "#17171B" else "#FFFFFF"
+        val fgHex = if (isDarkMode) "#F4F4F6" else "#0F172A"
+        """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <script src="file:///android_asset/apexcharts.min.js"></script>
+        <style>
+          * { box-sizing: border-box; }
+          body {
+            margin: 0;
+            padding: 8px;
+            background: $bgHex;
+            color: $fgHex;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            overflow-x: hidden;
+          }
+          #apex_root { width: 100%; min-height: 250px; }
+          .err-box {
+            padding: 24px 16px;
+            border-radius: 12px;
+            border: 1px dashed rgba(239,68,68,0.45);
+            background: rgba(239,68,68,0.08);
+            color: #EF4444;
+            text-align: center;
+            font-weight: 700;
+            font-size: 13px;
+          }
+        </style>
+        </head>
+        <body>
+          <div id="apex_root"></div>
+          <script>
+            (function(){
+              try {
+                var raw = decodeURIComponent(Array.prototype.map.call(window.atob('$b64'), function(c) {
+                  return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+                }).join(''));
+                var cfg = JSON.parse(raw);
+                cfg.theme = { mode: '${if (isDarkMode) "dark" else "light"}' };
+                var chart = new window.ApexCharts(document.getElementById('apex_root'), cfg);
+                chart.render();
+                window.__chartInstance = chart;
+              } catch (e) {
+                document.getElementById('apex_root').innerHTML = '<div class="err-box">Chart could not be generated</div>';
+              }
+            })();
+          </script>
+        </body>
+        </html>
+        """.trimIndent()
+    }
+
+    fun captureWebViewOrFallback(): Bitmap {
+        val wv = chartWebViewRef
+        if (wv != null && wv.width > 0 && wv.height > 0) {
+            return runCatching {
+                val bmp = Bitmap.createBitmap(wv.width, wv.height, Bitmap.Config.ARGB_8888)
+                val c = Canvas(bmp)
+                wv.draw(c)
+                bmp
+            }.getOrDefault(renderedBitmap)
+        }
+        return renderedBitmap
+    }
 
     Column(
         modifier = Modifier
@@ -2875,91 +3221,207 @@ fun AgentChartCard(
             .border(1.dp, borderCol, RoundedCornerShape(16.dp))
             .padding(12.dp)
     ) {
-        when (validSpec.type) {
-            "bar" -> {
-                BarChartBlock(
-                    title = validSpec.title,
-                    unit = validSpec.unit,
-                    max = validSpec.max,
-                    items = validSpec.items
-                )
-            }
-            "blocks" -> {
-                EditorialBlocksChart(validSpec)
-            }
-            "timeline" -> {
-                EditorialTimelineChart(validSpec)
-            }
-            "pyramid" -> {
-                EditorialPyramidChart(validSpec)
-            }
-            else -> {
-                androidx.compose.foundation.Image(
-                    bitmap = renderedBitmap.asImageBitmap(),
-                    contentDescription = validSpec.title,
-                    contentScale = androidx.compose.ui.layout.ContentScale.FillWidth,
+        // Custom Chart Toolbar Header
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFFEA580C).copy(alpha = 0.14f))
+                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = "APEXCHARTS • ${validSpec.type.uppercase()}",
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color(0xFFEA580C),
+                        letterSpacing = 0.6.sp
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = validSpec.title,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
 
+        when (validSpec.type) {
+            "blocks" -> EditorialBlocksChart(validSpec)
+            "timeline" -> EditorialTimelineChart(validSpec)
+            "pyramid" -> EditorialPyramidChart(validSpec)
+            else -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(290.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.dp, borderCol, RoundedCornerShape(12.dp))
+                ) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.allowFileAccess = true
+                                settings.allowContentAccess = true
+                                settings.loadWithOverviewMode = true
+                                settings.useWideViewPort = true
+                                addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
+                                setOnTouchListener { v, event ->
+                                    when (event.actionMasked) {
+                                        android.view.MotionEvent.ACTION_DOWN -> v.parent?.requestDisallowInterceptTouchEvent(true)
+                                        android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.parent?.requestDisallowInterceptTouchEvent(false)
+                                    }
+                                    false
+                                }
+                                webViewClient = createSafeWebViewClient()
+                                tag = apexHtml
+                                loadDataWithBaseURL("file:///android_asset/", apexHtml, "text/html", "UTF-8", null)
+                                chartWebViewRef = this
+                            }
+                        },
+                        update = { wv ->
+                            chartWebViewRef = wv
+                            if (wv.tag != apexHtml) {
+                                wv.tag = apexHtml
+                                wv.loadDataWithBaseURL("file:///android_asset/", apexHtml, "text/html", "UTF-8", null)
+                            }
+                        },
+                        onRelease = { wv ->
+                            if (chartWebViewRef === wv) chartWebViewRef = null
+                            runCatching {
+                                (wv.parent as? ViewGroup)?.removeView(wv)
+                                wv.stopLoading()
+                                wv.destroy()
+                            }
+                        }
+                    )
+                }
+            }
+        }
+
         Spacer(Modifier.height(8.dp))
+        // Custom Action Toolbar: Export PNG | Export SVG | Copy JSON | Add to Note
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .height(36.dp)
+                    .height(34.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(Color(0xFFEA580C).copy(alpha = 0.15f))
                     .clickable {
+                        val bmp = captureWebViewOrFallback()
                         scope.launch(Dispatchers.IO) {
                             val ok = AgentVisualsParser.saveBitmapToGallery(
                                 context,
-                                renderedBitmap,
+                                bmp,
                                 "chart_${System.currentTimeMillis()}.png"
                             )
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(
                                     context,
-                                    if (ok) "Chart saved to Gallery!" else "Could not save chart",
+                                    if (ok) "Exported PNG to Gallery!" else "Could not export PNG",
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }
                         }
-                    },
+                    }
+                    .padding(horizontal = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Download, null, tint = Color(0xFFEA580C), modifier = Modifier.size(15.dp))
+                    Icon(Icons.Default.Download, null, tint = Color(0xFFEA580C), modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Save PNG", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEA580C))
+                    Text("Export PNG", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEA580C))
                 }
             }
+
+            Box(
+                modifier = Modifier
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(fg.copy(alpha = 0.08f))
+                    .clickable {
+                        val wv = chartWebViewRef
+                        if (wv != null) {
+                            wv.evaluateJavascript(
+                                "(function(){ var s = document.querySelector('svg'); return s ? new XMLSerializer().serializeToString(s) : ''; })()"
+                            ) { res ->
+                                val unescaped = runCatching {
+                                    org.json.JSONTokener(res).nextValue()?.toString().orEmpty()
+                                }.getOrDefault("")
+                                if (unescaped.contains("<svg")) {
+                                    AUChartBridge(context).saveSvg(unescaped, "chart_${System.currentTimeMillis()}.svg")
+                                } else {
+                                    Toast.makeText(context, "SVG not ready", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    }
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Code, null, tint = fg, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Export SVG", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = fg)
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(fg.copy(alpha = 0.08f))
+                    .clickable {
+                        AUChartBridge(context).copyText(jsonToCopy)
+                    }
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Description, null, tint = fg, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Copy JSON", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = fg)
+                }
+            }
+
             if (onAddChartSpecToNote != null || onAddImageToNote != null) {
                 Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .height(36.dp)
+                        .height(34.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .background(fg.copy(alpha = 0.08f))
                         .clickable {
                             if (onAddChartSpecToNote != null) {
                                 onAddChartSpecToNote(validSpec)
                             } else {
-                                onAddImageToNote?.invoke(renderedBitmap, validSpec.title)
+                                onAddImageToNote?.invoke(captureWebViewOrFallback(), validSpec.title)
                             }
-                        },
+                        }
+                        .padding(horizontal = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.AddPhotoAlternate, null, tint = fg, modifier = Modifier.size(15.dp))
+                        Icon(Icons.Default.AddPhotoAlternate, null, tint = fg, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Add to Note", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = fg)
+                        Text("Add to Note", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = fg)
                     }
                 }
             }
@@ -3094,7 +3556,7 @@ private fun EditorialPyramidChart(spec: ChartDataSpec) {
 }
 
 // =============================================================================================
-// VECTOR DIAGRAM SVG CARD (WARM-PAPER EDITORIAL STYLING + FULLSCREEN VIEWER)
+// MERMAID.JS & SVG DIAGRAM CARD (LOCAL OFFLINE MERMAID ENGINE + CUSTOM TOOLBAR)
 // =============================================================================================
 
 @Composable
@@ -3111,20 +3573,105 @@ fun AgentDiagramCard(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var showFullScreen by remember { mutableStateOf(false) }
 
-    val wrappedHtml = remember(spec.svgContent) {
-        """
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          body { margin: 0; padding: 14px; background: #EFECE4; color: #18181B; display: flex; align-items: center; justify-content: center; font-family: 'Inter', system-ui, sans-serif; }
-          svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
-        </style>
-        </head>
-        <body>${spec.svgContent}</body>
-        </html>
-        """.trimIndent()
+    if (spec.isBroken) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 6.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(cardBg)
+                .border(1.dp, Color(0xFFEF4444).copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                .padding(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Chart could not be generated",
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFEF4444)
+            )
+        }
+        return
+    }
+
+    val codeToCopy = remember(spec) {
+        spec.mermaidCode.ifBlank { spec.svgContent }
+    }
+
+    val wrappedHtml = remember(spec.svgContent, spec.mermaidCode, isDarkMode) {
+        val bgHex = if (isDarkMode) "#17171B" else "#FFFFFF"
+        val fgHex = if (isDarkMode) "#F4F4F6" else "#0F172A"
+        if (spec.mermaidCode.isNotBlank()) {
+            val b64 = android.util.Base64.encodeToString(
+                spec.mermaidCode.toByteArray(Charsets.UTF_8),
+                android.util.Base64.NO_WRAP
+            )
+            """
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <script src="file:///android_asset/mermaid.min.js"></script>
+            <style>
+              * { box-sizing: border-box; }
+              body {
+                margin: 0;
+                padding: 12px;
+                background: $bgHex;
+                color: $fgHex;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-family: 'Inter', system-ui, -apple-system, sans-serif;
+              }
+              #mermaid_root { width: 100%; overflow-x: auto; text-align: center; }
+              svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+              .err-box {
+                padding: 24px 16px;
+                border-radius: 12px;
+                border: 1px dashed rgba(239,68,68,0.45);
+                background: rgba(239,68,68,0.08);
+                color: #EF4444;
+                text-align: center;
+                font-weight: 700;
+                font-size: 13px;
+              }
+            </style>
+            </head>
+            <body>
+              <div id="mermaid_root"></div>
+              <script>
+                (function(){
+                  try {
+                    var code = decodeURIComponent(Array.prototype.map.call(window.atob('$b64'), function(c) {
+                      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+                    }).join(''));
+                    window.mermaid.initialize({ startOnLoad: false, theme: '${if (isDarkMode) "dark" else "default"}' });
+                    var svg = window.mermaid.renderSvgSync(code, 'm_diag_1');
+                    document.getElementById('mermaid_root').innerHTML = svg;
+                  } catch (e) {
+                    document.getElementById('mermaid_root').innerHTML = '<div class="err-box">Chart could not be generated</div>';
+                  }
+                })();
+              </script>
+            </body>
+            </html>
+            """.trimIndent()
+        } else {
+            """
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+              body { margin: 0; padding: 14px; background: $bgHex; color: $fgHex; display: flex; align-items: center; justify-content: center; font-family: 'Inter', system-ui, sans-serif; }
+              svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+            </style>
+            </head>
+            <body>${spec.svgContent}</body>
+            </html>
+            """.trimIndent()
+        }
     }
 
     fun captureDiagramBitmap(): Bitmap? {
@@ -3150,13 +3697,31 @@ fun AgentDiagramCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = spec.title,
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.Bold,
-                color = fg,
-                modifier = Modifier.weight(1f)
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFFEA580C).copy(alpha = 0.14f))
+                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = if (spec.mermaidCode.isNotBlank()) "MERMAID.JS" else "DIAGRAM",
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color(0xFFEA580C),
+                        letterSpacing = 0.6.sp
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = spec.title,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             IconButton(onClick = { showFullScreen = true }, modifier = Modifier.size(28.dp)) {
                 Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen Diagram", tint = Color(0xFFEA580C))
             }
@@ -3165,20 +3730,24 @@ fun AgentDiagramCard(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(240.dp)
+                .height(260.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .border(2.dp, Color(0xFF18181B), RoundedCornerShape(12.dp))
+                .border(1.dp, borderCol, RoundedCornerShape(12.dp))
         ) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     WebView(ctx).apply {
-                        settings.javaScriptEnabled = false
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.allowFileAccess = true
+                        settings.allowContentAccess = true
                         settings.loadWithOverviewMode = true
                         settings.useWideViewPort = true
+                        addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
                         webViewClient = createSafeWebViewClient()
                         tag = wrappedHtml
-                        loadDataWithBaseURL(null, wrappedHtml, "text/html", "UTF-8", null)
+                        loadDataWithBaseURL("file:///android_asset/", wrappedHtml, "text/html", "UTF-8", null)
                         webViewRef = this
                     }
                 },
@@ -3186,7 +3755,7 @@ fun AgentDiagramCard(
                     webViewRef = wv
                     if (wv.tag != wrappedHtml) {
                         wv.tag = wrappedHtml
-                        wv.loadDataWithBaseURL(null, wrappedHtml, "text/html", "UTF-8", null)
+                        wv.loadDataWithBaseURL("file:///android_asset/", wrappedHtml, "text/html", "UTF-8", null)
                     }
                 },
                 onRelease = { wv ->
@@ -3200,14 +3769,16 @@ fun AgentDiagramCard(
             )
         }
         Spacer(Modifier.height(8.dp))
+        // Custom Toolbar: Export PNG | Export SVG | Copy Code | Add to Note
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .height(36.dp)
+                    .height(34.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(Color(0xFFEA580C).copy(alpha = 0.14f))
                     .clickable {
@@ -3222,26 +3793,77 @@ fun AgentDiagramCard(
                                 withContext(Dispatchers.Main) {
                                     Toast.makeText(
                                         context,
-                                        if (ok) "Diagram saved to Gallery!" else "Could not save diagram",
+                                        if (ok) "Exported PNG to Gallery!" else "Could not save diagram",
                                         Toast.LENGTH_SHORT
                                     ).show()
                                 }
                             }
                         }
-                    },
+                    }
+                    .padding(horizontal = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Download, null, tint = Color(0xFFEA580C), modifier = Modifier.size(15.dp))
+                    Icon(Icons.Default.Download, null, tint = Color(0xFFEA580C), modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Save Diagram", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEA580C))
+                    Text("Export PNG", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEA580C))
                 }
             }
+
+            Box(
+                modifier = Modifier
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(fg.copy(alpha = 0.08f))
+                    .clickable {
+                        val wv = webViewRef
+                        if (wv != null) {
+                            wv.evaluateJavascript(
+                                "(function(){ var s = document.querySelector('svg'); return s ? new XMLSerializer().serializeToString(s) : ''; })()"
+                            ) { res ->
+                                val unescaped = runCatching {
+                                    org.json.JSONTokener(res).nextValue()?.toString().orEmpty()
+                                }.getOrDefault("")
+                                if (unescaped.contains("<svg")) {
+                                    AUChartBridge(context).saveSvg(unescaped, "diagram_${System.currentTimeMillis()}.svg")
+                                } else {
+                                    Toast.makeText(context, "SVG not ready", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    }
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Code, null, tint = fg, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Export SVG", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = fg)
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(fg.copy(alpha = 0.08f))
+                    .clickable {
+                        AUChartBridge(context).copyText(codeToCopy)
+                    }
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Description, null, tint = fg, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Copy Code", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = fg)
+                }
+            }
+
             if (onAddSvgBitmapToNote != null) {
                 Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .height(36.dp)
+                        .height(34.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .background(fg.copy(alpha = 0.08f))
                         .clickable {
@@ -3249,13 +3871,14 @@ fun AgentDiagramCard(
                             if (bmp != null) {
                                 onAddSvgBitmapToNote(bmp, spec.title)
                             }
-                        },
+                        }
+                        .padding(horizontal = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.AddPhotoAlternate, null, tint = fg, modifier = Modifier.size(15.dp))
+                        Icon(Icons.Default.AddPhotoAlternate, null, tint = fg, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Add to Note", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = fg)
+                        Text("Add to Note", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = fg)
                     }
                 }
             }
@@ -3267,31 +3890,35 @@ fun AgentDiagramCard(
             onDismissRequest = { showFullScreen = false },
             properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
-            Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFFEFECE4)) {
+            Surface(modifier = Modifier.fillMaxSize(), color = if (isDarkMode) Color(0xFF17171B) else Color(0xFFFAF8F5)) {
                 Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Color.White)
+                            .background(if (isDarkMode) Color(0xFF202026) else Color.White)
                             .padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         IconButton(onClick = { showFullScreen = false }) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.Black)
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = fg)
                         }
-                        Text(spec.title, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                        Text(spec.title, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = fg)
                         Spacer(Modifier.width(40.dp))
                     }
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
                             WebView(ctx).apply {
-                                settings.javaScriptEnabled = false
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.allowFileAccess = true
+                                settings.allowContentAccess = true
                                 settings.builtInZoomControls = true
                                 settings.displayZoomControls = false
+                                addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
                                 webViewClient = createSafeWebViewClient()
-                                loadDataWithBaseURL(null, wrappedHtml, "text/html", "UTF-8", null)
+                                loadDataWithBaseURL("file:///android_asset/", wrappedHtml, "text/html", "UTF-8", null)
                             }
                         },
                         onRelease = { wv ->
@@ -3323,27 +3950,27 @@ fun HtmlArtifactCard(
     // Built artifacts (images already downloaded) arrive as "AUFILE:<path to local index.html>"
     val fileMode = htmlCode.startsWith("AUFILE:")
     val filePath = htmlCode.removePrefix("AUFILE:")
-    val resolvedHtml = remember(htmlCode) {
+    val resolvedHtml = remember(htmlCode, isDarkMode) {
         if (fileMode) {
             runCatching {
                 val f = File(filePath)
-                if (f.exists()) com.example.data.ai.ArtifactBuilder.inlineForExport(f) else ""
+                if (f.exists()) com.example.data.ai.ArtifactBuilder.harden(com.example.data.ai.ArtifactBuilder.inlineForExport(f), isDarkMode) else ""
             }.getOrDefault("")
         } else {
-            com.example.data.ai.ArtifactBuilder.harden(htmlCode)
+            com.example.data.ai.ArtifactBuilder.harden(htmlCode, isDarkMode)
         }
     }
     val loadPage: (WebView) -> Unit = { wv ->
-        if (wv.tag != htmlCode) {
-            wv.tag = htmlCode
+        if (wv.tag != resolvedHtml) {
+            wv.tag = resolvedHtml
             wv.settings.allowFileAccess = true
             wv.settings.allowContentAccess = true
             if (resolvedHtml.isNotBlank()) {
                 val baseUrl = if (fileMode) {
                     val parent = File(filePath).parentFile
-                    if (parent != null) "file://${parent.absolutePath}/" else "https://aunotes.local/"
+                    if (parent != null) "file://${parent.absolutePath}/" else "file:///android_asset/"
                 } else {
-                    "https://aunotes.local/"
+                    "file:///android_asset/"
                 }
                 wv.loadDataWithBaseURL(baseUrl, resolvedHtml, "text/html", "UTF-8", null)
             } else if (fileMode) {
@@ -3417,6 +4044,7 @@ fun HtmlArtifactCard(
                         settings.useWideViewPort = false
                         settings.allowFileAccess = true
                         settings.allowContentAccess = true
+                        addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
                         setOnTouchListener { v, event ->
                             when (event.actionMasked) {
                                 android.view.MotionEvent.ACTION_DOWN -> v.parent?.requestDisallowInterceptTouchEvent(true)
@@ -3472,7 +4100,12 @@ fun HtmlArtifactCard(
                         scope.launch(Dispatchers.IO) {
                             val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "artifact" } + ".html"
                             val tmp = File(context.cacheDir, safeName)
-                            tmp.writeText(if (fileMode) com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath)) else htmlCode)
+                            val exportContent = if (fileMode) {
+                                com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath), context)
+                            } else {
+                                com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(context, htmlCode)
+                            }
+                            tmp.writeText(exportContent)
                             val saved = NoteExporter.saveToDevice(context, tmp, safeName, "text/html")
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(
@@ -3501,7 +4134,12 @@ fun HtmlArtifactCard(
                         scope.launch(Dispatchers.IO) {
                             val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "artifact" } + ".html"
                             val tmp = File(context.cacheDir, safeName)
-                            tmp.writeText(if (fileMode) com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath)) else htmlCode)
+                            val exportContent = if (fileMode) {
+                                com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath), context)
+                            } else {
+                                com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(context, htmlCode)
+                            }
+                            tmp.writeText(exportContent)
                             val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", tmp)
                             withContext(Dispatchers.Main) {
                                 val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
@@ -3556,7 +4194,12 @@ fun HtmlArtifactCard(
                                 scope.launch(Dispatchers.IO) {
                                     val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "page" } + ".html"
                                     val tmp = File(context.cacheDir, safeName)
-                                    tmp.writeText(if (fileMode) com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath)) else htmlCode)
+                                    val exportContent = if (fileMode) {
+                                        com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath), context)
+                                    } else {
+                                        com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(context, htmlCode)
+                                    }
+                                    tmp.writeText(exportContent)
                                     val saved = NoteExporter.saveToDevice(context, tmp, safeName, "text/html")
                                     withContext(Dispatchers.Main) {
                                         Toast.makeText(
@@ -3582,6 +4225,7 @@ fun HtmlArtifactCard(
                                 settings.useWideViewPort = false
                                 settings.allowFileAccess = true
                                 settings.allowContentAccess = true
+                                addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
                                 webViewClient = createSafeWebViewClient()
                                 loadPage(this)
                             }

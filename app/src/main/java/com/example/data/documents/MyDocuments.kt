@@ -70,6 +70,22 @@ object MyDocuments {
         target
     } catch (e: Exception) { null }
 
+    /** Renames a file in My Documents, preserving its extension if the user omitted it. */
+    fun rename(context: Context, source: File, requestedName: String): File? {
+        return try {
+            val trimmed = requestedName.trim()
+            if (trimmed.isBlank()) return null
+            val origExt = source.extension
+            val withExt = if (origExt.isNotBlank() && !trimmed.contains('.')) "$trimmed.$origExt" else trimmed
+            val safe = withExt.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001F]"), "_").trim().take(120)
+            if (safe.equals(source.name, ignoreCase = false)) return source
+            val target = uniqueFile(context, safe)
+            if (source.renameTo(target)) target else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun humanSize(bytes: Long): String = when {
         bytes < 1024 -> "$bytes B"
         bytes < 1024 * 1024 -> "${bytes / 1024} KB"

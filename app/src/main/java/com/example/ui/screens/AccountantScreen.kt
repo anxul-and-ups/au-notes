@@ -4,9 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,11 +11,13 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -30,41 +29,37 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.ChevronLeft
-import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.FileDownload
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.WbSunny
-import androidx.compose.material.icons.filled.Nightlight
+import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,23 +69,102 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import com.example.data.model.MilkHisabCalculator
-import com.example.data.model.MilkRecordEntity
 import com.example.data.repository.MilkAccountingRepository
+import com.example.ui.components.GlassBackground
 import com.example.ui.components.GlassCard
 import com.example.ui.components.NeuIconButton
 import com.example.ui.theme.CrimsonPrimary
-import com.example.ui.util.MilkHisabPdfExporter
-import com.example.ui.util.SavedExport
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.util.Calendar
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+
+/**
+ * Transaction type in the Hisab Kitab / Udhar Khata Ledger:
+ * - DIYE: Money YOU gave/lent to someone (उधार दिए - You will get back)
+ * - LIYE: Money YOU took/borrowed from someone (उधार लिए - You need to return)
+ */
+enum class HisabType { DIYE, LIYE }
+
+data class HisabEntry(
+    val id: Long,
+    val personName: String,
+    val phoneNumber: String,
+    val amount: Double,
+    val type: HisabType,
+    val reason: String,
+    val createdAt: Long,
+    val isSettled: Boolean = false,
+    val settledAt: Long? = null
+)
+
+object HisabKitabStore {
+    private const val PREFS_NAME = "au_hisab_kitab_prefs"
+    private const val KEY_ENTRIES = "hisab_entries_json"
+
+    fun load(context: Context): List<HisabEntry> {
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_ENTRIES, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            val list = mutableListOf<HisabEntry>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                list.add(
+                    HisabEntry(
+                        id = o.optLong("id", System.currentTimeMillis() + i),
+                        personName = o.optString("personName", "").trim(),
+                        phoneNumber = o.optString("phoneNumber", "").trim(),
+                        amount = o.optDouble("amount", 0.0),
+                        type = if (o.optString("type", "DIYE") == "LIYE") HisabType.LIYE else HisabType.DIYE,
+                        reason = o.optString("reason", "").trim(),
+                        createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+                        isSettled = o.optBoolean("isSettled", false),
+                        settledAt = if (o.has("settledAt") && !o.isNull("settledAt")) o.optLong("settledAt") else null
+                    )
+                )
+            }
+            list.sortedByDescending { it.createdAt }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun save(context: Context, entries: List<HisabEntry>) {
+        val arr = JSONArray()
+        entries.forEach { e ->
+            arr.put(
+                JSONObject().apply {
+                    put("id", e.id)
+                    put("personName", e.personName)
+                    put("phoneNumber", e.phoneNumber)
+                    put("amount", e.amount)
+                    put("type", e.type.name)
+                    put("reason", e.reason)
+                    put("createdAt", e.createdAt)
+                    put("isSettled", e.isSettled)
+                    if (e.settledAt != null) put("settledAt", e.settledAt)
+                }
+            )
+        }
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_ENTRIES, arr.toString())
+            .apply()
+    }
+}
+
+private enum class HisabTab(val label: String, val subtitle: String) {
+    DASHBOARD("Dashboard", "Full Hisab Summary"),
+    DIYE("उधार दिए (Lent)", "कब किसको कितने दिए"),
+    LIYE("उधार लिए (Borrowed)", "कब किससे कितने लिए"),
+    PEOPLE("People Khata", "Person-wise Ledger")
+}
 
 @Composable
 fun AccountantScreen(
@@ -99,1232 +173,1311 @@ fun AccountantScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
+    var entries by remember { mutableStateOf(HisabKitabStore.load(context)) }
+    var activeTab by remember { mutableStateOf(HisabTab.DASHBOARD) }
+    var searchQuery by remember { mutableStateOf("") }
+    var showPendingOnly by remember { mutableStateOf(false) }
 
-    // Initialize with live local device calendar (Section 3: First launch behaviour)
-    val liveCalendar = remember { Calendar.getInstance() }
-    val currentDeviceYear = remember { liveCalendar.get(Calendar.YEAR) }
-    val currentDeviceMonth = remember { liveCalendar.get(Calendar.MONTH) + 1 } // 1..12
+    // Add / Edit modal state
+    var showEditorDialog by remember { mutableStateOf(false) }
+    var editingEntry by remember { mutableStateOf<HisabEntry?>(null) }
+    var defaultModalType by remember { mutableStateOf(HisabType.DIYE) }
+    var prefillPersonName by remember { mutableStateOf("") }
+    var prefillPhone by remember { mutableStateOf("") }
 
-    var selectedYear by remember { mutableIntStateOf(currentDeviceYear) }
-    var selectedMonth by remember { mutableIntStateOf(currentDeviceMonth) }
-
-    // Fetch records for current selected month reactively from Room DB
-    val monthRecordsFlow = remember(selectedYear, selectedMonth) {
-        repository.getRecordsForMonth(selectedYear, selectedMonth)
-    }
-    val recordsList by monthRecordsFlow.collectAsState(initial = emptyList())
-    val recordsMap = remember(recordsList) {
-        recordsList.associateBy { it.dayOfMonth }
-    }
-
-    // Deterministic totals calculation
-    val summary = remember(selectedYear, selectedMonth, recordsMap) {
-        MilkHisabCalculator.computeSummary(selectedYear, selectedMonth, recordsMap)
+    fun persist(updated: List<HisabEntry>) {
+        val sorted = updated.sortedByDescending { it.createdAt }
+        entries = sorted
+        HisabKitabStore.save(context, sorted)
     }
 
-    // Selected period tab (0 = All Days, 1 = Period 1, 2 = Period 2, 3 = Period 3)
-    var selectedPeriodFilter by remember { mutableIntStateOf(0) }
+    val fg = if (isDarkMode) Color.White else Color(0xFF111111)
+    val sub = if (isDarkMode) Color.White.copy(alpha = 0.62f) else Color(0xFF64748B)
+    val greenColor = Color(0xFF10B981) // Udhar Diye (You will receive)
+    val orangeRedColor = Color(0xFFEF4444) // Udhar Liye (You have to pay)
 
-    // Dialog state for editing a day
-    var editingDay by remember { mutableStateOf<Int?>(null) }
+    // Summary calculations (only pending / unsettled amounts count toward active udhar)
+    val pendingEntries = remember(entries) { entries.filter { !it.isSettled } }
+    val totalPendingDiye = remember(pendingEntries) {
+        pendingEntries.filter { it.type == HisabType.DIYE }.sumOf { it.amount }
+    }
+    val totalPendingLiye = remember(pendingEntries) {
+        pendingEntries.filter { it.type == HisabType.LIYE }.sumOf { it.amount }
+    }
+    val totalSettledDiye = remember(entries) {
+        entries.filter { it.isSettled && it.type == HisabType.DIYE }.sumOf { it.amount }
+    }
+    val totalSettledLiye = remember(entries) {
+        entries.filter { it.isSettled && it.type == HisabType.LIYE }.sumOf { it.amount }
+    }
+    val netBalance = totalPendingDiye - totalPendingLiye
 
-    // Modals
-    var showExportPdfModal by remember { mutableStateOf(false) }
-    var exportResult by remember { mutableStateOf<SavedExport?>(null) }
-    var isExporting by remember { mutableStateOf(false) }
+    // Highest Udhar Pending per person ("सबसे ज्यादा किस पर उधार है")
+    val personPendingDiyeMap = remember(pendingEntries) {
+        pendingEntries
+            .filter { it.type == HisabType.DIYE }
+            .groupBy { it.personName.trim().lowercase() }
+            .mapValues { (_, list) ->
+                val displayName = list.first().personName
+                val phone = list.firstOrNull { it.phoneNumber.isNotBlank() }?.phoneNumber.orEmpty()
+                val sum = list.sumOf { it.amount }
+                Triple(displayName, phone, sum)
+            }
+            .values
+            .sortedByDescending { it.third }
+    }
+    val highestUdharPerson = personPendingDiyeMap.firstOrNull()
 
-    val bgGradient = if (isDarkMode) {
-        Brush.verticalGradient(
-            colors = listOf(
-                Color(0xFF13151A),
-                Color(0xFF181B22),
-                Color(0xFF0F1115)
-            )
-        )
-    } else {
-        Brush.verticalGradient(
-            colors = listOf(
-                Color(0xFFF7F8FA),
-                Color(0xFFEFF1F5),
-                Color(0xFFE5E8EE)
-            )
-        )
+    val filteredEntries = remember(entries, activeTab, searchQuery, showPendingOnly) {
+        entries.filter { e ->
+            val matchesTab = when (activeTab) {
+                HisabTab.DIYE -> e.type == HisabType.DIYE
+                HisabTab.LIYE -> e.type == HisabType.LIYE
+                else -> true
+            }
+            val matchesPending = !showPendingOnly || !e.isSettled
+            val q = searchQuery.trim().lowercase()
+            val matchesSearch = q.isBlank() ||
+                e.personName.lowercase().contains(q) ||
+                e.phoneNumber.lowercase().contains(q) ||
+                e.reason.lowercase().contains(q) ||
+                formatRupees(e.amount).lowercase().contains(q)
+            matchesTab && matchesPending && matchesSearch
+        }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(bgGradient)
-            .statusBarsPadding()
-            .navigationBarsPadding()
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-
-            // Top App Bar
-            Row(
+    GlassBackground(isDarkMode = isDarkMode) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
+        ) {
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .fillMaxSize()
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
-                NeuIconButton(
-                    icon = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    isDarkMode = isDarkMode,
-                    size = 40.dp,
-                    iconSize = 18.dp,
-                    onClick = onBack
-                )
+                // Top Header Bar
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        NeuIconButton(
+                            icon = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            isDarkMode = isDarkMode,
+                            size = 38.dp,
+                            iconSize = 18.dp,
+                            tint = fg,
+                            onClick = onBack
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Hisab Kitab • उधार खाता",
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = fg
+                            )
+                            Text(
+                                text = "कब, किसको, कितने दिए और कब, किससे लिए • पूरा हिसाब",
+                                fontSize = 11.sp,
+                                color = CrimsonPrimary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
 
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "ACCOUNTANT",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = CrimsonPrimary,
-                        letterSpacing = 1.sp
-                    )
-                    Text(
-                        text = "Milk Dairy Hisab",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
+                    // Quick Share Full Summary Button
+                    NeuIconButton(
+                        icon = Icons.Default.Share,
+                        contentDescription = "Share Hisab Summary",
+                        isDarkMode = isDarkMode,
+                        size = 36.dp,
+                        iconSize = 17.dp,
+                        tint = CrimsonPrimary,
+                        onClick = {
+                            val report = buildFullHisabReport(entries, totalPendingDiye, totalPendingLiye, highestUdharPerson)
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, report)
+                            }
+                            context.startActivity(Intent.createChooser(send, "Share Hisab Kitab"))
+                        }
                     )
                 }
 
-                // PDF Export Button
-                NeuIconButton(
-                    icon = Icons.Default.FileDownload,
-                    contentDescription = "Export PDF",
-                    isDarkMode = isDarkMode,
-                    size = 38.dp,
-                    iconSize = 18.dp,
-                    tint = CrimsonPrimary,
-                    onClick = { showExportPdfModal = true }
-                )
-            }
+                Spacer(Modifier.height(12.dp))
 
-            // Month Navigation Card
-            GlassCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                isDarkMode = isDarkMode,
-                shape = RoundedCornerShape(16.dp),
-                elevation = 4.dp
-            ) {
+                // 4 Navigation Tabs (Dashboard, उधार दिए, उधार लिए, People Khata)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Previous Month Button
-                    NeuIconButton(
-                        icon = Icons.Default.ChevronLeft,
-                        contentDescription = "Previous Month",
-                        isDarkMode = isDarkMode,
-                        size = 36.dp,
-                        iconSize = 20.dp,
-                        onClick = {
-                            if (selectedMonth == 1) {
-                                selectedMonth = 12
-                                selectedYear -= 1
-                            } else {
-                                selectedMonth -= 1
+                    HisabTab.entries.forEach { tab ->
+                        val selected = activeTab == tab
+                        val tabColor = when (tab) {
+                            HisabTab.DIYE -> greenColor
+                            HisabTab.LIYE -> orangeRedColor
+                            else -> CrimsonPrimary
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(
+                                    if (selected) tabColor
+                                    else (if (isDarkMode) Color(0x1EFFFFFF) else Color(0x12000000))
+                                )
+                                .border(
+                                    width = 1.dp,
+                                    color = if (selected) tabColor else (if (isDarkMode) Color(0x33FFFFFF) else Color(0x22000000)),
+                                    shape = RoundedCornerShape(14.dp)
+                                )
+                                .clickable { activeTab = tab }
+                                .padding(horizontal = 14.dp, vertical = 9.dp)
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = tab.label,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) Color.White else fg
+                                )
+                                Text(
+                                    text = tab.subtitle,
+                                    fontSize = 9.5.sp,
+                                    color = if (selected) Color.White.copy(alpha = 0.85f) else sub
+                                )
                             }
                         }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                // Search & Pending Filter Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Search name, phone, reason, amount...", fontSize = 12.sp, color = sub) },
+                        leadingIcon = { Icon(Icons.Default.Search, null, tint = CrimsonPrimary, modifier = Modifier.size(18.dp)) },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(28.dp)) {
+                                    Icon(Icons.Default.Close, "Clear", tint = sub, modifier = Modifier.size(15.dp))
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = CrimsonPrimary,
+                            unfocusedBorderColor = if (isDarkMode) Color(0x2AFFFFFF) else Color(0x22000000),
+                            focusedContainerColor = if (isDarkMode) Color(0xFF141821) else Color.White,
+                            unfocusedContainerColor = if (isDarkMode) Color(0xFF141821) else Color.White,
+                            focusedTextColor = fg,
+                            unfocusedTextColor = fg
+                        ),
+                        modifier = Modifier.weight(1f)
                     )
 
-                    // Month & Year Display
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "${summary.monthName} $selectedYear",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isDarkMode) Color.White else Color.Black
-                        )
-                        val isCurrentMonth = (selectedYear == currentDeviceYear && selectedMonth == currentDeviceMonth)
-                        if (isCurrentMonth) {
-                            Text(
-                                text = "Current Month",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = CrimsonPrimary
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (showPendingOnly) CrimsonPrimary else (if (isDarkMode) Color(0x1EFFFFFF) else Color(0x12000000)))
+                            .border(
+                                1.dp,
+                                if (showPendingOnly) CrimsonPrimary else Color.Gray.copy(alpha = 0.3f),
+                                RoundedCornerShape(12.dp)
                             )
-                        } else {
-                            Text(
-                                text = "Jump to Current",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Color(0xFF2196F3),
-                                modifier = Modifier.clickable {
-                                    selectedYear = currentDeviceYear
-                                    selectedMonth = currentDeviceMonth
+                            .clickable { showPendingOnly = !showPendingOnly }
+                            .padding(horizontal = 10.dp, vertical = 12.dp)
+                    ) {
+                        Text(
+                            text = if (showPendingOnly) "Pending Only" else "All Entries",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (showPendingOnly) Color.White else fg
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // Main Content per Tab
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 96.dp)
+                ) {
+                    if (activeTab == HisabTab.DASHBOARD) {
+                        item {
+                            DashboardOverviewCard(
+                                isDarkMode = isDarkMode,
+                                totalPendingDiye = totalPendingDiye,
+                                totalPendingLiye = totalPendingLiye,
+                                totalSettledDiye = totalSettledDiye,
+                                totalSettledLiye = totalSettledLiye,
+                                netBalance = netBalance,
+                                highestUdharPerson = highestUdharPerson,
+                                onQuickAddDiye = {
+                                    editingEntry = null
+                                    defaultModalType = HisabType.DIYE
+                                    prefillPersonName = ""
+                                    prefillPhone = ""
+                                    showEditorDialog = true
+                                },
+                                onQuickAddLiye = {
+                                    editingEntry = null
+                                    defaultModalType = HisabType.LIYE
+                                    prefillPersonName = ""
+                                    prefillPhone = ""
+                                    showEditorDialog = true
                                 }
                             )
                         }
                     }
 
-                    // Next Month Button
-                    NeuIconButton(
-                        icon = Icons.Default.ChevronRight,
-                        contentDescription = "Next Month",
-                        isDarkMode = isDarkMode,
-                        size = 36.dp,
-                        iconSize = 20.dp,
-                        onClick = {
-                            if (selectedMonth == 12) {
-                                selectedMonth = 1
-                                selectedYear += 1
-                            } else {
-                                selectedMonth += 1
+                    if (activeTab == HisabTab.DIYE) {
+                        item {
+                            SectionBannerCard(
+                                title = "उधार दिए (Money You Lent)",
+                                subtitle = "कब, किसको, कितने रुपये दिए और किसने वापस लौटा दिए",
+                                totalLabel = "Pending to Receive: ₹${formatRupees(totalPendingDiye)}",
+                                returnedLabel = "Returned so far: ₹${formatRupees(totalSettledDiye)}",
+                                accentColor = greenColor,
+                                isDarkMode = isDarkMode,
+                                buttonText = "+ पैसे दिए (Add Lent)",
+                                onAddClick = {
+                                    editingEntry = null
+                                    defaultModalType = HisabType.DIYE
+                                    prefillPersonName = ""
+                                    prefillPhone = ""
+                                    showEditorDialog = true
+                                }
+                            )
+                        }
+                    }
+
+                    if (activeTab == HisabTab.LIYE) {
+                        item {
+                            SectionBannerCard(
+                                title = "उधार लिए (Money You Borrowed)",
+                                subtitle = "कब, किससे, कितने रुपये लिए और कब वापस लौटाए",
+                                totalLabel = "Pending to Pay Back: ₹${formatRupees(totalPendingLiye)}",
+                                returnedLabel = "Repaid so far: ₹${formatRupees(totalSettledLiye)}",
+                                accentColor = orangeRedColor,
+                                isDarkMode = isDarkMode,
+                                buttonText = "+ पैसे लिए (Add Borrowed)",
+                                onAddClick = {
+                                    editingEntry = null
+                                    defaultModalType = HisabType.LIYE
+                                    prefillPersonName = ""
+                                    prefillPhone = ""
+                                    showEditorDialog = true
+                                }
+                            )
+                        }
+                    }
+
+                    if (activeTab == HisabTab.PEOPLE) {
+                        val groupedByPerson = entries.groupBy { it.personName.trim().lowercase() }
+                        if (groupedByPerson.isEmpty()) {
+                            item {
+                                EmptyHisabPlaceholder(
+                                    isDarkMode = isDarkMode,
+                                    message = "No people in your Khata yet.\nTap + below to add your first Len-Den entry."
+                                )
+                            }
+                        } else {
+                            val personCards = groupedByPerson.values.sortedByDescending { list ->
+                                list.filter { !it.isSettled && it.type == HisabType.DIYE }.sumOf { it.amount }
+                            }
+                            items(personCards, key = { it.first().personName.lowercase() }) { personEntries ->
+                                val name = personEntries.first().personName
+                                val phone = personEntries.firstOrNull { it.phoneNumber.isNotBlank() }?.phoneNumber.orEmpty()
+                                val pendingDiye = personEntries.filter { !it.isSettled && it.type == HisabType.DIYE }.sumOf { it.amount }
+                                val pendingLiye = personEntries.filter { !it.isSettled && it.type == HisabType.LIYE }.sumOf { it.amount }
+                                PersonKhataCard(
+                                    name = name,
+                                    phone = phone,
+                                    pendingDiye = pendingDiye,
+                                    pendingLiye = pendingLiye,
+                                    personEntries = personEntries,
+                                    isDarkMode = isDarkMode,
+                                    onAddForPerson = { type ->
+                                        editingEntry = null
+                                        defaultModalType = type
+                                        prefillPersonName = name
+                                        prefillPhone = phone
+                                        showEditorDialog = true
+                                    },
+                                    onToggleSettled = { entry ->
+                                        val now = System.currentTimeMillis()
+                                        persist(
+                                            entries.map {
+                                                if (it.id == entry.id) {
+                                                    it.copy(
+                                                        isSettled = !it.isSettled,
+                                                        settledAt = if (!it.isSettled) now else null
+                                                    )
+                                                } else it
+                                            }
+                                        )
+                                    },
+                                    onCallPhone = { ph ->
+                                        if (ph.isNotBlank()) {
+                                            runCatching {
+                                                context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$ph")))
+                                            }
+                                        }
+                                    }
+                                )
                             }
                         }
-                    )
-                }
-            }
-
-            // Monthly Grand Totals Card
-            GlassCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                isDarkMode = isDarkMode,
-                shape = RoundedCornerShape(18.dp),
-                strong = true,
-                elevation = 6.dp
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "MONTHLY TOTAL",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = CrimsonPrimary,
-                            letterSpacing = 1.sp
-                        )
-                        Text(
-                            text = "${summary.totalDays} Days",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = if (isDarkMode) Color.White.copy(alpha = 0.5f) else Color.Gray
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "Total Milk",
-                                fontSize = 11.sp,
-                                color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
-                            )
-                            Text(
-                                text = "${MilkHisabCalculator.formatQty(summary.grandTotalQty)} KG",
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = if (isDarkMode) Color.White else Color.Black
-                            )
-                        }
-
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                text = "Total Earning",
-                                fontSize = 11.sp,
-                                color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
-                            )
-                            Text(
-                                text = "₹ ${MilkHisabCalculator.formatAmount(summary.grandTotalAmount)}",
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = CrimsonPrimary
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-                    HorizontalDivider(color = if (isDarkMode) Color(0x1FFFFFFF) else Color(0x1F000000))
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Morning vs Evening Split Breakdown
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.WbSunny,
-                                contentDescription = "Morning",
-                                tint = Color(0xFFFFB300),
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "Morning: ${MilkHisabCalculator.formatQty(summary.monthlyMorningQty)} KG (₹${MilkHisabCalculator.formatAmount(summary.monthlyMorningAmount)})",
-                                fontSize = 11.sp,
-                                color = if (isDarkMode) Color.White.copy(alpha = 0.8f) else Color.Black
-                            )
-                        }
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Nightlight,
-                                contentDescription = "Evening",
-                                tint = Color(0xFF7E57C2),
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "Evening: ${MilkHisabCalculator.formatQty(summary.monthlyEveningQty)} KG (₹${MilkHisabCalculator.formatAmount(summary.monthlyEveningAmount)})",
-                                fontSize = 11.sp,
-                                color = if (isDarkMode) Color.White.copy(alpha = 0.8f) else Color.Black
-                            )
+                    } else {
+                        if (filteredEntries.isEmpty()) {
+                            item {
+                                EmptyHisabPlaceholder(
+                                    isDarkMode = isDarkMode,
+                                    message = when (activeTab) {
+                                        HisabTab.DIYE -> "कोई उधार दिए की एंट्री नहीं मिली।\nTap '+ पैसे दिए' to record money given to someone."
+                                        HisabTab.LIYE -> "कोई उधार लिए की एंट्री नहीं मिली।\nTap '+ पैसे लिए' to record money borrowed from someone."
+                                        else -> "अभी कोई हिसाब-किताब दर्ज नहीं है।\nTap '+ उधार दिए' or '+ उधार लिए' to start your ledger."
+                                    }
+                                )
+                            }
+                        } else {
+                            items(filteredEntries, key = { it.id }) { entry ->
+                                HisabTransactionCard(
+                                    entry = entry,
+                                    isDarkMode = isDarkMode,
+                                    onMarkReturnedToggle = {
+                                        val now = System.currentTimeMillis()
+                                        val markSettled = !entry.isSettled
+                                        persist(
+                                            entries.map {
+                                                if (it.id == entry.id) {
+                                                    it.copy(
+                                                        isSettled = markSettled,
+                                                        settledAt = if (markSettled) now else null
+                                                    )
+                                                } else it
+                                            }
+                                        )
+                                        Toast.makeText(
+                                            context,
+                                            if (markSettled) {
+                                                if (entry.type == HisabType.DIYE) "लौटा दिया! Udhar marked returned with timestamp."
+                                                else "वापस दे दिए! Borrowed amount marked repaid."
+                                            } else "Marked as Pending again.",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    },
+                                    onEdit = {
+                                        editingEntry = entry
+                                        defaultModalType = entry.type
+                                        showEditorDialog = true
+                                    },
+                                    onDelete = {
+                                        persist(entries.filterNot { it.id == entry.id })
+                                        Toast.makeText(context, "Entry deleted", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onCall = {
+                                        if (entry.phoneNumber.isNotBlank()) {
+                                            runCatching {
+                                                context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${entry.phoneNumber}")))
+                                            }
+                                        }
+                                    }
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            // 10-Day Period Summaries Row (Horizontal Scroll)
-            Row(
+            // Floating Action Button to add a new transaction
+            FloatingActionButton(
+                onClick = {
+                    editingEntry = null
+                    defaultModalType = if (activeTab == HisabTab.LIYE) HisabType.LIYE else HisabType.DIYE
+                    prefillPersonName = ""
+                    prefillPhone = ""
+                    showEditorDialog = true
+                },
+                containerColor = CrimsonPrimary,
+                contentColor = Color.White,
+                shape = CircleShape,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    .align(Alignment.BottomEnd)
+                    .padding(20.dp)
+                    .size(58.dp)
             ) {
-                // Period 1 (1–10)
-                PeriodChipCard(
-                    period = summary.period1,
-                    isSelected = selectedPeriodFilter == 1,
-                    isDarkMode = isDarkMode,
-                    onClick = {
-                        selectedPeriodFilter = if (selectedPeriodFilter == 1) 0 else 1
-                    }
-                )
-
-                // Period 2 (11–20)
-                PeriodChipCard(
-                    period = summary.period2,
-                    isSelected = selectedPeriodFilter == 2,
-                    isDarkMode = isDarkMode,
-                    onClick = {
-                        selectedPeriodFilter = if (selectedPeriodFilter == 2) 0 else 2
-                    }
-                )
-
-                // Period 3 (21–End)
-                PeriodChipCard(
-                    period = summary.period3,
-                    isSelected = selectedPeriodFilter == 3,
-                    isDarkMode = isDarkMode,
-                    onClick = {
-                        selectedPeriodFilter = if (selectedPeriodFilter == 3) 0 else 3
-                    }
-                )
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Section Label
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = when (selectedPeriodFilter) {
-                        1 -> "DAYS 1–10 (${summary.monthName})"
-                        2 -> "DAYS 11–20 (${summary.monthName})"
-                        3 -> "DAYS 21–${summary.totalDays} (${summary.monthName})"
-                        else -> "ALL DAYS (${summary.monthName} 1–${summary.totalDays})"
-                    },
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = CrimsonPrimary,
-                    letterSpacing = 1.sp
-                )
-
-                if (selectedPeriodFilter != 0) {
-                    Text(
-                        text = "Show All Days",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF2196F3),
-                        modifier = Modifier.clickable { selectedPeriodFilter = 0 }
-                    )
-                }
-            }
-
-            // Daily List Table
-            val filteredDays = remember(selectedPeriodFilter, summary.totalDays) {
-                when (selectedPeriodFilter) {
-                    1 -> (1..10.coerceAtMost(summary.totalDays)).toList()
-                    2 -> (11..20.coerceAtMost(summary.totalDays)).toList()
-                    3 -> (21..summary.totalDays).toList()
-                    else -> (1..summary.totalDays).toList()
-                }
-            }
-
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(filteredDays) { day ->
-                    val record = recordsMap[day]
-                    DayRowCard(
-                        day = day,
-                        year = selectedYear,
-                        month = selectedMonth,
-                        monthName = summary.monthName,
-                        record = record,
-                        isDarkMode = isDarkMode,
-                        onClick = { editingDay = day }
-                    )
-                }
-
-                item {
-                    Spacer(modifier = Modifier.height(16.dp))
-                }
+                Icon(Icons.Default.Add, contentDescription = "Add Hisab Entry", modifier = Modifier.size(28.dp))
             }
         }
     }
 
-    // Modal to Edit Entry for a specific Day
-    editingDay?.let { day ->
-        val record = recordsMap[day]
-        DayEditDialog(
-            day = day,
-            month = selectedMonth,
-            year = selectedYear,
-            monthName = summary.monthName,
-            existingRecord = record,
+    if (showEditorDialog) {
+        HisabEntryDialog(
+            initialEntry = editingEntry,
+            defaultType = defaultModalType,
+            prefillName = prefillPersonName,
+            prefillPhone = prefillPhone,
             isDarkMode = isDarkMode,
-            onDismiss = { editingDay = null },
-            onSave = { mQty, mAmt, eQty, eAmt ->
-                coroutineScope.launch {
-                    val dateKey = MilkHisabCalculator.formatDateKey(selectedYear, selectedMonth, day)
-                    val newEntity = MilkRecordEntity(
-                        date = dateKey,
-                        year = selectedYear,
-                        month = selectedMonth,
-                        dayOfMonth = day,
-                        morningQty = mQty,
-                        morningAmount = mAmt,
-                        eveningQty = eQty,
-                        eveningAmount = eAmt,
-                        updatedAt = System.currentTimeMillis()
-                    )
-                    repository.saveRecord(newEntity)
-                    editingDay = null
-                    Toast.makeText(context, "Saved Day $day Hisab", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onClear = {
-                coroutineScope.launch {
-                    val dateKey = MilkHisabCalculator.formatDateKey(selectedYear, selectedMonth, day)
-                    repository.deleteRecordByDate(dateKey)
-                    editingDay = null
-                    Toast.makeText(context, "Cleared Day $day Hisab", Toast.LENGTH_SHORT).show()
-                }
-            }
-        )
-    }
-
-    // Export PDF Modal
-    if (showExportPdfModal) {
-        ExportPdfDialog(
-            year = selectedYear,
-            month = selectedMonth,
-            summary = summary,
-            isDarkMode = isDarkMode,
-            isExporting = isExporting,
-            exportResult = exportResult,
             onDismiss = {
-                showExportPdfModal = false
-                exportResult = null
+                showEditorDialog = false
+                editingEntry = null
             },
-            onExport = { periodFilter ->
-                isExporting = true
-                coroutineScope.launch {
-                    val result = withContext(Dispatchers.IO) {
-                        MilkHisabPdfExporter.exportMonthPdf(
-                            context = context,
-                            year = selectedYear,
-                            month = selectedMonth,
-                            recordsMap = recordsMap,
-                            periodFilter = periodFilter
-                        )
-                    }
-                    isExporting = false
-                    exportResult = result
-                    if (result != null) {
-                        Toast.makeText(context, "PDF Exported Successfully!", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "Failed to create PDF", Toast.LENGTH_SHORT).show()
-                    }
+            onSave = { savedEntry ->
+                val updated = if (editingEntry != null) {
+                    entries.map { if (it.id == savedEntry.id) savedEntry else it }
+                } else {
+                    listOf(savedEntry) + entries
                 }
-            },
-            onOpenPdf = { uri ->
-                try {
-                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(uri, "application/pdf")
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    context.startActivity(Intent.createChooser(intent, "Open PDF"))
-                } catch (e: Exception) {
-                    Toast.makeText(context, "No PDF viewer app found", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onSharePdf = { uri ->
-                try {
-                    val intent = Intent(Intent.ACTION_SEND).apply {
-                        type = "application/pdf"
-                        putExtra(Intent.EXTRA_STREAM, uri)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    context.startActivity(Intent.createChooser(intent, "Share Milk Hisab PDF"))
-                } catch (e: Exception) {
-                    Toast.makeText(context, "Unable to share PDF", Toast.LENGTH_SHORT).show()
-                }
+                persist(updated)
+                showEditorDialog = false
+                editingEntry = null
+                Toast.makeText(context, "Hisab saved!", Toast.LENGTH_SHORT).show()
             }
         )
     }
 }
 
 @Composable
-private fun PeriodChipCard(
-    period: com.example.data.model.PeriodSummary,
-    isSelected: Boolean,
+private fun DashboardOverviewCard(
     isDarkMode: Boolean,
-    onClick: () -> Unit
+    totalPendingDiye: Double,
+    totalPendingLiye: Double,
+    totalSettledDiye: Double,
+    totalSettledLiye: Double,
+    netBalance: Double,
+    highestUdharPerson: Triple<String, String, Double>?,
+    onQuickAddDiye: () -> Unit,
+    onQuickAddLiye: () -> Unit
 ) {
-    val borderColor = if (isSelected) CrimsonPrimary else Color.Transparent
+    val fg = if (isDarkMode) Color.White else Color(0xFF111111)
+    val sub = if (isDarkMode) Color.White.copy(alpha = 0.65f) else Color(0xFF64748B)
+    val greenColor = Color(0xFF10B981)
+    val redColor = Color(0xFFEF4444)
 
     GlassCard(
-        modifier = Modifier
-            .width(170.dp)
-            .border(if (isSelected) 1.5.dp else 0.dp, borderColor, RoundedCornerShape(14.dp)),
-        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         isDarkMode = isDarkMode,
-        elevation = if (isSelected) 6.dp else 3.dp,
-        onClick = onClick
+        elevation = 4.dp
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Period ${period.periodIndex}",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = CrimsonPrimary
-                )
-                Text(
-                    text = "${period.startDay}–${period.endDay}",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
-                )
+                Column {
+                    Text(
+                        text = "कुल लेन-देन सारांश (NET BALANCE)",
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = CrimsonPrimary,
+                        letterSpacing = 0.8.sp
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = (if (netBalance >= 0) "+₹" else "-₹") + formatRupees(kotlin.math.abs(netBalance)),
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (netBalance >= 0) greenColor else redColor
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background((if (netBalance >= 0) greenColor else redColor).copy(alpha = 0.14f))
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = if (netBalance >= 0) "आपको लेने हैं (To Receive)" else "आपको देने हैं (To Pay)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (netBalance >= 0) greenColor else redColor
+                    )
+                }
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(Modifier.height(14.dp))
 
-            Text(
-                text = "${MilkHisabCalculator.formatQty(period.totalQty)} KG",
-                fontSize = 15.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = if (isDarkMode) Color.White else Color.Black
-            )
+            // Two Main Columns: Udhar Diye vs Udhar Liye
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Udhar Diye Box
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(greenColor.copy(alpha = 0.12f))
+                        .border(1.dp, greenColor.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.ArrowUpward, null, tint = greenColor, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("उधार दिए (Lent)", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = greenColor)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "₹${formatRupees(totalPendingDiye)}",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = fg
+                    )
+                    Text(
+                        text = "लौटाए गए: ₹${formatRupees(totalSettledDiye)}",
+                        fontSize = 10.sp,
+                        color = sub
+                    )
+                }
 
-            Text(
-                text = "₹ ${MilkHisabCalculator.formatAmount(period.totalAmount)}",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = CrimsonPrimary
-            )
+                // Udhar Liye Box
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(redColor.copy(alpha = 0.12f))
+                        .border(1.dp, redColor.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.ArrowDownward, null, tint = redColor, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("उधार लिए (Borrowed)", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = redColor)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "₹${formatRupees(totalPendingLiye)}",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = fg
+                    )
+                    Text(
+                        text = "वापस दिए: ₹${formatRupees(totalSettledLiye)}",
+                        fontSize = 10.sp,
+                        color = sub
+                    )
+                }
+            }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            // Highest Pending Udhar Card ("सबसे ज्यादा किस पर उधार है")
+            if (highestUdharPerson != null && highestUdharPerson.third > 0.0) {
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(Color(0xFFF59E0B).copy(alpha = 0.18f), CrimsonPrimary.copy(alpha = 0.14f))
+                            )
+                        )
+                        .border(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFF59E0B)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.TrendingUp, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "सबसे ज्यादा उधार (Highest Pending Udhar)",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFF59E0B)
+                            )
+                            Text(
+                                text = highestUdharPerson.first + (if (highestUdharPerson.second.isNotBlank()) " • ${highestUdharPerson.second}" else ""),
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = fg
+                            )
+                        }
+                    }
+                    Text(
+                        text = "₹${formatRupees(highestUdharPerson.third)}",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color(0xFFF59E0B)
+                    )
+                }
+            }
 
-            Text(
-                text = "S: ${MilkHisabCalculator.formatQty(period.morningQty)} | Sh: ${MilkHisabCalculator.formatQty(period.eveningQty)}",
-                fontSize = 10.sp,
-                color = if (isDarkMode) Color.White.copy(alpha = 0.5f) else Color.Gray
-            )
+            Spacer(Modifier.height(12.dp))
+
+            // Quick Action Buttons Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = onQuickAddDiye,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = greenColor),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.ArrowUpward, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("+ उधार दिए (Lent)", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                Button(
+                    onClick = onQuickAddLiye,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = redColor),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.ArrowDownward, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("+ उधार लिए (Took)", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun DayRowCard(
-    day: Int,
-    year: Int,
-    month: Int,
-    monthName: String,
-    record: MilkRecordEntity?,
+private fun SectionBannerCard(
+    title: String,
+    subtitle: String,
+    totalLabel: String,
+    returnedLabel: String,
+    accentColor: Color,
     isDarkMode: Boolean,
-    onClick: () -> Unit
+    buttonText: String,
+    onAddClick: () -> Unit
 ) {
-    val calendar = remember(year, month, day) {
-        Calendar.getInstance().apply {
-            set(Calendar.YEAR, year)
-            set(Calendar.MONTH, month - 1)
-            set(Calendar.DAY_OF_MONTH, day)
+    val fg = if (isDarkMode) Color.White else Color(0xFF111111)
+    val sub = if (isDarkMode) Color.White.copy(alpha = 0.65f) else Color(0xFF64748B)
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        isDarkMode = isDarkMode
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(title, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = accentColor)
+                    Text(subtitle, fontSize = 11.sp, color = sub)
+                }
+                Button(
+                    onClick = onAddClick,
+                    colors = ButtonDefaults.buttonColors(containerColor = accentColor),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(buttonText, color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(totalLabel, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = fg)
+                Text(returnedLabel, fontSize = 11.5.sp, color = sub)
+            }
         }
     }
-    val dayOfWeek = remember(calendar) {
-        calendar.getDisplayName(Calendar.DAY_OF_WEEK, Calendar.SHORT, Locale.ENGLISH) ?: ""
-    }
+}
 
-    val hasData = record != null && record.hasEntry
+@Composable
+private fun HisabTransactionCard(
+    entry: HisabEntry,
+    isDarkMode: Boolean,
+    onMarkReturnedToggle: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onCall: () -> Unit
+) {
+    val fg = if (isDarkMode) Color.White else Color(0xFF111111)
+    val sub = if (isDarkMode) Color.White.copy(alpha = 0.62f) else Color(0xFF64748B)
+    val isDiye = entry.type == HisabType.DIYE
+    val accent = if (isDiye) Color(0xFF10B981) else Color(0xFFEF4444)
+
+    val givenDateStr = remember(entry.createdAt) {
+        SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(entry.createdAt))
+    }
+    val settledDateStr = remember(entry.settledAt) {
+        entry.settledAt?.let {
+            SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(it))
+        }
+    }
 
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(16.dp),
         isDarkMode = isDarkMode,
-        elevation = 3.dp,
-        onClick = onClick
+        elevation = 2.dp
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Day Badge
-            Box(
-                modifier = Modifier
-                    .size(46.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(
-                        if (hasData) {
-                            Brush.linearGradient(listOf(CrimsonPrimary, Color(0xFFFF8E53)))
-                        } else {
-                            if (isDarkMode) Brush.linearGradient(listOf(Color(0x22FFFFFF), Color(0x11FFFFFF)))
-                            else Brush.linearGradient(listOf(Color(0x15000000), Color(0x0A000000)))
-                        }
-                    ),
-                contentAlignment = Alignment.Center
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "%02d".format(day),
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = if (hasData) Color.White else if (isDarkMode) Color.White.copy(alpha = 0.7f) else Color.DarkGray
-                    )
-                    Text(
-                        text = dayOfWeek,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = if (hasData) Color.White.copy(alpha = 0.85f) else Color.Gray
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            // Subah & Shaam breakdown
-            Column(modifier = Modifier.weight(1f)) {
-                // Morning (Subah)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.WbSunny,
-                            contentDescription = "Morning",
-                            tint = Color(0xFFFFB300),
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(if (entry.isSettled) Color.Gray.copy(alpha = 0.2f) else accent.copy(alpha = 0.16f)),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
-                            text = "Morning: ",
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
-                        )
-                        Text(
-                            text = if (record?.morningQty != null) "${MilkHisabCalculator.formatQty(record.morningQty)} KG" else "0 KG",
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (isDarkMode) Color.White else Color.Black
-                        )
-                    }
-
-                    Text(
-                        text = if (record?.morningAmount != null) "₹${MilkHisabCalculator.formatAmount(record.morningAmount)}" else "₹0",
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (record?.morningAmount != null) CrimsonPrimary else Color.Gray
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                // Evening
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Nightlight,
-                            contentDescription = "Evening",
-                            tint = Color(0xFF9575CD),
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Evening: ",
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
-                        )
-                        Text(
-                            text = if (record?.eveningQty != null) "${MilkHisabCalculator.formatQty(record.eveningQty)} KG" else "0 KG",
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (isDarkMode) Color.White else Color.Black
-                        )
-                    }
-
-                    Text(
-                        text = if (record?.eveningAmount != null) "₹${MilkHisabCalculator.formatAmount(record.eveningAmount)}" else "₹0",
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (record?.eveningAmount != null) CrimsonPrimary else Color.Gray
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            // Daily Total
-            Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    text = if (hasData) "${MilkHisabCalculator.formatQty(record!!.dailyTotalQty)} KG" else "0 KG",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (isDarkMode) Color.White else Color.Black
-                )
-                Text(
-                    text = if (hasData) "₹${MilkHisabCalculator.formatAmount(record!!.dailyTotalAmount)}" else "₹0",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = CrimsonPrimary
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DayEditDialog(
-    day: Int,
-    month: Int,
-    year: Int,
-    monthName: String,
-    existingRecord: MilkRecordEntity?,
-    isDarkMode: Boolean,
-    onDismiss: () -> Unit,
-    onSave: (mQty: Double?, mAmt: Double?, eQty: Double?, eAmt: Double?) -> Unit,
-    onClear: () -> Unit
-) {
-    var morningQtyText by remember {
-        mutableStateOf(existingRecord?.morningQty?.let { MilkHisabCalculator.formatQty(it) } ?: "")
-    }
-    var morningAmountText by remember {
-        mutableStateOf(existingRecord?.morningAmount?.let { MilkHisabCalculator.formatAmount(it) } ?: "")
-    }
-    var eveningQtyText by remember {
-        mutableStateOf(existingRecord?.eveningQty?.let { MilkHisabCalculator.formatQty(it) } ?: "")
-    }
-    var eveningAmountText by remember {
-        mutableStateOf(existingRecord?.eveningAmount?.let { MilkHisabCalculator.formatAmount(it) } ?: "")
-    }
-
-    var showClearConfirm by remember { mutableStateOf(false) }
-
-    Dialog(onDismissRequest = onDismiss) {
-        GlassCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            isDarkMode = isDarkMode,
-            strong = true,
-            elevation = 12.dp
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(18.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Day $day $monthName $year",
+                            text = entry.personName.take(1).uppercase().ifBlank { "?" },
                             fontSize = 17.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = CrimsonPrimary
-                        )
-                        Text(
-                            text = "Enter Morning & Evening Hisab",
-                            fontSize = 11.5.sp,
-                            color = if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.DarkGray
+                            fontWeight = FontWeight.ExtraBold,
+                            color = if (entry.isSettled) Color.Gray else accent
                         )
                     }
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = entry.personName,
+                                fontSize = 15.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (entry.isSettled) sub else fg,
+                                textDecoration = if (entry.isSettled) TextDecoration.LineThrough else TextDecoration.None,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (entry.isSettled) Color(0xFF10B981).copy(alpha = 0.18f) else accent.copy(alpha = 0.16f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = when {
+                                        entry.isSettled && isDiye -> "लौटा दिया (SETTLED)"
+                                        entry.isSettled && !isDiye -> "वापस दे दिए (SETTLED)"
+                                        isDiye -> "उधार दिए (LENT)"
+                                        else -> "उधार लिए (TOOK)"
+                                    },
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (entry.isSettled) Color(0xFF10B981) else accent
+                                )
+                            }
+                        }
 
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
-                            tint = if (isDarkMode) Color.White else Color.Black
-                        )
+                        if (entry.phoneNumber.isNotBlank()) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .padding(top = 2.dp)
+                                    .clickable { onCall() }
+                            ) {
+                                Icon(Icons.Default.Call, null, tint = CrimsonPrimary, modifier = Modifier.size(12.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text = entry.phoneNumber,
+                                    fontSize = 11.5.sp,
+                                    color = CrimsonPrimary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Section 1: Morning
-                Text(
-                    text = "MORNING",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFFFB300),
-                    letterSpacing = 1.sp
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = morningQtyText,
-                        onValueChange = { input ->
-                            // Allow valid positive decimals
-                            if (input.isEmpty() || input.matches(Regex("^\\d*\\.?\\d*$"))) {
-                                morningQtyText = input
-                            }
-                        },
-                        label = { Text("Quantity (KG)") },
-                        placeholder = { Text("e.g. 4.5") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = CrimsonPrimary,
-                            unfocusedBorderColor = if (isDarkMode) Color.White.copy(alpha = 0.2f) else Color.LightGray
-                        )
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "₹${formatRupees(entry.amount)}",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (entry.isSettled) Color.Gray else accent,
+                        textDecoration = if (entry.isSettled) TextDecoration.LineThrough else TextDecoration.None
                     )
-
-                    OutlinedTextField(
-                        value = morningAmountText,
-                        onValueChange = { input ->
-                            if (input.isEmpty() || input.matches(Regex("^\\d*\\.?\\d*$"))) {
-                                morningAmountText = input
-                            }
-                        },
-                        label = { Text("Amount (Rs)") },
-                        placeholder = { Text("e.g. 240") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = CrimsonPrimary,
-                            unfocusedBorderColor = if (isDarkMode) Color.White.copy(alpha = 0.2f) else Color.LightGray
-                        )
+                    Text(
+                        text = if (isDiye) "दिए: $givenDateStr" else "लिए: $givenDateStr",
+                        fontSize = 10.sp,
+                        color = sub
                     )
                 }
+            }
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Section 2: Evening
-                Text(
-                    text = "EVENING",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF9575CD),
-                    letterSpacing = 1.sp
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = eveningQtyText,
-                        onValueChange = { input ->
-                            if (input.isEmpty() || input.matches(Regex("^\\d*\\.?\\d*$"))) {
-                                eveningQtyText = input
-                            }
-                        },
-                        label = { Text("Quantity (KG)") },
-                        placeholder = { Text("e.g. 5.0") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = CrimsonPrimary,
-                            unfocusedBorderColor = if (isDarkMode) Color.White.copy(alpha = 0.2f) else Color.LightGray
-                        )
-                    )
-
-                    OutlinedTextField(
-                        value = eveningAmountText,
-                        onValueChange = { input ->
-                            if (input.isEmpty() || input.matches(Regex("^\\d*\\.?\\d*$"))) {
-                                eveningAmountText = input
-                            }
-                        },
-                        label = { Text("Amount (₹)") },
-                        placeholder = { Text("e.g. 270") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = CrimsonPrimary,
-                            unfocusedBorderColor = if (isDarkMode) Color.White.copy(alpha = 0.2f) else Color.LightGray
-                        )
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Live Daily Preview
-                val mQ = morningQtyText.toDoubleOrNull() ?: 0.0
-                val mA = morningAmountText.toDoubleOrNull() ?: 0.0
-                val eQ = eveningQtyText.toDoubleOrNull() ?: 0.0
-                val eA = eveningAmountText.toDoubleOrNull() ?: 0.0
-                val liveTotalQty = mQ + eQ
-                val liveTotalAmt = mA + eA
-
+            if (entry.reason.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
-                        .background(if (isDarkMode) Color(0x15FFFFFF) else Color(0x0A000000))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .background(if (isDarkMode) Color(0x16FFFFFF) else Color(0x0A000000))
+                        .padding(horizontal = 10.dp, vertical = 7.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Daily Total: ${MilkHisabCalculator.formatQty(liveTotalQty)} KG",
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (isDarkMode) Color.White else Color.Black
+                    Text(
+                        text = "कारण (Reason): ${entry.reason}",
+                        fontSize = 12.sp,
+                        color = fg.copy(alpha = 0.88f)
+                    )
+                }
+            }
+
+            if (entry.isSettled && settledDateStr != null) {
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF10B981).copy(alpha = 0.12f))
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF10B981), modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (isDiye) "वापस मिले (Returned on): $settledDateStr" else "वापस चुकाए (Repaid on): $settledDateStr",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF10B981)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = if (isDarkMode) Color(0x18FFFFFF) else Color(0x14000000))
+            Spacer(Modifier.height(8.dp))
+
+            // Action Buttons: One-Tap Mark Returned / Cancel Udhar + Edit + Delete
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (entry.isSettled) Color.Gray.copy(alpha = 0.2f)
+                            else Color(0xFF10B981).copy(alpha = 0.16f)
                         )
+                        .border(
+                            1.dp,
+                            if (entry.isSettled) Color.Gray.copy(alpha = 0.4f) else Color(0xFF10B981),
+                            RoundedCornerShape(10.dp)
+                        )
+                        .clickable { onMarkReturnedToggle() }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (entry.isSettled) Icons.Default.History else Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = if (entry.isSettled) fg else Color(0xFF10B981),
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
                         Text(
-                            text = "₹ ${MilkHisabCalculator.formatAmount(liveTotalAmt)}",
-                            fontSize = 13.sp,
+                            text = when {
+                                entry.isSettled -> "Mark Pending Again"
+                                isDiye -> "लौटा दिया • Cancel Udhar"
+                                else -> "वापस दे दिए • Mark Repaid"
+                            },
+                            fontSize = 11.5.sp,
                             fontWeight = FontWeight.Bold,
-                            color = CrimsonPrimary
+                            color = if (entry.isSettled) fg else Color(0xFF10B981)
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Action Buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (existingRecord?.hasEntry == true) {
-                        OutlinedButton(
-                            onClick = { showClearConfirm = true },
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF5252)),
-                            border = ButtonDefaults.outlinedButtonBorder.copy(
-                                brush = Brush.linearGradient(listOf(Color(0xFFFF5252), Color(0xFFFF5252)))
-                            )
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Clear")
-                        }
-                    } else {
-                        Spacer(modifier = Modifier.width(1.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit", tint = CrimsonPrimary, modifier = Modifier.size(17.dp))
                     }
+                    IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFEF4444), modifier = Modifier.size(17.dp))
+                    }
+                }
+            }
+        }
+    }
+}
 
-                    Row {
-                        TextButton(onClick = onDismiss) {
-                            Text("Cancel", color = if (isDarkMode) Color.White.copy(alpha = 0.7f) else Color.DarkGray)
+@Composable
+private fun PersonKhataCard(
+    name: String,
+    phone: String,
+    pendingDiye: Double,
+    pendingLiye: Double,
+    personEntries: List<HisabEntry>,
+    isDarkMode: Boolean,
+    onAddForPerson: (HisabType) -> Unit,
+    onToggleSettled: (HisabEntry) -> Unit,
+    onCallPhone: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val fg = if (isDarkMode) Color.White else Color(0xFF111111)
+    val sub = if (isDarkMode) Color.White.copy(alpha = 0.62f) else Color(0xFF64748B)
+    val net = pendingDiye - pendingLiye
+
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        isDarkMode = isDarkMode,
+        onClick = { expanded = !expanded }
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(CrimsonPrimary.copy(alpha = 0.16f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Person, null, tint = CrimsonPrimary, modifier = Modifier.size(22.dp))
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text(name, fontSize = 15.5.sp, fontWeight = FontWeight.ExtraBold, color = fg)
+                        Text(
+                            text = (if (phone.isNotBlank()) "$phone • " else "") + "${personEntries.size} entries (Tap to ${if (expanded) "hide" else "view"})",
+                            fontSize = 11.sp,
+                            color = sub
+                        )
+                    }
+                }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = when {
+                            net > 0 -> "लेने हैं: ₹${formatRupees(net)}"
+                            net < 0 -> "देने हैं: ₹${formatRupees(-net)}"
+                            else -> "बराबर (Settled)"
+                        },
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = when {
+                            net > 0 -> Color(0xFF10B981)
+                            net < 0 -> Color(0xFFEF4444)
+                            else -> Color.Gray
                         }
+                    )
+                    Text(
+                        text = "दिए: ₹${formatRupees(pendingDiye)} | लिए: ₹${formatRupees(pendingLiye)}",
+                        fontSize = 10.sp,
+                        color = sub
+                    )
+                }
+            }
 
-                        Spacer(modifier = Modifier.width(6.dp))
+            if (expanded) {
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = if (isDarkMode) Color(0x1FFFFFFF) else Color(0x14000000))
+                Spacer(Modifier.height(8.dp))
 
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = { onAddForPerson(HisabType.DIYE) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(vertical = 6.dp)
+                    ) {
+                        Text("+ पैसे दिए", color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Button(
+                        onClick = { onAddForPerson(HisabType.LIYE) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(vertical = 6.dp)
+                    ) {
+                        Text("+ पैसे लिए", color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                    }
+                    if (phone.isNotBlank()) {
                         Button(
-                            onClick = {
-                                val parsedMQty = morningQtyText.toDoubleOrNull()
-                                val parsedMAmt = morningAmountText.toDoubleOrNull()
-                                val parsedEQty = eveningQtyText.toDoubleOrNull()
-                                val parsedEAmt = eveningAmountText.toDoubleOrNull()
-                                onSave(parsedMQty, parsedMAmt, parsedEQty, parsedEAmt)
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary)
+                            onClick = { onCallPhone(phone) },
+                            colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Text("Save Entry", fontWeight = FontWeight.Bold)
+                            Icon(Icons.Default.Call, null, tint = Color.White, modifier = Modifier.size(15.dp))
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    personEntries.forEach { e ->
+                        val dt = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(e.createdAt))
+                        val retDt = e.settledAt?.let { SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(it)) }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isDarkMode) Color(0x16FFFFFF) else Color(0x0A000000))
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = (if (e.type == HisabType.DIYE) "दिए (Lent): " else "लिए (Took): ") + "₹${formatRupees(e.amount)}",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (e.isSettled) Color.Gray else (if (e.type == HisabType.DIYE) Color(0xFF10B981) else Color(0xFFEF4444)),
+                                    textDecoration = if (e.isSettled) TextDecoration.LineThrough else TextDecoration.None
+                                )
+                                if (e.reason.isNotBlank()) {
+                                    Text("कारण: ${e.reason}", fontSize = 11.sp, color = fg.copy(alpha = 0.8f))
+                                }
+                                Text(
+                                    text = dt + (if (e.isSettled && retDt != null) " • Settled: $retDt" else ""),
+                                    fontSize = 10.sp,
+                                    color = sub
+                                )
+                            }
+                            TextButton(onClick = { onToggleSettled(e) }) {
+                                Text(
+                                    text = if (e.isSettled) "Undo" else "लौटा दिया",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (e.isSettled) Color.Gray else Color(0xFF10B981)
+                                )
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
 
-    if (showClearConfirm) {
-        AlertDialog(
-            onDismissRequest = { showClearConfirm = false },
-            title = { Text("Clear Day $day Hisab?") },
-            text = { Text("Are you sure you want to delete entries for this day? This will update period and monthly totals.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showClearConfirm = false
-                        onClear()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252))
-                ) {
-                    Text("Clear")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) {
-                    Text("Cancel")
-                }
-            }
+@Composable
+private fun EmptyHisabPlaceholder(isDarkMode: Boolean, message: String) {
+    val sub = if (isDarkMode) Color.White.copy(alpha = 0.55f) else Color(0xFF64748B)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 36.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = message,
+            fontSize = 13.sp,
+            color = sub,
+            fontWeight = FontWeight.Medium
         )
     }
 }
 
 @Composable
-private fun ExportPdfDialog(
-    year: Int,
-    month: Int,
-    summary: com.example.data.model.MonthlyHisabSummary,
+private fun HisabEntryDialog(
+    initialEntry: HisabEntry?,
+    defaultType: HisabType,
+    prefillName: String,
+    prefillPhone: String,
     isDarkMode: Boolean,
-    isExporting: Boolean,
-    exportResult: SavedExport?,
     onDismiss: () -> Unit,
-    onExport: (periodFilter: Int) -> Unit,
-    onOpenPdf: (Uri) -> Unit,
-    onSharePdf: (Uri) -> Unit
+    onSave: (HisabEntry) -> Unit
 ) {
-    var selectedPeriod by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
+    var type by remember { mutableStateOf(initialEntry?.type ?: defaultType) }
+    var personName by remember { mutableStateOf(initialEntry?.personName ?: prefillName) }
+    var phoneNumber by remember { mutableStateOf(initialEntry?.phoneNumber ?: prefillPhone) }
+    var amountText by remember {
+        mutableStateOf(
+            initialEntry?.amount?.let { if (it % 1.0 == 0.0) it.toLong().toString() else it.toString() }.orEmpty()
+        )
+    }
+    var reason by remember { mutableStateOf(initialEntry?.reason.orEmpty()) }
 
-    Dialog(onDismissRequest = onDismiss) {
-        GlassCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(10.dp),
-            isDarkMode = isDarkMode,
-            strong = true,
-            elevation = 12.dp
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp)
-            ) {
+    val fg = if (isDarkMode) Color.White else Color(0xFF111111)
+    val greenColor = Color(0xFF10B981)
+    val redColor = Color(0xFFEF4444)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = if (initialEntry == null) "नया हिसाब जोड़ें (Add Entry)" else "हिसाब अपडेट करें (Edit Entry)",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Type Selector: उधार दिए vs उधार लिए
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.FileDownload,
-                            contentDescription = null,
-                            tint = CrimsonPrimary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Export Dairy Bill PDF",
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = CrimsonPrimary
-                        )
-                    }
-
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", tint = if (isDarkMode) Color.White else Color.Black)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Text(
-                    text = "Select Export Period:",
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (isDarkMode) Color.White else Color.Black
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-
-                val options = listOf(
-                    0 to "Full Month (Days 1–${summary.totalDays})",
-                    1 to "Period 1 (Days 1–10)",
-                    2 to "Period 2 (Days 11–20)",
-                    3 to "Period 3 (Days 21–${summary.totalDays})"
-                )
-
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    options.forEach { (filterVal, label) ->
-                        val isSelected = selectedPeriod == filterVal
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(
-                                    if (isSelected) CrimsonPrimary.copy(alpha = 0.15f)
-                                    else if (isDarkMode) Color.White.copy(alpha = 0.05f) else Color.Black.copy(alpha = 0.04f)
-                                )
-                                .border(
-                                    width = if (isSelected) 1.5.dp else 1.dp,
-                                    color = if (isSelected) CrimsonPrimary else (if (isDarkMode) Color.White.copy(alpha = 0.12f) else Color.LightGray.copy(alpha = 0.5f)),
-                                    shape = RoundedCornerShape(8.dp)
-                                )
-                                .clickable { selectedPeriod = filterVal }
-                                .padding(horizontal = 12.dp, vertical = 9.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .clip(CircleShape)
-                                    .border(2.dp, if (isSelected) CrimsonPrimary else Color.Gray, CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (isSelected) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .clip(CircleShape)
-                                            .background(CrimsonPrimary)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = label,
-                                fontSize = 12.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isSelected) CrimsonPrimary else (if (isDarkMode) Color.White else Color.Black)
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                if (isExporting) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        CircularProgressIndicator(color = CrimsonPrimary)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Generating PDF document...", fontSize = 12.sp, color = Color.Gray)
-                    }
-                } else if (exportResult != null) {
-                    // Export Success Card
+                    val isDiye = type == HisabType.DIYE
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0xFF2E7D32).copy(alpha = 0.15f))
-                            .border(1.dp, Color(0xFF2E7D32).copy(alpha = 0.4f), RoundedCornerShape(10.dp))
-                            .padding(12.dp)
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isDiye) greenColor else Color.Gray.copy(alpha = 0.15f))
+                            .clickable { type = HisabType.DIYE }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Column {
-                            Text(
-                                text = "✓ Export Successful!",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF4CAF50)
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "Saved to: ${exportResult.displayPath}",
-                                fontSize = 11.sp,
-                                color = if (isDarkMode) Color.White.copy(alpha = 0.8f) else Color.DarkGray
-                            )
-                        }
+                        Text(
+                            text = "उधार दिए (Lent)",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isDiye) Color.White else fg
+                        )
                     }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (!isDiye) redColor else Color.Gray.copy(alpha = 0.15f))
+                            .clickable { type = HisabType.LIYE }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        exportResult.uri?.let { uri ->
-                            Button(
-                                onClick = { onOpenPdf(uri) },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary)
-                            ) {
-                                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Open PDF", fontSize = 12.sp)
-                            }
-
-                            OutlinedButton(
-                                onClick = { onSharePdf(uri) },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = CrimsonPrimary)
-                            ) {
-                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Share", fontSize = 12.sp)
-                            }
-                        }
-                    }
-                } else {
-                    Button(
-                        onClick = { onExport(selectedPeriod) },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary)
-                    ) {
-                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Save & Export PDF", fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "उधार लिए (Took)",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (!isDiye) Color.White else fg
+                        )
                     }
                 }
+
+                OutlinedTextField(
+                    value = personName,
+                    onValueChange = { personName = it },
+                    label = { Text(if (type == HisabType.DIYE) "किसको दिए? (Person Name)" else "किससे लिए? (Person Name)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = amountText,
+                    onValueChange = { amountText = it.filter { ch -> ch.isDigit() || ch == '.' } },
+                    label = { Text("कितने रुपये? (Amount ₹)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = reason,
+                    onValueChange = { reason = it },
+                    label = { Text("क्यों दिए/लिए? (Reason / Note)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = phoneNumber,
+                    onValueChange = { phoneNumber = it.filter { ch -> ch.isDigit() || ch == '+' || ch == ' ' || ch == '-' } },
+                    label = { Text("मोबाइल नंबर (Phone Number - Optional)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val cleanName = personName.trim()
+                    val amt = amountText.trim().toDoubleOrNull() ?: 0.0
+                    if (cleanName.isBlank()) {
+                        Toast.makeText(context, "कृपया नाम लिखें (Please enter person name)", Toast.LENGTH_SHORT).show()
+                        return@Button
+                    }
+                    if (amt <= 0.0) {
+                        Toast.makeText(context, "कृपया सही रकम लिखें (Please enter valid amount)", Toast.LENGTH_SHORT).show()
+                        return@Button
+                    }
+                    val entry = HisabEntry(
+                        id = initialEntry?.id ?: System.currentTimeMillis(),
+                        personName = cleanName,
+                        phoneNumber = phoneNumber.trim(),
+                        amount = amt,
+                        type = type,
+                        reason = reason.trim(),
+                        createdAt = initialEntry?.createdAt ?: System.currentTimeMillis(),
+                        isSettled = initialEntry?.isSettled ?: false,
+                        settledAt = initialEntry?.settledAt
+                    )
+                    onSave(entry)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary)
+            ) {
+                Text("Save Hisab", color = Color.White, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
             }
         }
+    )
+}
+
+private fun formatRupees(value: Double): String {
+    return if (value % 1.0 == 0.0) {
+        String.format(Locale.US, "%,d", value.toLong())
+    } else {
+        String.format(Locale.US, "%,.2f", value)
+    }
+}
+
+private fun buildFullHisabReport(
+    entries: List<HisabEntry>,
+    totalPendingDiye: Double,
+    totalPendingLiye: Double,
+    highestUdharPerson: Triple<String, String, Double>?
+): String = buildString {
+    append("=== AU NOTES • HISAB KITAB (उधार खाता) ===\n")
+    append("कुल लेने हैं (Pending Udhar Diye): ₹${formatRupees(totalPendingDiye)}\n")
+    append("कुल देने हैं (Pending Udhar Liye): ₹${formatRupees(totalPendingLiye)}\n")
+    if (highestUdharPerson != null && highestUdharPerson.third > 0) {
+        append("सबसे ज्यादा उधार: ${highestUdharPerson.first} (₹${formatRupees(highestUdharPerson.third)})\n")
+    }
+    append("\n--- विस्तृत लेन-देन (TRANSACTIONS) ---\n")
+    val fmt = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
+    entries.forEachIndexed { idx, e ->
+        val tLabel = if (e.type == HisabType.DIYE) "उधार दिए (Lent)" else "उधार लिए (Borrowed)"
+        val status = if (e.isSettled) " [SETTLED on ${e.settledAt?.let { fmt.format(Date(it)) } ?: ""}]" else " [PENDING]"
+        append("${idx + 1}. ${e.personName} (${e.phoneNumber.ifBlank { "No phone" }}) — ₹${formatRupees(e.amount)} • $tLabel$status\n")
+        if (e.reason.isNotBlank()) append("   कारण: ${e.reason}\n")
+        append("   तारीख: ${fmt.format(Date(e.createdAt))}\n")
     }
 }

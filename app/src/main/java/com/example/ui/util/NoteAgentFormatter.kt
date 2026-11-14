@@ -176,9 +176,10 @@ object NoteAgentFormatter {
                 continue
             }
 
-            // 1. Fenced Block: ```lang (including slides, chart, diagram/svg, html_artifact/html, organised_file, or code)
+            // 1. Fenced Block: ```lang (including json:apex, mermaid, slides, chart, diagram/svg, html_artifact/html, organised_file, or code)
             if (trimmed.startsWith("```")) {
                 val rawFenceTag = trimmed.removePrefix("```").trim()
+                val rawFenceLower = rawFenceTag.lowercase()
                 val lang = rawFenceTag.substringAfterLast(',').trim().lowercase().ifEmpty { "code" }
                 val codeLines = mutableListOf<String>()
                 i++
@@ -188,24 +189,53 @@ object NoteAgentFormatter {
                 }
                 if (i < lines.size) i++ // skip closing ```
                 val blockBody = codeLines.joinToString("\n")
-                when (lang) {
-                    "slides", "slide_deck", "typography_slides" -> segments.add(ChatSegment.SlideDeckBlock(blockBody))
-                    "chart", "graph" -> segments.add(ChatSegment.ChartBlock(blockBody))
-                    "diagram", "svg", "shape" -> segments.add(ChatSegment.DiagramBlock(blockBody))
-                    "organised_file", "organized_file" -> segments.add(ChatSegment.OrganisedFileBlock(blockBody))
-                    "html_artifact", "html_page" -> {
+                val tBody = blockBody.trim()
+                val isApexTag = rawFenceLower == "json:apex" ||
+                    rawFenceLower.startsWith("json:apex") ||
+                    lang == "json:apex" ||
+                    lang == "apex" ||
+                    lang == "apexchart" ||
+                    lang == "apexcharts"
+                val isMermaidTag = rawFenceLower.startsWith("mermaid") ||
+                    lang == "mermaid" ||
+                    lang == "flowchart" ||
+                    lang == "mindmap" ||
+                    lang == "sequence"
+                val looksLikeMermaidBody = tBody.startsWith("graph ", ignoreCase = true) ||
+                    tBody.startsWith("graph\n", ignoreCase = true) ||
+                    tBody.startsWith("flowchart ", ignoreCase = true) ||
+                    tBody.startsWith("flowchart\n", ignoreCase = true) ||
+                    tBody.startsWith("sequenceDiagram", ignoreCase = true) ||
+                    tBody.startsWith("mindmap", ignoreCase = true) ||
+                    tBody.startsWith("stateDiagram", ignoreCase = true) ||
+                    tBody.startsWith("gantt", ignoreCase = true) ||
+                    tBody.startsWith("classDiagram", ignoreCase = true) ||
+                    tBody.startsWith("erDiagram", ignoreCase = true) ||
+                    tBody.startsWith("pie", ignoreCase = true)
+
+                when {
+                    isApexTag -> segments.add(ChatSegment.ChartBlock(blockBody))
+                    isMermaidTag -> segments.add(ChatSegment.DiagramBlock(blockBody))
+                    lang in setOf("slides", "slide_deck", "typography_slides") -> segments.add(ChatSegment.SlideDeckBlock(blockBody))
+                    lang in setOf("chart", "graph") -> segments.add(ChatSegment.ChartBlock(blockBody))
+                    lang in setOf("diagram", "svg", "shape") -> segments.add(ChatSegment.DiagramBlock(blockBody))
+                    lang in setOf("organised_file", "organized_file") -> segments.add(ChatSegment.OrganisedFileBlock(blockBody))
+                    lang in setOf("html_artifact", "html_page") -> {
                         val extractedTitle = Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE)
                             .find(blockBody)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
                             ?: "Interactive HTML Artifact"
                         segments.add(ChatSegment.HtmlArtifactBlock(extractedTitle, blockBody))
                     }
                     else -> {
-                        val tBody = blockBody.trim()
                         if ((lang == "json" || lang == "code") && tBody.startsWith("{") && tBody.contains("\"slides\"")) {
                             segments.add(ChatSegment.SlideDeckBlock(blockBody))
-                        } else if ((lang == "json" || lang == "code") && tBody.startsWith("{") && (tBody.contains("\"chart_type\"") || (tBody.contains("\"type\"") && (tBody.contains("\"data\"") || tBody.contains("\"items\"") || tBody.contains("\"steps\""))))) {
+                        } else if ((lang == "json" || lang == "code") && tBody.startsWith("{") &&
+                            (tBody.contains("\"chart_type\"") ||
+                                (tBody.contains("\"series\"") && (tBody.contains("\"categories\"") || tBody.contains("\"labels\"") || tBody.contains("\"type\""))) ||
+                                (tBody.contains("\"type\"") && (tBody.contains("\"data\"") || tBody.contains("\"items\"") || tBody.contains("\"steps\""))))
+                        ) {
                             segments.add(ChatSegment.ChartBlock(blockBody))
-                        } else if (tBody.startsWith("<svg", ignoreCase = true)) {
+                        } else if (looksLikeMermaidBody || tBody.startsWith("<svg", ignoreCase = true)) {
                             segments.add(ChatSegment.DiagramBlock(blockBody))
                         } else if (lang == "html" && (tBody.startsWith("<!doctype html", ignoreCase = true) || tBody.startsWith("<html", ignoreCase = true) || (tBody.contains("<style", ignoreCase = true) && tBody.contains("</", ignoreCase = true)))) {
                             val extractedTitle = Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE)

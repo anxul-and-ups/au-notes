@@ -118,8 +118,28 @@ fun GlassSidebar(
 
     AnimatedVisibility(
         visible = isOpen,
-        enter = slideInHorizontally(initialOffsetX = { -it }, animationSpec = tween(350)) + fadeIn(),
-        exit = slideOutHorizontally(targetOffsetX = { -it }, animationSpec = tween(300)) + fadeOut()
+        enter = slideInHorizontally(
+            initialOffsetX = { -it },
+            animationSpec = androidx.compose.animation.core.spring(
+                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy,
+                stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+            )
+        ) + androidx.compose.animation.scaleIn(
+            initialScale = 0.92f,
+            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f),
+            animationSpec = androidx.compose.animation.core.spring(
+                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy,
+                stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+            )
+        ) + fadeIn(animationSpec = tween(220)),
+        exit = slideOutHorizontally(
+            targetOffsetX = { -it },
+            animationSpec = tween(240)
+        ) + androidx.compose.animation.scaleOut(
+            targetScale = 0.94f,
+            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f),
+            animationSpec = tween(220)
+        ) + fadeOut(animationSpec = tween(200))
     ) {
         Box(
             modifier = Modifier
@@ -147,15 +167,16 @@ fun GlassSidebar(
                 modifier = Modifier
                     .fillMaxHeight()
                     .width(320.dp)
+                    .padding(vertical = 8.dp, horizontal = 6.dp)
                     .shadow(
-                        elevation = 16.dp,
-                        shape = RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp),
+                        elevation = 20.dp,
+                        shape = RoundedCornerShape(28.dp),
                         ambientColor = if (isDarkMode) NeuDarkShadow else NeuLightShadow,
                         spotColor = if (isDarkMode) NeuDarkShadow else NeuLightShadow
                     )
-                    .clip(RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp))
+                    .clip(RoundedCornerShape(28.dp))
                     .background(drawerBgBrush)
-                    .border(1.dp, drawerBorderBrush, RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp))
+                    .border(1.dp, drawerBorderBrush, RoundedCornerShape(28.dp))
                     .clickable(enabled = false) {}
             ) {
                 BackdropImage(isDarkMode = isDarkMode)
@@ -217,19 +238,16 @@ fun GlassSidebar(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Item 16: sidebar reordered — 1.Alarm 2.File Editor 3.Name
-                    // Generator 4.Command Mode 5.Developer Contacts 6.About App
-
                     // 1. Alarm — with a small red blinking dot while any alarm is active
                     SidebarMenuItem(
                         icon = Icons.Default.Alarm,
-                        title = "Alarm",
+                        title = if (hasActiveAlarm) "Alarm (${noteAlarms.size} Active)" else "Alarm",
                         isDarkMode = isDarkMode,
                         showBlinkDot = hasActiveAlarm && blinkEnabled,
                         onClick = { showAlarmListModal = true }
                     )
 
-                    // 2. File Editor (Renamed from Storage File Editor)
+                    // 2. File Editor
                     SidebarMenuItemPainter(
                         icon = painterResource(R.drawable.ic_file_editor),
                         title = "File Editor",
@@ -240,7 +258,7 @@ fun GlassSidebar(
                         }
                     )
 
-                    // 2b. HTML Viewer (below File Editor)
+                    // 3. HTML Viewer
                     SidebarMenuItemPainter(
                         icon = painterResource(R.drawable.ic_svg_html),
                         title = "HTML Viewer",
@@ -251,7 +269,7 @@ fun GlassSidebar(
                         }
                     )
 
-                    // 2c. My Documents (files kept inside AU Notes)
+                    // 4. My Documents
                     SidebarMenuItemPainter(
                         icon = androidx.compose.ui.graphics.vector.rememberVectorPainter(androidx.compose.material.icons.Icons.Default.FolderOpen),
                         title = "My Documents",
@@ -262,10 +280,10 @@ fun GlassSidebar(
                         }
                     )
 
-                    // 2d. Accountant (Milk Dairy Hisab)
+                    // 5. Accountant (Hisab Kitab / Udhar Khata)
                     SidebarMenuItemPainter(
                         icon = painterResource(R.drawable.ic_accountant),
-                        title = "Accountant",
+                        title = "Accountant (Hisab Kitab)",
                         isDarkMode = isDarkMode,
                         onClick = {
                             onClose()
@@ -273,18 +291,7 @@ fun GlassSidebar(
                         }
                     )
 
-                    // 3. Voice Command Mode (AU Agent Live)
-                    SidebarMenuItem(
-                        icon = Icons.Default.Mic,
-                        title = "Voice Command Mode",
-                        isDarkMode = isDarkMode,
-                        onClick = {
-                            onClose()
-                            onOpenCommandMode()
-                        }
-                    )
-
-                    // Temp Mail — temporary inbox, address history and recovery
+                    // 6. Temp Mail
                     SidebarMenuItem(
                         icon = Icons.Default.Email,
                         title = "Temp Mail",
@@ -295,15 +302,7 @@ fun GlassSidebar(
                         }
                     )
 
-                    // 5. Developer Contacts
-                    SidebarMenuItem(
-                        icon = Icons.Default.ContactMail,
-                        title = "Developer Contacts",
-                        isDarkMode = isDarkMode,
-                        onClick = { showDeveloperModal = true }
-                    )
-
-                    // 6. About The App
+                    // 7. About The App
                     SidebarMenuItem(
                         icon = Icons.Default.Info,
                         title = "About The App",
@@ -314,38 +313,18 @@ fun GlassSidebar(
                         }
                     )
 
-                    // 7. Recycle Bin
-                    SidebarMenuItemPainter(
-                        icon = painterResource(R.drawable.ic_recycle_bin),
-                        title = "Recycle Bin",
-                        isDarkMode = isDarkMode,
-                        onClick = {
-                            onClose()
-                            onOpenRecycleBin()
-                        }
-                    )
-
-                    // 8. Settings
-                    SidebarMenuItemPainter(
-                        icon = painterResource(R.drawable.ic_settings_gear),
-                        title = "Settings",
-                        isDarkMode = isDarkMode,
-                        onClick = {
-                            onClose()
-                            onOpenSettings()
-                        }
-                    )
-
+                    Spacer(modifier = Modifier.weight(1f))
                     Spacer(modifier = Modifier.height(18.dp))
                     HorizontalDivider(color = if (isDarkMode) Color(0x1FFFFFFF) else Color(0x1F718096))
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // User Profile Card
+                    // Bottom Card: Developer Contacts (replaces old ANXUL vfx profile card)
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(18.dp),
                         isDarkMode = isDarkMode,
-                        elevation = 4.dp
+                        elevation = 4.dp,
+                        onClick = { showDeveloperModal = true }
                     ) {
                         Row(
                             modifier = Modifier
@@ -360,11 +339,11 @@ fun GlassSidebar(
                                     .background(Brush.linearGradient(listOf(CrimsonPrimary, Color(0xFFFF8E53)))),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = "A",
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
+                                Icon(
+                                    imageVector = Icons.Default.ContactMail,
+                                    contentDescription = "Developer Contacts",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
 
@@ -372,24 +351,24 @@ fun GlassSidebar(
 
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "ANXUL vfx",
+                                    text = "Developer Contacts",
                                     fontSize = 14.sp,
-                                    fontWeight = FontWeight.SemiBold,
+                                    fontWeight = FontWeight.Bold,
                                     color = if (isDarkMode) Color.White else Color(0xFF111111)
                                 )
                                 Text(
-                                    text = "Premium Workspace",
+                                    text = "Connect with Anshul • Socials & Links",
                                     fontSize = 11.sp,
                                     color = CrimsonPrimary,
                                     fontWeight = FontWeight.Medium
                                 )
                             }
 
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF2CF95F))
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = CrimsonPrimary,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
@@ -406,11 +385,11 @@ fun GlassSidebar(
         }
     }
 
-    // Active Alarms list — Item 16 "Alarm" sidebar entry opens this
+    // Active Alarms list & Red Blinking Light Control — opened from "Alarm" in Sidebar
     if (showAlarmListModal) {
         androidx.compose.ui.window.Dialog(onDismissRequest = { showAlarmListModal = false }) {
             GlassCard(
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(10.dp),
                 isDarkMode = isDarkMode,
                 strong = true
             ) {
@@ -420,28 +399,100 @@ fun GlassSidebar(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Active Alarms", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Alarm, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(22.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Note Alarms & Indicator", fontSize = 16.5.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary)
+                        }
                         IconButton(onClick = { showAlarmListModal = false }, modifier = Modifier.size(28.dp)) {
                             Icon(Icons.Default.Close, contentDescription = "Close", tint = if (isDarkMode) Color.White else Color.Black)
                         }
                     }
+
                     Spacer(modifier = Modifier.height(10.dp))
+
+                    // Toggle to turn the Red Blinking Indicator Light ON or OFF directly inside Alarm section
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0F000000))
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Red Blinking Alarm Light",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isDarkMode) Color.White else Color.Black
+                            )
+                            Text(
+                                text = if (blinkEnabled) "ON • Blinks red when any note alarm is active" else "OFF • Blinking indicator disabled",
+                                fontSize = 10.5.sp,
+                                color = Color.Gray
+                            )
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = blinkEnabled,
+                            onCheckedChange = { preferences.setBlinkOnAlarmActive(it) },
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = CrimsonPrimary
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     if (noteAlarms.isEmpty()) {
-                        Text("No active alarms.", fontSize = 12.sp, color = Color.Gray)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (isDarkMode) Color(0x12FFFFFF) else Color(0x0A000000))
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "No active note alarms right now.\nOpen any note in Read Mode and tap the Alarm icon to schedule one.",
+                                fontSize = 12.sp,
+                                color = Color.Gray
+                            )
+                        }
                     } else {
+                        Text(
+                            text = "ACTIVE ALARMS (${noteAlarms.size})",
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = CrimsonPrimary,
+                            letterSpacing = 0.8.sp
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(max = 320.dp)
-                                .verticalScroll(rememberScrollState())
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            val now = System.currentTimeMillis()
                             noteAlarms.values.sortedBy { it.triggerMillis }.forEach { alarm ->
-                                val cal = remember(alarm.triggerMillis) {
-                                    java.util.Calendar.getInstance().apply { timeInMillis = alarm.triggerMillis }
+                                val formattedTime = remember(alarm.triggerMillis) {
+                                    java.text.SimpleDateFormat("dd MMM, hh:mm a", java.util.Locale.getDefault())
+                                        .format(java.util.Date(alarm.triggerMillis))
+                                }
+                                val diffMs = (alarm.triggerMillis - now).coerceAtLeast(0L)
+                                val minsLeft = diffMs / 60_000L
+                                val remainingLabel = when {
+                                    diffMs <= 0L -> "Ringing / Due now"
+                                    minsLeft < 60L -> "in ${minsLeft.coerceAtLeast(1)} min"
+                                    else -> "in ${minsLeft / 60}h ${minsLeft % 60}m"
                                 }
                                 GlassCard(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(14.dp),
                                     isDarkMode = isDarkMode,
                                     elevation = 2.dp,
                                     onClick = {
@@ -450,23 +501,42 @@ fun GlassSidebar(
                                         onOpenNoteById(alarm.noteId)
                                     }
                                 ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column {
-                                            Text(alarm.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = if (isDarkMode) Color.White else Color.Black)
-                                            Text(
-                                                "%02d:%02d • ${alarm.ringtoneName}".format(
-                                                    cal.get(java.util.Calendar.HOUR_OF_DAY),
-                                                    cal.get(java.util.Calendar.MINUTE)
-                                                ),
-                                                fontSize = 11.sp,
-                                                color = Color.Gray
-                                            )
+                                    Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    alarm.title.ifBlank { "Untitled Note" },
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isDarkMode) Color.White else Color.Black
+                                                )
+                                                Spacer(Modifier.height(2.dp))
+                                                Text(
+                                                    "$formattedTime ($remainingLabel)",
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = CrimsonPrimary
+                                                )
+                                                Text(
+                                                    "Sound: ${alarm.ringtoneName}",
+                                                    fontSize = 10.5.sp,
+                                                    color = Color.Gray
+                                                )
+                                            }
+                                            androidx.compose.material3.TextButton(
+                                                onClick = {
+                                                    com.example.ui.util.AlarmScheduler.cancelAlarm(context, alarm.triggerMillis, alarm.noteId)
+                                                    preferences.clearNoteAlarm(alarm.noteId)
+                                                    com.example.ui.util.AlarmSoundPlayer.stop()
+                                                }
+                                            ) {
+                                                Text("Turn Off", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEF4444))
+                                            }
                                         }
-                                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = CrimsonPrimary)
                                     }
                                 }
                             }

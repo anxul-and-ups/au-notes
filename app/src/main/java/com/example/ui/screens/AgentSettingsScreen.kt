@@ -425,62 +425,6 @@ fun AgentSettingsScreen(
 
             Spacer(Modifier.height(18.dp))
 
-            // -------- 2B. NOTE READER VOICE MODE --------
-            SectionHeader("NOTE READER (READ ALOUD) VOICE", warmAccent)
-            EditorialSectionCard(cardBg = cardBg, cardBorder = cardBorder) {
-                Text(
-                    "Choose how notes are read aloud when you tap the speaker icon in Note Viewer:",
-                    fontSize = 11.5.sp,
-                    color = sub
-                )
-                Spacer(Modifier.height(10.dp))
-
-                val readerModes = listOf(
-                    Triple(
-                        "ai",
-                        "Realistic AI Voice (Selected Character: $liveVoice)",
-                        "Natural expressive Gemini AI speech • Uses API quota (auto-falls back to Native if quota is full)"
-                    ),
-                    Triple(
-                        "native",
-                        "Native System Voice (Offline TTS)",
-                        "Fast & unlimited offline reading • Zero API quota usage • Uses Voice Adjuster settings below"
-                    )
-                )
-
-                readerModes.forEach { (modeKey, modeTitle, modeSub) ->
-                    val selected = noteReaderVoiceMode == modeKey
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (selected) warmAccent.copy(alpha = 0.14f) else Color.Transparent)
-                            .border(
-                                width = 1.dp,
-                                color = if (selected) warmAccent else cardBorder,
-                                shape = RoundedCornerShape(12.dp)
-                            )
-                            .clickable { preferences.setNoteReaderVoiceMode(modeKey) }
-                            .padding(horizontal = 10.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = selected,
-                            onClick = { preferences.setNoteReaderVoiceMode(modeKey) },
-                            colors = RadioButtonDefaults.colors(selectedColor = warmAccent)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(modeTitle, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = fg)
-                            Text(modeSub, fontSize = 11.sp, color = sub)
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                }
-            }
-
-            Spacer(Modifier.height(18.dp))
-
             // -------- 3. NORMAL TTS VOICE ADJUSTER (WITH RESET BUTTON) --------
             SectionHeader("VOICE ADJUSTER (NORMAL VOICE)", warmAccent)
             EditorialSectionCard(cardBg = cardBg, cardBorder = cardBorder) {

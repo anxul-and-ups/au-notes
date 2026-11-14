@@ -44,6 +44,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -489,7 +490,8 @@ fun MainWorkspaceScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Search Bar with Deep Search Toggle (PART A Item 5)
+                // Search Bar with Deep Search Toggle (shown only when focused or query is non-empty)
+                var isSearchFocused by remember { mutableStateOf(false) }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -508,22 +510,23 @@ fun MainWorkspaceScreen(
                             Icon(Icons.Default.Search, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(20.dp))
                         },
                         trailingIcon = {
-                            // Deep Search Toggle Chip
-                            Row(
-                                modifier = Modifier
-                                    .padding(end = 6.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isDeepSearch) CrimsonPrimary else (if (isDarkMode) Color(0x33FFFFFF) else Color(0x1F000000)))
-                                    .clickable { isDeepSearch = !isDeepSearch }
-                                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Deep",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isDeepSearch) Color.White else (if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray)
-                                )
+                            if (isSearchFocused || searchQuery.isNotEmpty()) {
+                                Row(
+                                    modifier = Modifier
+                                        .padding(end = 6.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isDeepSearch) CrimsonPrimary else (if (isDarkMode) Color(0x33FFFFFF) else Color(0x1F000000)))
+                                        .clickable { isDeepSearch = !isDeepSearch }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Deep",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isDeepSearch) Color.White else (if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray)
+                                    )
+                                }
                             }
                         },
                         shape = RoundedCornerShape(14.dp),
@@ -534,7 +537,9 @@ fun MainWorkspaceScreen(
                             unfocusedTextColor = if (isDarkMode) Color.White else Color.Black
                         ),
                         singleLine = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .onFocusChanged { isSearchFocused = it.isFocused }
                     )
                 }
 

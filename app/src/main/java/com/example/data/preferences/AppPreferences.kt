@@ -434,11 +434,11 @@ class AppPreferences(context: Context) {
     val liveVoiceName: StateFlow<String> = _liveVoiceName.asStateFlow()
     fun setLiveVoiceName(v: String) { _liveVoiceName.value = v; prefs.edit().putString("agent_live_voice_name", v).apply() }
 
-    // Note Reader voice mode: "ai" (default, natural AI voice using API quota) or "native" (unlimited offline native TTS)
-    private val _noteReaderVoiceMode = stringFlow("note_reader_voice_mode", "ai")
+    // Note Reader voice mode: defaults to "native" (unlimited offline native TTS)
+    private val _noteReaderVoiceMode = stringFlow("note_reader_voice_mode", "native")
     val noteReaderVoiceMode: StateFlow<String> = _noteReaderVoiceMode.asStateFlow()
     fun setNoteReaderVoiceMode(mode: String) {
-        val clean = if (mode == "native") "native" else "ai"
+        val clean = if (mode == "ai") "ai" else "native"
         _noteReaderVoiceMode.value = clean
         prefs.edit().putString("note_reader_voice_mode", clean).apply()
     }
@@ -485,6 +485,63 @@ class AppPreferences(context: Context) {
         val updated = _noteWriteSeconds.value + (noteId to ((_noteWriteSeconds.value[noteId] ?: 0L) + seconds))
         _noteWriteSeconds.value = updated
         prefs.edit().putString("note_write_seconds", updated.entries.joinToString(",") { "${it.key}:${it.value}" }).apply()
+    }
+
+    // ---- Extended Note Activity & Insights (Open Count, Open Seconds, Pasted Chars, Typing Session Logs) ----
+    private fun loadLongMap(key: String): Map<Long, Long> =
+        (prefs.getString(key, "") ?: "").split(",").mapNotNull {
+            val p = it.split(":")
+            if (p.size == 2) (p[0].toLongOrNull() ?: return@mapNotNull null) to (p[1].toLongOrNull() ?: return@mapNotNull null) else null
+        }.toMap()
+
+    private fun saveLongMap(key: String, map: Map<Long, Long>) {
+        prefs.edit().putString(key, map.entries.joinToString(",") { "${it.key}:${it.value}" }).apply()
+    }
+
+    private val _noteOpenCount = MutableStateFlow(loadLongMap("note_open_count"))
+    val noteOpenCount: StateFlow<Map<Long, Long>> = _noteOpenCount.asStateFlow()
+
+    fun incrementNoteOpenCount(noteId: Long) {
+        if (noteId <= 0) return
+        val updated = _noteOpenCount.value + (noteId to ((_noteOpenCount.value[noteId] ?: 0L) + 1L))
+        _noteOpenCount.value = updated
+        saveLongMap("note_open_count", updated)
+    }
+
+    private val _noteOpenSeconds = MutableStateFlow(loadLongMap("note_open_seconds"))
+    val noteOpenSeconds: StateFlow<Map<Long, Long>> = _noteOpenSeconds.asStateFlow()
+
+    fun addNoteOpenSeconds(noteId: Long, seconds: Long) {
+        if (noteId <= 0 || seconds <= 0) return
+        val updated = _noteOpenSeconds.value + (noteId to ((_noteOpenSeconds.value[noteId] ?: 0L) + seconds))
+        _noteOpenSeconds.value = updated
+        saveLongMap("note_open_seconds", updated)
+    }
+
+    private val _notePastedChars = MutableStateFlow(loadLongMap("note_pasted_chars"))
+    val notePastedChars: StateFlow<Map<Long, Long>> = _notePastedChars.asStateFlow()
+
+    fun addNotePastedChars(noteId: Long, chars: Int) {
+        if (noteId <= 0 || chars <= 0) return
+        val updated = _notePastedChars.value + (noteId to ((_notePastedChars.value[noteId] ?: 0L) + chars.toLong()))
+        _notePastedChars.value = updated
+        saveLongMap("note_pasted_chars", updated)
+    }
+
+    /** Each typing session entry: "timestampMillis|durationSec|charsTyped|wordsTyped" */
+    fun getNoteTypingSessions(noteId: Long): List<String> {
+        if (noteId <= 0) return emptyList()
+        return (prefs.getString("note_typing_sessions_$noteId", "") ?: "")
+            .split(";;")
+            .filter { it.isNotBlank() }
+    }
+
+    fun recordNoteTypingSession(noteId: Long, timestampMillis: Long, durationSec: Long, charsTyped: Int, wordsTyped: Int) {
+        if (noteId <= 0 || (durationSec <= 0 && charsTyped <= 0)) return
+        val existing = getNoteTypingSessions(noteId)
+        val entry = "$timestampMillis|${durationSec.coerceAtLeast(1)}|${charsTyped.coerceAtLeast(0)}|${wordsTyped.coerceAtLeast(0)}"
+        val updated = (existing + entry).takeLast(50)
+        prefs.edit().putString("note_typing_sessions_$noteId", updated.joinToString(";;")).apply()
     }
 
     // ---- AU Agent: user's name (asked on first open) + which tools the agent may use ----

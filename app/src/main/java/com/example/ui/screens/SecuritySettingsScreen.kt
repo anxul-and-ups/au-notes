@@ -195,49 +195,211 @@ fun SecuritySettingsScreen(
     }
 
     when (dialog) {
-        SecDialog.PIN -> ChangeDialog(isDarkMode, "Change PIN", onDismiss = { dialog = SecDialog.NONE }) { close ->
-            var cur by remember { mutableStateOf("") }
-            var new1 by remember { mutableStateOf("") }
-            var new2 by remember { mutableStateOf("") }
-            PinField("Current PIN", cur) { cur = it }
-            PinField("New 4-digit PIN", new1) { new1 = it }
-            PinField("Confirm new PIN", new2) { new2 = it }
-            ConfirmRow(onCancel = close) {
-                when {
-                    cur != storedPin -> Toast.makeText(context, "Current PIN is wrong", Toast.LENGTH_SHORT).show()
-                    new1.length != 4 -> Toast.makeText(context, "New PIN must be 4 digits", Toast.LENGTH_SHORT).show()
-                    new1 != new2 -> Toast.makeText(context, "PINs do not match", Toast.LENGTH_SHORT).show()
-                    else -> {
-                        preferences.setLockPin(new1)
-                        Toast.makeText(context, "PIN changed", Toast.LENGTH_SHORT).show()
-                        close()
+        SecDialog.PIN -> Dialog(onDismissRequest = { dialog = SecDialog.NONE }) {
+            var step by remember { mutableStateOf(0) } // 0 = Enter New PIN, 1 = Confirm New PIN
+            var newPin by remember { mutableStateOf("") }
+            var confirmPin by remember { mutableStateOf("") }
+            var pinError by remember { mutableStateOf<String?>(null) }
+            val activePin = if (step == 0) newPin else confirmPin
+
+            androidx.compose.runtime.LaunchedEffect(newPin, confirmPin, step) {
+                if (step == 0 && newPin.length == 4) {
+                    kotlinx.coroutines.delay(150)
+                    step = 1
+                } else if (step == 1 && confirmPin.length == 4) {
+                    kotlinx.coroutines.delay(150)
+                    if (confirmPin == newPin) {
+                        preferences.setLockPin(newPin)
+                        Toast.makeText(context, "New 4-Digit PIN Saved!", Toast.LENGTH_SHORT).show()
+                        dialog = SecDialog.NONE
+                    } else {
+                        pinError = "PINs did not match. Please enter again."
+                        newPin = ""
+                        confirmPin = ""
+                        step = 0
+                    }
+                }
+            }
+
+            GlassCard(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                shape = RoundedCornerShape(24.dp),
+                isDarkMode = isDarkMode,
+                strong = true
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(22.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(CrimsonPrimary.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Pin, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(24.dp))
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = if (step == 0) "Step 1 of 2 • Set New PIN" else "Step 2 of 2 • Confirm New PIN",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = textColor
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = if (step == 0) "Enter your new 4-digit security PIN" else "Re-enter the same 4-digit PIN to confirm",
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                    Spacer(Modifier.height(18.dp))
+
+                    // 4 PIN Boxes
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        repeat(4) { idx ->
+                            val filled = idx < activePin.length
+                            val current = idx == activePin.length
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 44.dp, height = 50.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (filled) CrimsonPrimary.copy(alpha = 0.16f) else (if (isDarkMode) Color(0xFF151821) else Color(0xFFF1F5F9)))
+                                    .border(
+                                        width = if (filled || current) 2.dp else 1.dp,
+                                        color = if (filled || current) CrimsonPrimary else Color.Gray.copy(alpha = 0.35f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (filled) {
+                                    Box(Modifier.size(14.dp).clip(CircleShape).background(CrimsonPrimary))
+                                }
+                            }
+                        }
+                    }
+
+                    if (pinError != null) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(pinError!!, color = Color(0xFFEF4444), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Spacer(Modifier.height(18.dp))
+
+                    val keypad = listOf(
+                        listOf("1", "2", "3"),
+                        listOf("4", "5", "6"),
+                        listOf("7", "8", "9"),
+                        listOf("CLR", "0", "DEL")
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        keypad.forEach { r ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                r.forEach { key ->
+                                    GlassCard(
+                                        modifier = Modifier.size(54.dp),
+                                        shape = CircleShape,
+                                        isDarkMode = isDarkMode,
+                                        elevation = 3.dp,
+                                        onClick = {
+                                            pinError = null
+                                            when (key) {
+                                                "CLR" -> {
+                                                    if (step == 0) newPin = "" else confirmPin = ""
+                                                }
+                                                "DEL" -> {
+                                                    if (step == 0) newPin = newPin.dropLast(1)
+                                                    else confirmPin = confirmPin.dropLast(1)
+                                                }
+                                                else -> {
+                                                    if (step == 0 && newPin.length < 4) newPin += key
+                                                    else if (step == 1 && confirmPin.length < 4) confirmPin += key
+                                                }
+                                            }
+                                        }
+                                    ) {
+                                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = if (key == "DEL") "⌫" else key,
+                                                fontSize = if (key == "CLR") 11.sp else 18.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (key == "CLR") CrimsonPrimary else textColor
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(14.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        if (step == 1) {
+                            TextButton(onClick = { step = 0; confirmPin = "" }) {
+                                Text("Back to Step 1", color = Color.Gray)
+                            }
+                        } else {
+                            Spacer(Modifier.width(1.dp))
+                        }
+                        TextButton(onClick = { dialog = SecDialog.NONE }) {
+                            Text("Cancel", color = CrimsonPrimary)
+                        }
                     }
                 }
             }
         }
 
-        SecDialog.QUESTION -> ChangeDialog(isDarkMode, "Change security question", onDismiss = { dialog = SecDialog.NONE }) { close ->
-            var cur by remember { mutableStateOf("") }
+        SecDialog.QUESTION -> ChangeDialog(isDarkMode, "Security Question & Recovery", onDismiss = { dialog = SecDialog.NONE }) { close ->
             var q by remember { mutableStateOf(question) }
             var a by remember { mutableStateOf("") }
-            PinField("Current PIN", cur) { cur = it }
+            Text(
+                "Used to recover your vault if you ever forget your 4-digit PIN.",
+                fontSize = 11.5.sp,
+                color = Color.Gray
+            )
+            val presetQuestions = listOf(
+                "Who is the best person in your life?",
+                "What is your childhood nickname?",
+                "What is your favourite subject or project?",
+                "What was the name of your first school?"
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Quick Presets:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary)
+                presetQuestions.forEach { preset ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (q == preset) CrimsonPrimary.copy(alpha = 0.14f) else Color.Gray.copy(alpha = 0.08f))
+                            .clickable { q = preset }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(preset, fontSize = 11.5.sp, color = if (q == preset) CrimsonPrimary else textColor)
+                    }
+                }
+            }
             OutlinedTextField(
-                value = q, onValueChange = { q = it }, label = { Text("New question") },
-                colors = fieldColors(), modifier = Modifier.fillMaxWidth()
+                value = q,
+                onValueChange = { q = it },
+                label = { Text("Security Question") },
+                colors = fieldColors(),
+                modifier = Modifier.fillMaxWidth()
             )
             OutlinedTextField(
-                value = a, onValueChange = { a = it }, label = { Text("Answer") }, singleLine = true,
-                colors = fieldColors(), modifier = Modifier.fillMaxWidth()
+                value = a,
+                onValueChange = { a = it },
+                label = { Text("Recovery Answer") },
+                singleLine = true,
+                colors = fieldColors(),
+                modifier = Modifier.fillMaxWidth()
             )
             ConfirmRow(onCancel = close) {
-                when {
-                    cur != storedPin -> Toast.makeText(context, "Current PIN is wrong", Toast.LENGTH_SHORT).show()
-                    q.isBlank() || a.isBlank() -> Toast.makeText(context, "Fill both question and answer", Toast.LENGTH_SHORT).show()
-                    else -> {
-                        preferences.setSecurityDetails(storedPin, q.trim(), a)
-                        Toast.makeText(context, "Security question updated", Toast.LENGTH_SHORT).show()
-                        close()
-                    }
+                if (q.isBlank() || a.isBlank()) {
+                    Toast.makeText(context, "Please fill both question and answer", Toast.LENGTH_SHORT).show()
+                } else {
+                    preferences.setSecurityDetails(storedPin, q.trim(), a.trim())
+                    Toast.makeText(context, "Security question updated!", Toast.LENGTH_SHORT).show()
+                    close()
                 }
             }
         }

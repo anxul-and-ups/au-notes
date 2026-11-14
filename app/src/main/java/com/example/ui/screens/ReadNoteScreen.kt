@@ -56,6 +56,9 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -144,6 +147,9 @@ fun ReadNoteScreen(
     var pdfAttachmentToView by remember { mutableStateOf<Uri?>(null) }
     var showAlarmDialog by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
+    var showInNoteSearch by remember { mutableStateOf(false) }
+    var inNoteSearchQuery by remember { mutableStateOf("") }
+    var inNoteMatchIndex by remember { mutableIntStateOf(0) }
     val noteAlarms by preferences.noteAlarms.collectAsState()
     val activeAlarm = noteAlarms[note.id]
     val noteReaderVoiceMode by preferences.noteReaderVoiceMode.collectAsState()
@@ -153,6 +159,16 @@ fun ReadNoteScreen(
     val aiService = remember { com.example.data.ai.AiService() }
     var activeAudioTrack by remember { mutableStateOf<android.media.AudioTrack?>(null) }
     var speechJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
+    // Track Note Open Count & Reading Duration
+    DisposableEffect(note.id) {
+        val openedAtMs = System.currentTimeMillis()
+        preferences.incrementNoteOpenCount(note.id)
+        onDispose {
+            val elapsedSec = ((System.currentTimeMillis() - openedAtMs) / 1000L).coerceAtLeast(1L)
+            preferences.addNoteOpenSeconds(note.id, elapsedSec)
+        }
+    }
 
     val allAttachments = remember(note.attachmentsJson) {
         RichTextFormatter.deserializeAttachments(note.attachmentsJson)
@@ -640,27 +656,33 @@ fun ReadNoteScreen(
 
                                 Text("|", color = if (isDarkMode) Color(0x33FFFFFF) else Color(0x33000000), fontSize = 12.sp)
 
-                                // Copy Button
+                                // In-Note Search Button (replaces redundant Copy button; body is wrapped in SelectionContainer)
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (showInNoteSearch) CrimsonPrimary.copy(alpha = 0.16f) else Color.Transparent)
                                         .clickable {
-                                            clipboard.setText(AnnotatedString(com.example.ui.util.ImageMarkers.strip(note.content)))
-                                            Toast.makeText(context, "Note copied to clipboard", Toast.LENGTH_SHORT).show()
+                                            showInNoteSearch = !showInNoteSearch
+                                            if (!showInNoteSearch) {
+                                                inNoteSearchQuery = ""
+                                                inNoteMatchIndex = 0
+                                            }
                                         }
-                                        .padding(horizontal = 5.dp, vertical = 4.dp)
+                                        .padding(horizontal = 6.dp, vertical = 4.dp)
                                 ) {
                                     Icon(
-                                        painter = painterResource(R.drawable.ic_copy_content),
-                                        contentDescription = "Copy",
-                                        tint = Color(0xFFFFD93D),
+                                        imageVector = Icons.Default.Search,
+                                        contentDescription = "Find in Note",
+                                        tint = if (showInNoteSearch) CrimsonPrimary else Color(0xFFFFD93D),
                                         modifier = Modifier.size(15.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "Copy",
+                                        text = "Search",
                                         fontSize = 11.sp,
-                                        color = if (isDarkMode) Color.White.copy(0.85f) else Color.Black
+                                        fontWeight = if (showInNoteSearch) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (showInNoteSearch) CrimsonPrimary else if (isDarkMode) Color.White.copy(0.85f) else Color.Black
                                     )
                                 }
 
@@ -712,6 +734,87 @@ fun ReadNoteScreen(
                                                 }
                                             )
                                         }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Chrome-style In-Note Find Bar
+                        val plainSearchable = remember(note.content) { com.example.ui.util.ImageMarkers.strip(note.content) }
+                        val matchRanges = remember(plainSearchable, inNoteSearchQuery) {
+                            val q = inNoteSearchQuery.trim()
+                            if (q.isEmpty()) emptyList()
+                            else Regex(Regex.escape(q), RegexOption.IGNORE_CASE).findAll(plainSearchable).map { it.range }.toList()
+                        }
+                        if (showInNoteSearch) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            GlassCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                isDarkMode = isDarkMode
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Search,
+                                        contentDescription = null,
+                                        tint = CrimsonPrimary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    OutlinedTextField(
+                                        value = inNoteSearchQuery,
+                                        onValueChange = {
+                                            inNoteSearchQuery = it
+                                            inNoteMatchIndex = 0
+                                        },
+                                        placeholder = { Text("Find in note...", fontSize = 12.sp) },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f).heightIn(min = 42.dp),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = CrimsonPrimary,
+                                            unfocusedBorderColor = Color.Gray.copy(alpha = 0.3f)
+                                        )
+                                    )
+                                    Text(
+                                        text = if (matchRanges.isEmpty()) "0/0" else "${(inNoteMatchIndex % matchRanges.size) + 1}/${matchRanges.size}",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (matchRanges.isEmpty() && inNoteSearchQuery.isNotBlank()) Color(0xFFEF4444) else CrimsonPrimary
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            if (matchRanges.isNotEmpty()) {
+                                                inNoteMatchIndex = (inNoteMatchIndex - 1 + matchRanges.size) % matchRanges.size
+                                            }
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Previous Match", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(18.dp))
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            if (matchRanges.isNotEmpty()) {
+                                                inNoteMatchIndex = (inNoteMatchIndex + 1) % matchRanges.size
+                                            }
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next Match", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(18.dp))
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            showInNoteSearch = false
+                                            inNoteSearchQuery = ""
+                                            inNoteMatchIndex = 0
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Close Search", tint = Color.Gray, modifier = Modifier.size(16.dp))
                                     }
                                 }
                             }
@@ -925,16 +1028,44 @@ fun ReadNoteScreen(
                             }
                             val styledText = styledState.value ?: remember(displayContent) { AnnotatedString(displayContent) }
 
-                            val linkedText = remember(styledText) { com.example.ui.util.LinkText.linkify(styledText, context) }
+                            val linkedText = remember(styledText, inNoteSearchQuery, inNoteMatchIndex) {
+                                val baseLinked = com.example.ui.util.LinkText.linkify(styledText, context)
+                                val q = inNoteSearchQuery.trim()
+                                if (q.isEmpty()) {
+                                    baseLinked
+                                } else {
+                                    val found = Regex(Regex.escape(q), RegexOption.IGNORE_CASE).findAll(baseLinked.text).toList()
+                                    if (found.isEmpty()) baseLinked
+                                    else {
+                                        val activeIdx = inNoteMatchIndex.mod(found.size)
+                                        buildAnnotatedString {
+                                            append(baseLinked)
+                                            found.forEachIndexed { idx, m ->
+                                                addStyle(
+                                                    SpanStyle(
+                                                        background = if (idx == activeIdx) Color(0xFFF97316) else Color(0xFFFACC15).copy(alpha = 0.55f),
+                                                        color = Color.Black,
+                                                        fontWeight = FontWeight.Bold
+                                                    ),
+                                                    start = m.range.first,
+                                                    end = (m.range.last + 1).coerceAtMost(baseLinked.length)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
 
-                            ReadRichBody(
-                                content = displayContent,
-                                styled = linkedText,
-                                attachments = allAttachments,
-                                fontSize = note.fontSize,
-                                color = currentFontColor,
-                                isDarkMode = isDarkMode
-                            )
+                            androidx.compose.foundation.text.selection.SelectionContainer {
+                                ReadRichBody(
+                                    content = displayContent,
+                                    styled = linkedText,
+                                    attachments = allAttachments,
+                                    fontSize = note.fontSize,
+                                    color = currentFontColor,
+                                    isDarkMode = isDarkMode
+                                )
+                            }
                         }
 
                         // Render Table if table data exists
@@ -1010,27 +1141,40 @@ fun ReadNoteScreen(
         val lines = remember(plain) { if (plain.isEmpty()) 0 else plain.split("\n").size }
         val words = remember(plain) { plain.split(Regex("\\s+")).count { it.isNotBlank() } }
         val letters = remember(plain) { plain.count { it.isLetter() } }
+        val chars = plain.length
         val writeSecs = preferences.noteWriteSeconds.collectAsState().value[note.id] ?: 0L
-        val writeText = when {
-            writeSecs <= 0L -> "Not tracked yet"
-            writeSecs < 60 -> "${writeSecs}s"
-            writeSecs < 3600 -> "${writeSecs / 60}m ${writeSecs % 60}s"
-            else -> "${writeSecs / 3600}h ${(writeSecs % 3600) / 60}m ${writeSecs % 60}s"
+        val openCount = preferences.noteOpenCount.collectAsState().value[note.id] ?: 1L
+        val readSecs = preferences.noteOpenSeconds.collectAsState().value[note.id] ?: 0L
+        fun formatDuration(secs: Long): String = when {
+            secs <= 0L -> "Just started"
+            secs < 60 -> "${secs}s"
+            secs < 3600 -> "${secs / 60}m ${secs % 60}s"
+            else -> "${secs / 3600}h ${(secs % 3600) / 60}m ${secs % 60}s"
         }
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showInfoDialog = false },
-            title = { Text("Note info", fontWeight = FontWeight.Bold) },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Info, contentDescription = null, tint = CrimsonPrimary)
+                    Text("Note Insights & Activity", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                }
+            },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     listOf(
-                        "Total writing time" to writeText,
+                        "Times opened" to "${openCount}x",
+                        "Total reading time" to formatDuration(readSecs),
+                        "Total writing time" to formatDuration(writeSecs),
                         "Total lines" to "$lines",
                         "Total words" to "$words",
-                        "Total letters" to "$letters"
+                        "Total letters" to "$letters",
+                        "Total characters" to "$chars",
+                        "Folder / Category" to "${note.folder} • ${note.category}",
+                        "Last updated" to dateFormatter.format(Date(note.updatedAt))
                     ).forEach { (k, v) ->
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(k, fontSize = 14.sp, color = Color.Gray)
-                            Text(v, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text(k, fontSize = 13.sp, color = Color.Gray)
+                            Text(v, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -1060,6 +1204,7 @@ fun ReadNoteScreen(
         var selectedMinute by remember { mutableIntStateOf(initialCal.get(Calendar.MINUTE)) }
         var ringtoneType by remember { mutableStateOf("system") }
         var showRingtoneList by remember { mutableStateOf(false) }
+        var audioSearchQuery by remember { mutableStateOf("") }
 
         val systemRingtones = remember { AlarmScheduler.getSystemRingtones(context) }
         var selectedSystemRingtone by remember { mutableStateOf(systemRingtones.firstOrNull()) }
@@ -1080,7 +1225,7 @@ fun ReadNoteScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 420.dp)
+                        .heightIn(max = 460.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
                     OutlinedTextField(
@@ -1094,7 +1239,7 @@ fun ReadNoteScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Item 14: proper native time picker instead of +1hr/+10min buttons
+                    // Native time picker + quick time preset chips
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1114,13 +1259,34 @@ fun ReadNoteScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Alarm Time", fontSize = 13.sp, color = if (isDarkMode) Color.White else Color.Black)
+                        Text("Alarm Time (Tap to pick)", fontSize = 13.sp, color = if (isDarkMode) Color.White else Color.Black)
                         Text(
                             "%02d:%02d".format(selectedHour, selectedMinute),
                             fontWeight = FontWeight.Bold,
                             color = CrimsonPrimary,
                             fontSize = 16.sp
                         )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(5 to "+5m", 15 to "+15m", 30 to "+30m", 60 to "+1h").forEach { (mins, label) ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(CrimsonPrimary.copy(alpha = 0.14f))
+                                    .clickable {
+                                        val c = Calendar.getInstance().apply { add(Calendar.MINUTE, mins) }
+                                        selectedHour = c.get(Calendar.HOUR_OF_DAY)
+                                        selectedMinute = c.get(Calendar.MINUTE)
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                            ) {
+                                Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary)
+                            }
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(14.dp))
@@ -1144,15 +1310,13 @@ fun ReadNoteScreen(
                             onClick = { ringtoneType = "device"; showRingtoneList = true },
                             colors = RadioButtonDefaults.colors(selectedColor = CrimsonPrimary)
                         )
-                        Text("Device Files", fontSize = 13.sp, color = if (isDarkMode) Color.White else Color.Black)
+                        Text("Device Files (${deviceMusicFiles.size})", fontSize = 13.sp, color = if (isDarkMode) Color.White else Color.Black)
                     }
 
-                    // Item 15: real tap-to-open list of the actual available files,
-                    // not just a static "first found" label.
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { showRingtoneList = true }
+                            .clickable { showRingtoneList = !showRingtoneList }
                             .padding(vertical = 6.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
@@ -1165,19 +1329,33 @@ fun ReadNoteScreen(
                             fontSize = 12.sp,
                             color = CrimsonPrimary
                         )
-                        Text("Change", fontSize = 11.sp, color = Color.Gray)
+                        Text(if (showRingtoneList) "Hide" else "Change", fontSize = 11.sp, color = Color.Gray)
                     }
 
                     if (showRingtoneList) {
+                        OutlinedTextField(
+                            value = audioSearchQuery,
+                            onValueChange = { audioSearchQuery = it },
+                            placeholder = { Text("Search ringtones or device songs...", fontSize = 11.5.sp) },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
+                        )
+                        val q = audioSearchQuery.trim()
                         val list: List<Pair<String, () -> Unit>> = if (ringtoneType == "system") {
-                            systemRingtones.map { item ->
-                                item.title to { selectedSystemRingtone = item; showRingtoneList = false }
-                            }
+                            systemRingtones
+                                .filter { q.isBlank() || it.title.contains(q, ignoreCase = true) }
+                                .map { item ->
+                                    item.title to { selectedSystemRingtone = item; showRingtoneList = false }
+                                }
                         } else {
-                            if (deviceMusicFiles.isEmpty()) {
-                                listOf("No audio files found on this device" to { showRingtoneList = false })
+                            val filteredDevice = deviceMusicFiles.filter {
+                                q.isBlank() || it.title.contains(q, ignoreCase = true) || it.artist.contains(q, ignoreCase = true)
+                            }
+                            if (filteredDevice.isEmpty()) {
+                                listOf("No matching audio files found on device" to { showRingtoneList = false })
                             } else {
-                                deviceMusicFiles.map { item ->
+                                filteredDevice.map { item ->
                                     "${item.title} — ${item.artist}" to { selectedDeviceMusic = item; showRingtoneList = false }
                                 }
                             }
@@ -1414,12 +1592,12 @@ private fun ReadRichBody(
                         } else null
                     }
                     val chartSpec = remember(fence.code, langLower) {
-                        if (langLower in setOf("chart", "graph")) {
+                        if (langLower in setOf("chart", "graph", "json:apex", "apex", "apexcharts") || langLower.startsWith("json:apex")) {
                             com.example.ui.components.AgentVisualsParser.parseChart(fence.code)
                         } else null
                     }
                     val diagramSpec = remember(fence.code, langLower) {
-                        if (langLower in setOf("diagram", "svg")) {
+                        if (langLower in setOf("diagram", "svg", "mermaid", "flowchart", "mindmap", "sequence")) {
                             com.example.ui.components.AgentVisualsParser.parseDiagram(fence.code)
                         } else null
                     }

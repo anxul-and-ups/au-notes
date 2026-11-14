@@ -92,6 +92,15 @@ class ChatSessionManager(context: Context) {
         persistSessions(existing)
     }
 
+    fun renameSession(sessionId: String, newTitle: String) {
+        val clean = newTitle.trim()
+        if (clean.isBlank()) return
+        val existing = loadAllSessions().map {
+            if (it.id == sessionId) it.copy(title = clean) else it
+        }
+        persistSessions(existing)
+    }
+
     fun clearAllSessions() {
         prefs.edit().remove("sessions_json").apply()
     }

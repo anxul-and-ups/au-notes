@@ -103,6 +103,9 @@ class MainActivity : FragmentActivity() {
     private fun extractSharedUri(intent: android.content.Intent?): android.net.Uri? {
         if (intent == null) return null
         val action = intent.action ?: return null
+        if (action == android.content.Intent.ACTION_VIEW || action == android.content.Intent.ACTION_EDIT) {
+            return intent.data
+        }
         if (action != android.content.Intent.ACTION_SEND && action != android.content.Intent.ACTION_SEND_MULTIPLE) {
             return null
         }
@@ -663,6 +666,11 @@ fun AuNotesApp(
                     onSaveNote = { id, title, content, category, isBold, isItalic, isUnderline, isStrikethrough, isCodeFormat, fontSize, fontColorHex, alignment, listType, tableData, styleSpansJson, attachmentsJson, chosenFolder, onSaved ->
                         coroutineScope.launch {
                             val finalTitle = title.ifBlank { "Untitled Note" }
+                            if (screen.returnScreen is Screen.StorageEditor && id == 0L && chosenFolder.isBlank()) {
+                                com.example.ui.screens.EditedFilesStore.saveEditedFile(activity, finalTitle, content)
+                                onSaved(0L)
+                                return@launch
+                            }
                             val existing = latestEditedNote?.takeIf { it.id == id && id != 0L } ?: screen.note
                             val defaultFolderFromWorkspace = if (currentFolder != "All Notes" && currentFolder != "Favorites") currentFolder else ""
                             // Only a NEW note is filed by its detected type; saving an existing note never moves it.
@@ -884,6 +892,7 @@ fun AuNotesApp(
                         currentScreen = Screen.PdfViewer(uri, returnTo = Screen.StorageEditor)
                     },
                     onOpenFileInEditor = { fileTitle, fileContent, category ->
+                        com.example.ui.screens.EditedFilesStore.saveEditedFile(activity, fileTitle, fileContent)
                         val virtualNote = NoteEntity(
                             id = 0L,
                             title = fileTitle,
@@ -892,6 +901,15 @@ fun AuNotesApp(
                             isCodeFormat = category == "Code"
                         )
                         currentScreen = Screen.EditNote(virtualNote, returnScreen = Screen.StorageEditor)
+                    },
+                    onSaveToNote = { fileTitle, fileContent, category ->
+                        coroutineScope.launch {
+                            repository.saveNote(
+                                title = fileTitle,
+                                content = fileContent,
+                                manualCategory = category
+                            )
+                        }
                     }
                 )
             }
