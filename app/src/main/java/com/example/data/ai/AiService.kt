@@ -176,6 +176,103 @@ class AiService {
         }
     }
 
+    /** Plain call; if the model rejects the thinking setting, retry once without it. */
+    private suspend fun generateWithThinkingFallback(apiKey: String, model: String, body: JSONObject): JSONArray {
+        return try {
+            generate(apiKey, model, body)
+        } catch (f: ApiFailure) {
+            val cfg = body.optJSONObject("generationConfig")
+            if (cfg?.has("thinkingConfig") == true && f.userMessage.contains("thinking", ignoreCase = true)) {
+                cfg.remove("thinkingConfig")
+                generate(apiKey, model, body)
+            } else throw f
+        }
+    }
+
+    /** One streaming (SSE) call to Gemini: onDelta receives the full text so far, as it arrives. */
+    private fun streamOnce(model: String, apiKey: String, body: JSONObject, onDelta: (String) -> Unit): String {
+        val cleanModel = model.removePrefix("models/").trim()
+        if (cleanModel.isBlank()) throw ApiFailure("No active model selected. Open API Room and tap Model Detector.", false)
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$cleanModel:streamGenerateContent?alt=sse"
+        for (tokenCap in listOf(65536, 8192, 0)) {
+            val attempt = JSONObject(body.toString())
+            val cfg = attempt.optJSONObject("generationConfig") ?: JSONObject()
+            if (tokenCap > 0) cfg.put("maxOutputTokens", tokenCap) else cfg.remove("maxOutputTokens")
+            attempt.put("generationConfig", cfg)
+            val request = Request.Builder()
+                .url(url)
+                .header("x-goog-api-key", apiKey)
+                .post(attempt.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            val response = try {
+                client.newCall(request).execute()
+            } catch (_: java.io.IOException) {
+                throw ApiFailure("Couldn't reach Gemini. Check your internet connection and try again.", true)
+            }
+            response.use { resp ->
+                if (!resp.isSuccessful) {
+                    val text = resp.body?.string()
+                    if (resp.code == 400 && tokenCap > 0 && text?.contains("maxOutputTokens", ignoreCase = true) == true) return@use
+                    throw describeHttpError(resp.code, text)
+                }
+                val source = resp.body?.source() ?: throw ApiFailure("Gemini returned an empty response.", true)
+                val acc = StringBuilder()
+                var blockReason = ""
+                try {
+                    while (!source.exhausted()) {
+                        val line = source.readUtf8Line() ?: break
+                        if (!line.startsWith("data:")) continue
+                        val data = line.removePrefix("data:").trim()
+                        if (data.isEmpty() || data == "[DONE]") continue
+                        val j = try { JSONObject(data) } catch (_: Exception) { continue }
+                        val cand = j.optJSONArray("candidates")?.optJSONObject(0)
+                        if (cand == null) {
+                            blockReason = j.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty()
+                            continue
+                        }
+                        val parts = cand.optJSONObject("content")?.optJSONArray("parts") ?: continue
+                        var added = false
+                        for (i in 0 until parts.length()) {
+                            val part = parts.getJSONObject(i)
+                            if (part.optBoolean("thought", false)) continue
+                            if (part.has("text")) { acc.append(part.getString("text")); added = true }
+                        }
+                        if (added) onDelta(acc.toString())
+                    }
+                } catch (e: java.io.IOException) {
+                    if (acc.isEmpty()) throw ApiFailure("Connection lost while Gemini was replying. Try again.", true)
+                }
+                if (acc.isBlank()) {
+                    throw ApiFailure(
+                        if (blockReason.isNotBlank()) "Gemini blocked this request ($blockReason). Try rephrasing." else "Gemini sent an empty answer. Try again.",
+                        true
+                    )
+                }
+                return acc.toString().trim()
+            }
+        }
+        throw ApiFailure("Gemini could not process this request.", false)
+    }
+
+    private fun streamGemini(apiKey: String, model: String, body: JSONObject, onDelta: (String) -> Unit): String {
+        val key = apiKey.trim()
+        if (key.isBlank()) throw ApiFailure("No API key set. Open Settings -> API Room and add your Gemini API key.", false)
+        var attempt = 0
+        while (true) {
+            try {
+                return streamOnce(model, key, body, onDelta)
+            } catch (f: ApiFailure) {
+                val cfg = body.optJSONObject("generationConfig")
+                if (cfg?.has("thinkingConfig") == true && f.userMessage.contains("thinking", ignoreCase = true)) {
+                    cfg.remove("thinkingConfig"); continue
+                }
+                if (!f.retryable || attempt >= 1) throw f
+                attempt++
+                Thread.sleep(900)
+            }
+        }
+    }
+
     /** One HTTP call to Gemini, returning both content parts and any groundingMetadata web chunks. */
     private fun callGeminiWithMetadata(model: String, apiKey: String, body: JSONObject): GeminiCallResponse {
         val cleanModel = model.removePrefix("models/").trim()
@@ -710,37 +807,19 @@ class AiService {
      * tasks, coding, or casual Q&A.
      */
     fun shouldUseWebSearch(prompt: String): Boolean {
-        val q = prompt.trim().lowercase()
-        if (q.length < 8) return false
-        val casualGreetings = setOf(
-            "hi", "hello", "hey", "hii", "namaste", "ram ram", "kaise ho", "kya haal hai",
-            "ok", "okay", "thanks", "thank you", "shukriya", "theek hai", "acha", "good morning",
-            "good night", "good evening", "kon ho", "kaun ho", "who are you"
-        )
-        if (casualGreetings.contains(q.trimEnd('?', '!', '.'))) return false
-
-        // If the user is asking to work with an attached note, image, or PDF, don't force a blind web search
-        // unless they explicitly ask to search the web too.
-        val isLocalContextTask = q.contains("is note") || q.contains("this note") ||
-            q.contains("attached note") || q.contains("is pdf") || q.contains("this pdf") ||
-            q.contains("is image") || q.contains("this image") || q.contains("pure context") ||
-            q.contains("saved code") || q.contains("code saved")
-        if (isLocalContextTask && !q.contains("search") && !q.contains("web") && !q.contains("google") && !q.contains("latest")) {
-            return false
-        }
-
+        val q = prompt.trim()
+        if (q.isBlank()) return false
+        val lower = q.lowercase()
+        // Working on an attached note / image / PDF: never a blind web search unless the user explicitly asks for one
+        val isLocalContextTask = lower.contains("is note") || lower.contains("this note") ||
+            lower.contains("attached note") || lower.contains("is pdf") || lower.contains("this pdf") ||
+            lower.contains("is image") || lower.contains("this image") || lower.contains("pure context") ||
+            lower.contains("saved code") || lower.contains("code saved")
+        if (isLocalContextTask && !SearchRouter.isExplicitSearch(q)) return false
         val localNoteVerbs = listOf("create_note", "edit_note", "delete_note", "move_note", "open_folder", "folder bana")
-        if (localNoteVerbs.any { q.contains(it) } && !q.contains("search") && !q.contains("latest") && !q.contains("news")) {
-            return false
-        }
-        val webTriggers = listOf(
-            "search", "google", "web", "internet", "online", "latest", "current", "today", "aaj",
-            "news", "khabar", "price", "rate", "stock", "weather", "score", "match", "who is",
-            "what is the latest", "2024", "2025", "2026", "update", "release", "repo", "github", "url", "website", "link",
-            "kaun hai", "kab hua", "kahaan hai", "pata karo", "search karo", "dhundo", "mythos", "fable",
-            "research", "history of", "indian army", "biography", "statistics", "data on", "report on"
-        )
-        return webTriggers.any { q.contains(it) }
+        if (localNoteVerbs.any { lower.contains(it) } && !SearchRouter.isExplicitSearch(q)) return false
+        // Word-boundary rules: "hi", slides, notes, explanations and general knowledge are answered directly
+        return SearchRouter.needsSearch(q)
     }
 
     fun appendSourcesIfMissing(reply: String, hits: List<WebSearchHit>): String {
@@ -763,7 +842,8 @@ class AiService {
         history: List<ConversationTurn>,
         prompt: String,
         imagesBase64: List<String> = emptyList(),
-        enableWebSearch: Boolean = false
+        enableWebSearch: Boolean = false,
+        onDelta: ((String) -> Unit)? = null
     ): String = withContext(Dispatchers.IO) {
         try {
             val isToolResultTurn = prompt.trimStart().startsWith("[TOOL RESULT")
@@ -802,9 +882,27 @@ class AiService {
                 val baseBody = JSONObject().apply {
                     put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", effectiveSystem))))
                     put("contents", buildContents(history, latest))
-                    put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 65536))
+                    put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 65536).apply {
+                        // Greetings / tiny messages: skip "thinking" on 2.5-flash models so the reply starts at once
+                        val trivial = !isToolResultTurn && imagesBase64.isEmpty() && prompt.trim().length <= 60
+                        if (trivial && model.lowercase().contains("2.5-flash")) {
+                            put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+                        }
+                    })
                 }
-                val rawText = joinText(generate(apiKey, model, baseBody)).ifBlank {
+                var streamedChars = 0
+                val rawText = (
+                    try {
+                        if (onDelta != null && liveWebOutcome == null) {
+                            streamGemini(apiKey, model, baseBody) { acc -> streamedChars = acc.length; onDelta(acc) }
+                        } else {
+                            generateWithThinkingFallback(apiKey, model, baseBody).let { joinText(it) }
+                        }
+                    } catch (f: ApiFailure) {
+                        // streaming failed before any text arrived: use the normal (non-streaming) path with all its fallbacks
+                        if (onDelta != null && streamedChars == 0) joinText(generate(apiKey, model, baseBody)) else throw f
+                    }
+                ).ifBlank {
                     "I couldn't come up with an answer. Could you rephrase that?"
                 }
                 var withSources = appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())

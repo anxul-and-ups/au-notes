@@ -492,8 +492,9 @@ object ArtifactBuilder {
             buildMermaidContainerHtml(counter++, m.groupValues[1])
         }
 
+        if (h.contains("<!--au-viz-->")) return h
         val head = Regex("<head[^>]*>", RegexOption.IGNORE_CASE).find(h)
-        val extra = StringBuilder()
+        val extra = StringBuilder("<!--au-viz-->")
         if (!Regex("name\\s*=\\s*[\"']viewport[\"']", RegexOption.IGNORE_CASE).containsMatchIn(h)) {
             extra.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">")
         }
@@ -514,149 +515,27 @@ object ArtifactBuilder {
             </style>
             """.trimIndent()
         )
-        if (!h.contains("apexcharts.min.js")) {
+        if (h.contains("au-apex-mount") && !h.contains("apexcharts.min.js")) {
             extra.append("<script src=\"file:///android_asset/apexcharts.min.js\"></script>")
         }
-        if (!h.contains("mermaid.min.js")) {
+        if (h.contains("au-mermaid-mount") && !h.contains("mermaid.min.js")) {
             extra.append("<script src=\"file:///android_asset/mermaid.min.js\"></script>")
         }
-        extra.append(
-            """
-            <script>
-            (function(){
-              window.__auDecodeB64 = function(b64) {
-                try {
-                  return decodeURIComponent(Array.prototype.map.call(window.atob(b64), function(c) {
-                    return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-                  }).join(''));
-                } catch (e) {
-                  try { return window.atob(b64); } catch (e2) { return ''; }
-                }
-              };
-              window.__auCopyVizSource = function(b64, btn) {
-                var txt = window.__auDecodeB64(b64);
-                if (window.AUChartBridge && window.AUChartBridge.copyText) {
-                  window.AUChartBridge.copyText(txt);
-                } else if (navigator.clipboard && navigator.clipboard.writeText) {
-                  navigator.clipboard.writeText(txt);
-                }
-                if (btn) {
-                  var orig = btn.textContent;
-                  btn.textContent = 'Copied!';
-                  setTimeout(function(){ btn.textContent = orig; }, 1400);
-                }
-              };
-              window.__auExportChartSvg = function(containerId, fileName) {
-                var el = document.getElementById(containerId);
-                if (!el) return;
-                var svgEl = el.querySelector('svg');
-                if (!svgEl) return;
-                var serializer = new XMLSerializer();
-                var svgStr = serializer.serializeToString(svgEl);
-                if (!svgStr.match(/^<svg[^>]+xmlns="http\:\/\/www\.w3\.org\/2000\/svg"/)) {
-                  svgStr = svgStr.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
-                }
-                if (window.AUChartBridge && window.AUChartBridge.saveSvg) {
-                  window.AUChartBridge.saveSvg(svgStr, fileName || 'chart.svg');
-                } else {
-                  var blob = new Blob([svgStr], {type: 'image/svg+xml;charset=utf-8'});
-                  var a = document.createElement('a');
-                  a.href = URL.createObjectURL(blob);
-                  a.download = fileName || 'chart.svg';
-                  a.click();
-                }
-              };
-              window.__auExportChartPng = function(containerId, fileName) {
-                var el = document.getElementById(containerId);
-                if (!el) return;
-                var svgEl = el.querySelector('svg');
-                if (!svgEl) return;
-                var serializer = new XMLSerializer();
-                var svgStr = serializer.serializeToString(svgEl);
-                var vb = (svgEl.getAttribute('viewBox') || '0 0 680 340').trim().split(/[\s,]+/);
-                var w = Math.max(680, parseFloat(vb[2]) || 680);
-                var h = Math.max(340, parseFloat(vb[3]) || 340);
-                var canvas = document.createElement('canvas');
-                canvas.width = w * 2;
-                canvas.height = h * 2;
-                var ctx = canvas.getContext('2d');
-                ctx.scale(2, 2);
-                var img = new Image();
-                var svgBlob = new Blob([svgStr], {type: 'image/svg+xml;charset=utf-8'});
-                var url = URL.createObjectURL(svgBlob);
-                img.onload = function() {
-                  ctx.drawImage(img, 0, 0, w, h);
-                  URL.revokeObjectURL(url);
-                  var dataUrl = canvas.toDataURL('image/png');
-                  if (window.AUChartBridge && window.AUChartBridge.savePngDataUrl) {
-                    window.AUChartBridge.savePngDataUrl(dataUrl, fileName || 'chart.png');
-                  } else {
-                    var a = document.createElement('a');
-                    a.href = dataUrl;
-                    a.download = fileName || 'chart.png';
-                    a.click();
-                  }
-                };
-                img.src = url;
-              };
-              function bootAuVisuals() {
-                var isDark = ${if (isDarkMode) "true" else "false"} ||
-                  (document.body && window.getComputedStyle(document.body).backgroundColor === 'rgb(13, 13, 18)');
-                var apexNodes = document.querySelectorAll('.au-apex-mount[data-apex-b64]');
-                for (var i = 0; i < apexNodes.length; i++) {
-                  var node = apexNodes[i];
-                  if (node.getAttribute('data-rendered') === '1') continue;
-                  node.setAttribute('data-rendered', '1');
-                  try {
-                    var raw = window.__auDecodeB64(node.getAttribute('data-apex-b64') || '');
-                    var parsed = JSON.parse(raw);
-                    if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
-                    if (!parsed.theme) parsed.theme = { mode: isDark ? 'dark' : 'light' };
-                    if (window.ApexCharts) {
-                      var chart = new window.ApexCharts(node, parsed);
-                      chart.render();
-                    } else {
-                      node.innerHTML = '<div class="au-viz-error">Chart could not be generated</div>';
-                    }
-                  } catch (err) {
-                    node.innerHTML = '<div class="au-viz-error">Chart could not be generated</div>';
-                  }
-                }
-                var mermaidNodes = document.querySelectorAll('.au-mermaid-mount[data-mermaid-b64]');
-                for (var j = 0; j < mermaidNodes.length; j++) {
-                  var mNode = mermaidNodes[j];
-                  if (mNode.getAttribute('data-rendered') === '1') continue;
-                  mNode.setAttribute('data-rendered', '1');
-                  try {
-                    var code = window.__auDecodeB64(mNode.getAttribute('data-mermaid-b64') || '');
-                    if (!code || !code.trim()) throw new Error('Empty diagram');
-                    if (window.mermaid) {
-                      window.mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default' });
-                      var out = window.mermaid.renderSvgSync ? window.mermaid.renderSvgSync(code, 'm_svg_' + j) : null;
-                      if (out) {
-                        mNode.innerHTML = out;
-                      } else {
-                        mNode.className += ' mermaid';
-                        mNode.textContent = code;
-                        window.mermaid.run({ nodes: [mNode] });
-                      }
-                    } else {
-                      mNode.innerHTML = '<div class="au-viz-error">Chart could not be generated</div>';
-                    }
-                  } catch (err2) {
-                    mNode.innerHTML = '<div class="au-viz-error">Chart could not be generated</div>';
-                  }
-                }
-              }
-              if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', bootAuVisuals);
-              } else {
-                setTimeout(bootAuVisuals, 10);
-              }
-            })();
-            </script>
-            """.trimIndent()
-        )
+        if ((h.contains("au-apex-mount") || h.contains("au-mermaid-mount")) && !h.contains("au_viz.js")) {
+            extra.append("<script src=\"file:///android_asset/au_viz.js\"></script>")
+        }
+        if (h.contains("au-apex-mount") || h.contains("au-mermaid-mount")) {
+            extra.append(
+                """
+                <script>
+                (function(){
+                  function go(){ if (window.AUViz) { window.AUViz.boot({ dark: ${if (isDarkMode) "true" else "null"} }); } }
+                  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', go); } else { setTimeout(go, 10); }
+                })();
+                </script>
+                """.trimIndent()
+            )
+        }
         h = if (head != null) h.replaceRange(head.range.last + 1, head.range.last + 1, extra.toString())
         else extra.toString() + h
         return h
@@ -684,6 +563,13 @@ object ArtifactBuilder {
                 out = out.replace(
                     "<script src=\"file:///android_asset/apexcharts.min.js\"></script>",
                     "<script>\n$apexJs\n</script>"
+                )
+            }
+            if (out.contains("file:///android_asset/au_viz.js")) {
+                val vizJs = context.assets.open("au_viz.js").bufferedReader().use { it.readText() }
+                out = out.replace(
+                    "<script src=\"file:///android_asset/au_viz.js\"></script>",
+                    "<script>\n$vizJs\n</script>"
                 )
             }
             if (out.contains("file:///android_asset/mermaid.min.js")) {

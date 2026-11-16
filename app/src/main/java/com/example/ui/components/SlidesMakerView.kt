@@ -1059,35 +1059,39 @@ object AgentVisualsParser {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             user-select: none;
           }
+          /* fixed to the WebView itself: no percentage-height chain, so the deck can never collapse to a blank/short area */
           .deck-viewport {
-            position: relative; width: 100%; height: 100%;
+            position: fixed; left: 0; top: 0; right: 0; bottom: 0;
             overflow: hidden; display: flex; flex-direction: column;
           }
           .slides-track {
-            display: flex; width: 100%; flex: 1;
+            display: flex; width: 100%; flex: 1 1 auto; min-height: 0;
             transition: transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
             will-change: transform;
           }
           .slide {
-            min-width: 100%; max-width: 100%; height: 100%;
+            flex: 0 0 100%; min-width: 100%; max-width: 100%; min-height: 0;
             padding: 16px 20px 12px 20px;
-            display: flex; flex-direction: column; justify-content: space-between;
-            overflow-y: auto;
+            display: flex; flex-direction: column;
+            overflow-y: auto; overflow-x: hidden;
           }
           .slide-top {
-            display: flex; justify-content: space-between; align-items: center;
+            display: flex; justify-content: space-between; align-items: center; flex: 0 0 auto;
             font-family: monospace; font-weight: 700; font-size: 11px; letter-spacing: 2px;
           }
           .rule {
-            width: 100%; height: 2.5px; background: $inkHex; margin: 6px 0 10px 0;
+            width: 100%; height: 2.5px; background: $inkHex; margin: 6px 0 10px 0; flex: 0 0 auto;
           }
+          /* safe centring: free space is shared above/below, but tall content grows downwards and scrolls (never hides under the header) */
           .slide-center {
-            flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 10px;
+            flex: 1 0 auto; display: flex; flex-direction: column; gap: 10px; padding: 10px 0;
           }
+          .slide-center > :first-child { margin-top: auto; }
+          .slide-center > :last-child { margin-bottom: auto; }
           .title {
-            font-size: 22px; line-height: 1.12; letter-spacing: 0.4px;
+            font-size: clamp(22px, min(7vw, 6.4vh), 52px); line-height: 1.12; letter-spacing: 0.4px;
           }
-          .cover-title { font-size: 27px; }
+          .cover-title { font-size: clamp(27px, min(8.6vw, 7.6vh), 64px); }
           .t-main {
             font-family: Impact, 'Arial Narrow', sans-serif; font-weight: 900; text-transform: uppercase;
           }
@@ -1095,7 +1099,7 @@ object AgentVisualsParser {
             font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-weight: 700;
           }
           .subtitle {
-            font-size: 13px; line-height: 1.45; color: $inkHex;
+            font-size: clamp(13px, min(3.6vw, 2.8vh), 26px); line-height: 1.45; color: $inkHex;
           }
           .hl {
             padding: 1px 6px; font-weight: 700; border-radius: 3px;
@@ -1104,7 +1108,7 @@ object AgentVisualsParser {
             list-style: none; display: flex; flex-direction: column; gap: 7px;
           }
           .bullets li {
-            display: flex; align-items: flex-start; gap: 9px; font-size: 12.5px; line-height: 1.42;
+            display: flex; align-items: flex-start; gap: 9px; font-size: clamp(12.5px, min(3.5vw, 2.7vh), 25px); line-height: 1.42;
           }
           .sq {
             width: 7px; height: 7px; min-width: 7px; margin-top: 5px; border: 1px solid $inkHex;
@@ -1150,10 +1154,10 @@ object AgentVisualsParser {
           .slide-bottom {
             display: flex; justify-content: space-between; align-items: center;
             font-family: monospace; font-size: 10px; font-weight: 700; color: #52525B;
-            padding-top: 6px;
+            padding-top: 6px; flex: 0 0 auto;
           }
           .nav-bar {
-            height: 38px; background: rgba(24,24,27,0.06); border-top: 1.5px solid rgba(24,24,27,0.16);
+            flex: 0 0 38px; height: 38px; background: rgba(24,24,27,0.06); border-top: 1.5px solid rgba(24,24,27,0.16);
             display: flex; align-items: center; justify-content: space-between; padding: 0 12px;
           }
           .nav-btn {
@@ -3153,6 +3157,7 @@ fun AgentChartCard(
         <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <script src="file:///android_asset/apexcharts.min.js"></script>
+        <script src="file:///android_asset/au_viz.js"></script>
         <style>
           * { box-sizing: border-box; }
           body {
@@ -3180,18 +3185,9 @@ fun AgentChartCard(
           <div id="apex_root"></div>
           <script>
             (function(){
-              try {
-                var raw = decodeURIComponent(Array.prototype.map.call(window.atob('$b64'), function(c) {
-                  return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-                }).join(''));
-                var cfg = JSON.parse(raw);
-                cfg.theme = { mode: '${if (isDarkMode) "dark" else "light"}' };
-                var chart = new window.ApexCharts(document.getElementById('apex_root'), cfg);
-                chart.render();
-                window.__chartInstance = chart;
-              } catch (e) {
-                document.getElementById('apex_root').innerHTML = '<div class="err-box">Chart could not be generated</div>';
-              }
+              window.__chartInstance = window.AUViz
+                ? AUViz.renderChart(document.getElementById('apex_root'), AUViz.decodeB64('$b64'), { dark: ${if (isDarkMode) "true" else "false"}, height: 270 })
+                : (document.getElementById('apex_root').innerHTML = '<div class="err-box">Chart could not be generated</div>');
             })();
           </script>
         </body>
@@ -3612,6 +3608,7 @@ fun AgentDiagramCard(
             <head>
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <script src="file:///android_asset/mermaid.min.js"></script>
+            <script src="file:///android_asset/au_viz.js"></script>
             <style>
               * { box-sizing: border-box; }
               body {
@@ -3642,15 +3639,11 @@ fun AgentDiagramCard(
               <div id="mermaid_root"></div>
               <script>
                 (function(){
-                  try {
-                    var code = decodeURIComponent(Array.prototype.map.call(window.atob('$b64'), function(c) {
-                      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-                    }).join(''));
-                    window.mermaid.initialize({ startOnLoad: false, theme: '${if (isDarkMode) "dark" else "default"}' });
-                    var svg = window.mermaid.renderSvgSync(code, 'm_diag_1');
-                    document.getElementById('mermaid_root').innerHTML = svg;
-                  } catch (e) {
-                    document.getElementById('mermaid_root').innerHTML = '<div class="err-box">Chart could not be generated</div>';
+                  var root = document.getElementById('mermaid_root');
+                  if (window.AUViz) {
+                    AUViz.renderMermaid(root, AUViz.decodeB64('$b64'), { dark: ${if (isDarkMode) "true" else "false"} });
+                  } else {
+                    root.innerHTML = '<div class="err-box">Chart could not be generated</div>';
                   }
                 })();
               </script>

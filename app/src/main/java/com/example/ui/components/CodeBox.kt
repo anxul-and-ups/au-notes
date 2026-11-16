@@ -213,3 +213,84 @@ object CodeFences {
             CodeFence(m.range.first, m.range.last + 1, title, m.groupValues[2], m.range.first + 3 + m.groupValues[1].length, lang, m.groups[2]?.range?.first ?: (m.range.first + 4 + m.groupValues[1].length))
         }.toList()
 }
+
+
+/**
+ * The note editor only HIDES the ``` fence markers (transparent text), so a stray Backspace used to eat one
+ * backtick, the box stopped being a box and raw "```Title" text popped out. This guard runs on every edit:
+ *  - deleting into a fence marker un-boxes cleanly (markers vanish, the code text stays as normal text),
+ *  - typing inside/around the markers is redirected to a safe place (end of the code, or a new line),
+ *  - there is always a free line after a box, so you can tap below it and keep writing.
+ */
+object CodeFenceGuard {
+    fun guard(oldV: androidx.compose.ui.text.input.TextFieldValue, newV: androidx.compose.ui.text.input.TextFieldValue): androidx.compose.ui.text.input.TextFieldValue {
+        val old = oldV.text
+        val new = newV.text
+        if (old == new) return newV
+        val fences = if (old.contains("```")) CodeFences.find(old) else emptyList()
+        if (fences.isEmpty()) return withFreeLine(newV)
+
+        var p = 0
+        val maxP = minOf(old.length, new.length)
+        while (p < maxP && old[p] == new[p]) p++
+        var s = 0
+        val maxS = minOf(old.length - p, new.length - p)
+        while (s < maxS && old[old.length - 1 - s] == new[new.length - 1 - s]) s++
+        val delStart = p
+        val delEnd = old.length - s
+        val ins = new.substring(p, new.length - s)
+
+        for (f in fences) {
+            val m1End = minOf(old.length, f.openLineEnd + 1)              // "```info" + its newline
+            val closeStart = f.end - 3
+            val m2Start = if (closeStart > m1End && old[closeStart - 1] == '\n') closeStart - 1 else closeStart
+            val coversAll = delStart <= f.start && delEnd >= f.end
+            if (delEnd > delStart && !coversAll) {
+                val hitsOpen = delStart < m1End && delEnd > f.start
+                val hitsClose = delStart < f.end && delEnd > m2Start
+                val onlyTitleEdit = delStart >= f.start + 3 && delEnd <= f.openLineEnd
+                if ((hitsOpen && !onlyTitleEdit) || hitsClose) return unwrap(old, f, m1End, m2Start)
+            }
+            if (ins.isNotEmpty() && delEnd == delStart) {
+                val q = delStart
+                if ((q > f.start && q < f.start + 3) || (q > closeStart && q < f.end)) {
+                    return androidx.compose.ui.text.input.TextFieldValue(old, oldV.selection)   // never split the ``` markers
+                }
+                if (q == f.end && !ins.startsWith("\n")) {
+                    return withFreeLine(androidx.compose.ui.text.input.TextFieldValue(
+                        old.substring(0, q) + "\n" + ins + old.substring(q),
+                        androidx.compose.ui.text.TextRange(q + 1 + ins.length)
+                    ))
+                }
+                if (q == f.start && !ins.endsWith("\n")) {
+                    return withFreeLine(androidx.compose.ui.text.input.TextFieldValue(
+                        old.substring(0, q) + ins + "\n" + old.substring(q),
+                        androidx.compose.ui.text.TextRange(q + ins.length)
+                    ))
+                }
+                if (q == closeStart && m2Start < closeStart) {                  // start of the closing-fence line -> end of the code
+                    return withFreeLine(androidx.compose.ui.text.input.TextFieldValue(
+                        old.substring(0, m2Start) + ins + old.substring(m2Start),
+                        androidx.compose.ui.text.TextRange(m2Start + ins.length)
+                    ))
+                }
+            }
+        }
+        return withFreeLine(newV)
+    }
+
+    private fun unwrap(old: String, f: CodeFence, m1End: Int, m2Start: Int): androidx.compose.ui.text.input.TextFieldValue {
+        val sb = StringBuilder(old)
+        sb.delete(m2Start, f.end.coerceAtMost(sb.length))
+        sb.delete(f.start, m1End.coerceAtMost(sb.length))
+        val caret = (m2Start - (m1End - f.start)).coerceIn(0, sb.length)
+        return withFreeLine(androidx.compose.ui.text.input.TextFieldValue(sb.toString(), androidx.compose.ui.text.TextRange(caret)))
+    }
+
+    /** A box at the very end of the note gets one empty line after it, so there is always somewhere to tap and type. */
+    private fun withFreeLine(v: androidx.compose.ui.text.input.TextFieldValue): androidx.compose.ui.text.input.TextFieldValue {
+        if (!v.text.contains("```")) return v
+        val last = CodeFences.find(v.text).lastOrNull() ?: return v
+        return if (last.end == v.text.length) v.copy(text = v.text + "\n") else v
+    }
+}

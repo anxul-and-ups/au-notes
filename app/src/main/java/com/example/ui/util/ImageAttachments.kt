@@ -41,6 +41,22 @@ object AttachmentRenderer {
 
     private val dimCache = HashMap<String, Pair<Int, Int>>()
 
+    /**
+     * Sensible first size for a newly added picture: wide pictures start almost full width, tall ones
+     * (phone screenshots!) start narrow so they never swallow the whole note and there is always room to
+     * type above, below and next to them. The user can still resize/move them freely.
+     */
+    fun defaultWidthFraction(context: android.content.Context, srcW: Int, srcH: Int): Float {
+        if (srcW <= 0 || srcH <= 0) return 0.7f
+        val dm = context.resources.displayMetrics
+        val widthDp = (dm.widthPixels / dm.density - 32f).coerceAtLeast(200f)
+        val heightDp = dm.heightPixels / dm.density
+        val aspect = srcH.toFloat() / srcW.toFloat()
+        if (aspect <= 0.9f) return 0.9f
+        val targetH = minOf(320f, heightDp * 0.38f).coerceAtLeast(160f)
+        return (targetH / (widthDp * aspect)).coerceIn(0.28f, 0.9f)
+    }
+
     /** Source pixel size (cached). Falls back to reading just the bitmap header. */
     fun sourceSize(att: AttachmentInfo): Pair<Int, Int> {
         if (att.srcWidth > 0 && att.srcHeight > 0) return att.srcWidth to att.srcHeight

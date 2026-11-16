@@ -158,6 +158,7 @@ import com.example.ui.components.PinLockDialog
 import com.example.ui.theme.CrimsonPrimary
 import com.example.ui.util.AgentChecklistItem
 import com.example.ui.util.AgentContentBlock
+import com.example.ui.util.AttachmentRenderer
 import com.example.ui.util.AttachmentStorage
 import com.example.ui.util.ImageMarkers
 import com.example.ui.util.NoteAgentFormatter
@@ -1008,7 +1009,7 @@ fun AiChatScreen(
         val imgId = ImageMarkers.newId()
         val newAttachment = baseAttachment.copy(
             id = imgId,
-            widthFraction = 1f,
+            widthFraction = AttachmentRenderer.defaultWidthFraction(context, baseAttachment.srcWidth, baseAttachment.srcHeight),
             zoom = 1f,
             posX = 0f,
             posY = 0f
@@ -1934,6 +1935,31 @@ fun AiChatScreen(
     }
     androidx.compose.runtime.DisposableEffect(Unit) { onDispose { liveSession?.stop(); com.example.data.ai.LiveVoiceService.stop(context) } }
 
+    /** Keeps old turns small: artifacts / big code blocks become a short note so history never bloats the request. */
+    fun compactForHistory(t: String): String {
+        var x = t
+        x = Regex("\\[html_artifact:([^|\\]]*)\\|[^\\]]*\\]").replace(x) { "[HTML artifact \"" + it.groupValues[1] + "\" was created and shown]" }
+        x = Regex("\\[pdf_artifact:([^|\\]]*)\\|[^\\]]*\\]").replace(x) { "[PDF \"" + it.groupValues[1] + "\" was created and shown]" }
+        x = Regex("\\[file_artifact:([^|\\]]*)\\|[^\\]]*\\]").replace(x) { "[File \"" + it.groupValues[1] + "\" was created and shown]" }
+        x = Regex("```(slides|typography_slides|chart|diagram|html|html_artifact|organised_file|svg|json:apex|mermaid)[\\s\\S]*?```").replace(x) { "[" + it.groupValues[1] + " block was created and shown]" }
+        return if (x.length > 5000) x.take(3500) + "\n…[middle part shortened]…\n" + x.takeLast(1200) else x
+    }
+
+    /** Text that is safe to show while the reply is still streaming (hides tool-call markup and half-built visual blocks). */
+    fun visibleStreamText(acc: String): String {
+        var x = acc
+        val tc = x.indexOf("<tool_call>")
+        if (tc >= 0) {
+            x = x.substring(0, tc)
+        } else {
+            val lt = x.lastIndexOf('<')
+            if (lt >= 0 && "<tool_call>".startsWith(x.substring(lt))) x = x.substring(0, lt)
+        }
+        val m = Regex("```(slides|typography_slides|chart|diagram|organised_file|html|html_artifact|svg|json:apex|mermaid)").find(x)
+        if (m != null) x = x.substring(0, m.range.first)
+        return x.trimEnd()
+    }
+
     fun buildAttachmentContextString(): String? {
         val name = attachedFileName ?: sessionAttachmentName
         val txt = attachedContent ?: sessionAttachmentText
@@ -2295,8 +2321,8 @@ fun AiChatScreen(
                     }
                 }
 
-                val turns = messages.filter { it.id != botMsgId }.dropLast(1)
-                    .map { ConversationTurn(it.sender, it.text) }.toMutableList()
+                val turns = messages.filter { it.id != botMsgId }.dropLast(1).takeLast(16)
+                    .map { ConversationTurn(it.sender, compactForHistory(it.text)) }.toMutableList()
 
                 val openNoteContext = buildString {
                     if (!currentNoteTitle.isNullOrBlank()) append("Title: \"$currentNoteTitle\"\n")
@@ -2324,8 +2350,14 @@ fun AiChatScreen(
                     spoken = voiceManager.isVoiceModeActive,
                     workMode = effectiveWorkMode,
                     searchModeEnabled = searchModeEnabled,
-                    attachmentContext = buildAttachmentContextString(),
-                    recentChatTranscript = buildRecentTranscriptString()
+                    // the attached document is already inside this turn's prompt and the chat history is sent as real turns:
+                    // sending them again inside the system prompt only made every reply slower
+                    attachmentContext = if (!docText.isNullOrBlank()) null else buildAttachmentContextString(),
+                    recentChatTranscript = null,
+                    includeDesign = Regex(
+                        "slide|ppt|presentation|deck|chart|graph|diagram|svg|html|artifact|web ?page|pdf|poster|infographic|mockup|visual|timeline|design|table|apex|mermaid",
+                        RegexOption.IGNORE_CASE
+                    ).containsMatchIn(userMsg + " " + turns.takeLast(6).joinToString(" ") { it.content.take(300) })
                 )
 
                 // Smart SEARCH Mode: only pre-fetch web search when the query actually needs external/live facts
@@ -2393,6 +2425,8 @@ fun AiChatScreen(
                 var pending: PendingAiAction? = null
                 var steps = 0
                 var toolRepairTries = 0
+                var streamedAny = false
+                val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
                 while (true) {
                     stepRunning(if (steps == 0) "Thinking & planning response" else "Preparing next action")
                     val reply = aiService.chatOnce(
@@ -2404,7 +2438,17 @@ fun AiChatScreen(
                         history = turns,
                         prompt = prompt,
                         imagesBase64 = images,
-                        enableWebSearch = (steps == 0 && searchModeEnabled && preFetchedSearchContext.isBlank() && shouldPreSearch)
+                        enableWebSearch = (steps == 0 && searchModeEnabled && preFetchedSearchContext.isBlank() && shouldPreSearch),
+                        onDelta = if (activeProvider == "Gemini") { acc ->
+                            val vis = visibleStreamText(acc)
+                            if (vis.isNotBlank()) {
+                                streamedAny = true
+                                mainHandler.post {
+                                    val i = messages.indexOfFirst { it.id == botMsgId }
+                                    if (i != -1) messages[i] = messages[i].copy(text = vis)
+                                }
+                            }
+                        } else null
                     )
                     val isReplyError = reply.startsWith("Error:") || reply.startsWith("⚠️")
                     stepFinish(!isReplyError)
@@ -2485,14 +2529,20 @@ fun AiChatScreen(
                 } else {
                     val idxInit = messages.indexOfFirst { it.id == botMsgId }
                     if (idxInit != -1) messages[idxInit] = messages[idxInit].copy(steps = completedSteps)
-                    val words = finalText.ifBlank { "Done." }.split(" ")
-                    val sb = StringBuilder()
-                    for (i in words.indices) {
-                        sb.append(words[i]).append(" ")
-                        if (i % 3 == 0 || i == words.lastIndex) {
-                            val idx = messages.indexOfFirst { it.id == botMsgId }
-                            if (idx != -1) messages[idx] = messages[idx].copy(text = sb.toString().trim(), steps = completedSteps)
-                            delay(18)
+                    if (streamedAny) {
+                        // already streamed live: put the final, complete text in place at once
+                        val idx0 = messages.indexOfFirst { it.id == botMsgId }
+                        if (idx0 != -1) messages[idx0] = messages[idx0].copy(text = finalText.ifBlank { "Done." }, steps = completedSteps)
+                    } else {
+                        val words = finalText.ifBlank { "Done." }.split(" ")
+                        val sb = StringBuilder()
+                        for (i in words.indices) {
+                            sb.append(words[i]).append(" ")
+                            if (i % 6 == 0 || i == words.lastIndex) {
+                                val idx = messages.indexOfFirst { it.id == botMsgId }
+                                if (idx != -1) messages[idx] = messages[idx].copy(text = sb.toString().trim(), steps = completedSteps)
+                                delay(12)
+                            }
                         }
                     }
                     val idx = messages.indexOfFirst { it.id == botMsgId }
@@ -2822,8 +2872,8 @@ fun AiChatScreen(
                             listOf(
                                 "Create Rich Note" to "Create a detailed structured note on Python programming with tables and code blocks",
                                 "Edit Open Note" to "Format, structure, and improve the note currently open on my screen",
-                                "Slides & Graphs" to "Create a 5-slide editorial presentation on Artificial Intelligence",
-                                "Organise .md File" to "Convert my notes and content into a well-organized Markdown (.md) document"
+                                "Create Slides" to "@ask:slides",
+                                "Create MD" to "@ask:md"
                             )
                         } else {
                             listOf(
@@ -2935,7 +2985,19 @@ fun AiChatScreen(
                                                         if (isDarkMode) Color(0x22FFFFFF) else Color(0x16000000),
                                                         RoundedCornerShape(14.dp)
                                                     )
-                                                    .clickable { handleSend(promptToRun) }
+                                                    .clickable {
+                                                        if (promptToRun.startsWith("@ask:")) {
+                                                            // Quick action: ask what to build first (never generate an empty/unrelated artifact)
+                                                            val question = if (promptToRun == "@ask:slides")
+                                                                "Sure! What should I make the slides about? Tell me the topic, or attach a PDF / photo / note and I will build the deck from it. You can also tell me how many slides you want."
+                                                            else
+                                                                "Sure! What should I turn into a Markdown (.md) file? Give me a topic, or attach a note / PDF / photo and tell me what the file should cover."
+                                                            messages.add(ChatMessage(sender = "user", text = label))
+                                                            messages.add(ChatMessage(sender = "bot", text = question))
+                                                        } else {
+                                                            handleSend(promptToRun)
+                                                        }
+                                                    }
                                                     .padding(horizontal = 12.dp, vertical = 11.dp)
                                             ) {
                                                 Text(

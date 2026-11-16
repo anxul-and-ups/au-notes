@@ -556,6 +556,12 @@ object NoteExporter {
         var w = pager.contentW * att.widthFraction.coerceIn(0.2f, 1f)
         var h = AttachmentRenderer.frameHeightPx(att, w)
         if (h > maxH) { w *= maxH / h; h = maxH }
+        // Fit into the space that is LEFT on this page instead of leaving it blank and jumping to the next page
+        // (a tall picture right after the title used to push page 1 empty and land on page 2).
+        if (!pager.single) {
+            val avail = pager.bottom - pager.y - 6f
+            if (h > avail && avail >= maxH * 0.30f) { w *= avail / h; h = avail }
+        }
         val bmp = AttachmentRenderer.frameBitmap(att, (w * 4).toInt().coerceIn(400, 3600))
         if (bmp == null) {
             drawLayout(pager, makeLayout("[Image could not be loaded: ${att.fileName}]", paint, cw), MARGIN)
