@@ -114,12 +114,16 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import com.example.ui.util.handleHardwareShortcuts
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.Modifier
@@ -446,6 +450,7 @@ fun AuNotesSketchIcon(
 @Composable
 fun AiChatScreen(
     isOpen: Boolean,
+    artifactsVersion: Int = 0,
     isDarkMode: Boolean,
     preferences: AppPreferences,
     repository: NoteRepository,
@@ -501,35 +506,77 @@ fun AiChatScreen(
     var inputText by remember { mutableStateOf("") }
     var showMaximizedInput by remember { mutableStateOf(false) }
     val chatInputBringIntoViewRequester = remember { BringIntoViewRequester() }
-    var isLoading by remember { mutableStateOf(false) }
 
-    // Persistent Chat Sessions
+    // Persistent Chat Sessions + strictly isolated per-session runtime state
     val sessionManager = remember { ChatSessionManager(context) }
     var currentSessionId by remember { mutableStateOf(java.util.UUID.randomUUID().toString()) }
     val savedSessions = remember { mutableStateListOf<ChatSession>() }
 
-    LaunchedEffect(isOpen) {
+    val defaultWelcomeMsg = remember {
+        ChatMessage(
+            id = "welcome_static",
+            sender = "bot",
+            text = "Hello! I'm AU Agent, your autonomous Note Craftsman. Ask me to explain any topic, analyze a PDF or document, build editorial slides & data charts, or create structured notes with tables and code blocks."
+        )
+    }
+    val messagesBySession = remember { mutableStateMapOf<String, SnapshotStateList<ChatMessage>>() }
+    val loadingBySession = remember { mutableStateMapOf<String, Boolean>() }
+    val jobsBySession = remember { mutableStateMapOf<String, kotlinx.coroutines.Job>() }
+    val stepsBySession = remember { mutableStateMapOf<String, SnapshotStateList<AgentStep>>() }
+    val attachedNotesBySession = remember { mutableStateMapOf<String, SnapshotStateList<NoteEntity>>() }
+    val sessionAttachedNotesMap = remember { mutableStateMapOf<String, List<NoteEntity>>() }
+    val sessionAttachmentNameMap = remember { mutableStateMapOf<String, String?>() }
+    val sessionAttachmentTextMap = remember { mutableStateMapOf<String, String?>() }
+    val sessionAttachmentImagesMap = remember { mutableStateMapOf<String, List<String>?>() }
+    val sessionAttachmentUriMap = remember { mutableStateMapOf<String, Uri?>() }
+    val artifactBlocksBySession = remember { mutableStateMapOf<String, MutableList<String>>() }
+
+    fun messagesFor(sid: String): SnapshotStateList<ChatMessage> =
+        messagesBySession.getOrPut(sid) { mutableStateListOf(defaultWelcomeMsg) }
+    fun stepsFor(sid: String): SnapshotStateList<AgentStep> =
+        stepsBySession.getOrPut(sid) { mutableStateListOf() }
+    fun attachedNotesFor(sid: String): SnapshotStateList<NoteEntity> =
+        attachedNotesBySession.getOrPut(sid) { mutableStateListOf() }
+    fun artifactBlocksFor(sid: String): MutableList<String> =
+        artifactBlocksBySession.getOrPut(sid) { mutableListOf() }
+
+    val messages = remember(currentSessionId) { messagesFor(currentSessionId) }
+    val agentSteps = remember(currentSessionId) { stepsFor(currentSessionId) }
+    val attachedNotes = remember(currentSessionId) { attachedNotesFor(currentSessionId) }
+    val isLoading by remember(currentSessionId) { derivedStateOf { loadingBySession[currentSessionId] == true } }
+
+    LaunchedEffect(isOpen, artifactsVersion) {
         if (isOpen) {
+            val loaded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                sessionManager.loadAllSessions()
+            }
             savedSessions.clear()
-            savedSessions.addAll(sessionManager.loadAllSessions())
+            savedSessions.addAll(loaded)
+            if (artifactsVersion > 0) {
+                loaded.forEach { s ->
+                    if (loadingBySession[s.id] != true) {
+                        messagesBySession[s.id]?.let { existing ->
+                            existing.clear()
+                            existing.addAll(s.messages)
+                        }
+                    }
+                }
+            }
         }
     }
 
-    // Attachment state
+    // Attachment state (per active composer)
     var attachedFileName by remember { mutableStateOf<String?>(null) }
     var attachedContent by remember { mutableStateOf<String?>(null) }
     var attachedImageUri by remember { mutableStateOf<Uri?>(null) }
-    // Rendered PDF page images (base64 PNG) — set instead of attachedContent for PDFs,
-    // since PdfRenderer gives page bitmaps, not extractable text.
     var attachedPdfImages by remember { mutableStateOf<List<String>?>(null) }
 
-    // Work Mode toggle, Search Mode toggle & Active Job for cancellable response
+    // Work Mode toggle, Search Mode toggle
     var isWorkMode by remember { mutableStateOf(true) }
     val searchModeEnabled by preferences.searchModeEnabled.collectAsState()
     var selectedSummarySteps by remember { mutableStateOf<List<AgentStep>?>(null) }
     var isDetectingSidebarModels by remember { mutableStateOf(false) }
     var sidebarApiError by remember { mutableStateOf<String?>(null) }
-    var activeJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     // Upload timeline state for PDF / document / image attachments
     var isUploadingAttachment by remember { mutableStateOf(false) }
@@ -544,7 +591,6 @@ fun AiChatScreen(
     var sessionAttachmentText by remember { mutableStateOf<String?>(null) }
     var sessionAttachmentImages by remember { mutableStateOf<List<String>?>(null) }
     var sessionAttachmentUri by remember { mutableStateOf<Uri?>(null) }
-    val attachedNotes = remember { mutableStateListOf<NoteEntity>() }
     var sessionAttachedNotes by remember { mutableStateOf<List<NoteEntity>>(emptyList()) }
     var showNoteAttachDialog by remember { mutableStateOf(false) }
     var noteAttachSearchQuery by remember { mutableStateOf("") }
@@ -553,15 +599,6 @@ fun AiChatScreen(
     var sidebarProviderFilter by remember { mutableStateOf("All") }
     var isRefreshingSidebarModels by remember { mutableStateOf(false) }
     var handleSendAction by remember { mutableStateOf<((String) -> Unit)?>(null) }
-
-    val messages = remember {
-        mutableStateListOf(
-            ChatMessage(
-                sender = "bot",
-                text = "Hello! I'm AU Agent, your autonomous Note Craftsman. Ask me to explain any topic, analyze a PDF or document, build editorial slides & data charts, or create structured notes with tables and code blocks."
-            )
-        )
-    }
 
     val archivedChats = remember { mutableStateListOf<ArchivedChat>() }
     val listState = rememberLazyListState()
@@ -808,13 +845,13 @@ fun AiChatScreen(
         }
     }
 
-    LaunchedEffect(messages.size) {
+    LaunchedEffect(currentSessionId, messages.size, messages.lastOrNull()?.text?.length) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
     }
 
-    // Voice input result — fills the chat input with recognized speech; sending it
+    // Voice input result — appends recognized speech to the chat input; sending it
     // still goes through the normal tool-calling pipeline like typed text.
     val voiceInputLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -823,9 +860,118 @@ fun AiChatScreen(
             val spoken = result.data
                 ?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
                 ?.firstOrNull()
+                ?.trim()
             if (!spoken.isNullOrBlank()) {
-                inputText = spoken
+                inputText = if (inputText.isBlank()) spoken else "${inputText.trimEnd()} $spoken"
             }
+        }
+    }
+
+    // Continuous in-app Speech-to-Text Dictation for the composer Mic button (keeps listening until user taps Stop or Send)
+    var isDictatingInComposer by remember { mutableStateOf(false) }
+    var dictationBaseText by remember { mutableStateOf("") }
+    var composerSpeechRecognizer by remember { mutableStateOf<android.speech.SpeechRecognizer?>(null) }
+
+    fun stopComposerDictation() {
+        isDictatingInComposer = false
+        runCatching {
+            composerSpeechRecognizer?.stopListening()
+            composerSpeechRecognizer?.cancel()
+            composerSpeechRecognizer?.destroy()
+        }
+        composerSpeechRecognizer = null
+    }
+
+    fun startComposerDictationPass() {
+        if (!isDictatingInComposer) return
+        try {
+            if (composerSpeechRecognizer == null) {
+                composerSpeechRecognizer = android.speech.SpeechRecognizer.createSpeechRecognizer(context).apply {
+                    setRecognitionListener(object : android.speech.RecognitionListener {
+                        override fun onReadyForSpeech(params: android.os.Bundle?) {}
+                        override fun onBeginningOfSpeech() {}
+                        override fun onRmsChanged(rmsdB: Float) {}
+                        override fun onBufferReceived(buffer: ByteArray?) {}
+                        override fun onEndOfSpeech() {}
+                        override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
+                        override fun onPartialResults(partialResults: android.os.Bundle?) {
+                            if (!isDictatingInComposer) return
+                            val partial = partialResults
+                                ?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                                ?.firstOrNull()
+                                ?.trim()
+                                .orEmpty()
+                            if (partial.isNotBlank()) {
+                                inputText = if (dictationBaseText.isBlank()) partial else "${dictationBaseText.trimEnd()} $partial"
+                            }
+                        }
+                        override fun onResults(results: android.os.Bundle?) {
+                            if (!isDictatingInComposer) return
+                            val finalSpoken = results
+                                ?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                                ?.firstOrNull()
+                                ?.trim()
+                                .orEmpty()
+                            if (finalSpoken.isNotBlank()) {
+                                dictationBaseText = if (dictationBaseText.isBlank()) finalSpoken else "${dictationBaseText.trimEnd()} $finalSpoken"
+                                inputText = dictationBaseText
+                            }
+                            if (isDictatingInComposer) {
+                                coroutineScope.launch {
+                                    delay(180)
+                                    if (isDictatingInComposer) startComposerDictationPass()
+                                }
+                            }
+                        }
+                        override fun onError(error: Int) {
+                            if (!isDictatingInComposer) return
+                            if (error == android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                                stopComposerDictation()
+                            } else {
+                                coroutineScope.launch {
+                                    delay(350)
+                                    if (isDictatingInComposer) startComposerDictationPass()
+                                }
+                            }
+                        }
+                    })
+                }
+            }
+            val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10000L)
+                putExtra(android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 8000L)
+                putExtra(android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 15000L)
+            }
+            composerSpeechRecognizer?.startListening(intent)
+        } catch (_: Exception) {
+            stopComposerDictation()
+        }
+    }
+
+    val composerMicPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted && android.speech.SpeechRecognizer.isRecognitionAvailable(context)) {
+            dictationBaseText = inputText
+            isDictatingInComposer = true
+            startComposerDictationPass()
+        } else {
+            try {
+                val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10000L)
+                    putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Speak to AU Agent...")
+                }
+                voiceInputLauncher.launch(intent)
+            } catch (_: Exception) {}
+        }
+    }
+
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            stopComposerDictation()
         }
     }
 
@@ -888,11 +1034,11 @@ fun AiChatScreen(
     // Runs one tool the model asked for and returns what the MODEL should see.
     // Read-only and create run immediately; move/delete only post a confirmation card.
     // ---- Working status: only REAL stages (model call, each tool that actually runs) are listed ----
-    val agentSteps = remember { mutableStateListOf<AgentStep>() }
-    fun stepRunning(label: String) { agentSteps.add(AgentStep(label, 0)) }
-    fun stepFinish(ok: Boolean = true) {
-        val i = agentSteps.indexOfLast { it.state == 0 }
-        if (i >= 0) agentSteps[i] = agentSteps[i].copy(state = if (ok) 1 else 2)
+    fun stepRunning(label: String, sid: String = currentSessionId) { stepsFor(sid).add(AgentStep(label, 0)) }
+    fun stepFinish(ok: Boolean = true, sid: String = currentSessionId) {
+        val list = stepsFor(sid)
+        val i = list.indexOfLast { it.state == 0 }
+        if (i >= 0) list[i] = list[i].copy(state = if (ok) 1 else 2)
     }
     fun toolLabel(name: String): String = when (name) {
         "search_notes" -> "Searching notes"
@@ -901,6 +1047,7 @@ fun AiChatScreen(
         "read_note" -> "Reading note"
         "read_screen" -> "Reading the open note"
         "create_note" -> "Creating note & saving"
+        "save_attached_file_to_note" -> "Saving full document/text into note"
         "edit_note", "edit_current_note" -> "Editing note & saving changes"
         "move_note_to_folder" -> "Preparing to move note"
         "delete_note" -> "Preparing to delete note"
@@ -1147,9 +1294,12 @@ fun AiChatScreen(
         }
     }
 
-    val latestArtifactBlocks = remember { mutableStateListOf<String>() }
-
-    suspend fun runTool(name: String, rawArgs: org.json.JSONObject): ToolOutcome {
+    suspend fun runTool(
+        name: String,
+        rawArgs: org.json.JSONObject,
+        targetSessionId: String = currentSessionId
+    ): ToolOutcome {
+        val targetArtifactBlocks = artifactBlocksFor(targetSessionId)
         val args = com.example.data.ai.ToolArgs.normalize(name, rawArgs)
         if (name in disabledTools) return ToolOutcome("Tool '$name' is switched off by the user.")
         val systemFolders = listOf("All Notes", "Favorites", "APIs Keys", "Code", "Media", "Personal")
@@ -1341,7 +1491,7 @@ fun AiChatScreen(
                         if (fmt == ".pdf") {
                             val cleanTitle = note.title.ifBlank { "Document" }.replace("|", "-").replace("]", ")")
                             val cleanSummary = "Saved to $displayWhere".replace("|", "-").replace("]", ")")
-                            latestArtifactBlocks.add("[pdf_artifact:$cleanTitle|${fileObj.absolutePath}|$cleanSummary]")
+                            targetArtifactBlocks.add("[pdf_artifact:$cleanTitle|${fileObj.absolutePath}|$cleanSummary]")
                         }
                         ToolOutcome("DONE: exported \"${note.title}\" as $fileName to $displayWhere.")
                     } else ToolOutcome("FAILED: the file could not be written to device storage.")
@@ -1491,7 +1641,7 @@ fun AiChatScreen(
                         } else {
                             val shownTitle = com.example.data.ai.ArtifactBuilder.titleOf(idx).ifBlank { "Interactive HTML Page" }
                             val b64 = android.util.Base64.encodeToString(("AUFILE:" + idx.absolutePath).toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
-                            latestArtifactBlocks.add("[html_artifact:${shownTitle.replace("|", "-").replace("]", ")")}|$b64]")
+                            targetArtifactBlocks.add("[html_artifact:${shownTitle.replace("|", "-").replace("]", ")")}|$b64]")
                             ToolOutcome("DONE: Replaced image $number in \"$shownTitle\" with a new downloaded image for \"$query\". The updated artifact card is displayed in the chat.")
                         }
                     }
@@ -1530,10 +1680,12 @@ fun AiChatScreen(
                     .findAll(dataSummary)
                     .map { it.groupValues[1].trim() to (it.groupValues[2].toDoubleOrNull() ?: 0.0) }
                     .toList()
-                val itemsArr = org.json.JSONArray()
-                val labelsArr = org.json.JSONArray()
-                val valuesArr = org.json.JSONArray()
-                if (numberPairs.isNotEmpty()) {
+                if (numberPairs.isEmpty()) {
+                    ToolOutcome("NOT DONE: No numeric data points were found in data_summary. Supply explicit label:value pairs (e.g., \"Jan: 120, Feb: 185\") before generating a chart.")
+                } else {
+                    val itemsArr = org.json.JSONArray()
+                    val labelsArr = org.json.JSONArray()
+                    val valuesArr = org.json.JSONArray()
                     numberPairs.take(8).forEachIndexed { idx, (lbl, v) ->
                         labelsArr.put(lbl)
                         valuesArr.put(v)
@@ -1543,33 +1695,23 @@ fun AiChatScreen(
                             put("icon", if (idx == 0) "sparkle" else "chart")
                         })
                     }
-                } else {
-                    listOf("Q1" to 42.0, "Q2" to 64.0, "Q3" to 78.0, "Q4" to 92.0).forEachIndexed { idx, (lbl, v) ->
-                        labelsArr.put(lbl)
-                        valuesArr.put(v)
-                        itemsArr.put(org.json.JSONObject().apply {
-                            put("label", lbl)
-                            put("value", v)
-                            put("icon", if (idx == 0) "sparkle" else "chart")
-                        })
+                    val chartJson = org.json.JSONObject().apply {
+                        put("type", if (chartType in setOf("bar", "pie", "line", "blocks", "timeline", "pyramid")) chartType else "bar")
+                        put("title", titleArg)
+                        put("labels", labelsArr)
+                        put("values", valuesArr)
+                        put("items", itemsArr)
                     }
+                    targetArtifactBlocks.add("\n```chart\n${chartJson.toString(2)}\n```\n")
+                    insertMarkdownBlockIntoTargetNote(
+                        fenceLang = "chart",
+                        blockBody = chartJson.toString(2),
+                        defaultTitle = titleArg,
+                        targetNoteId = noteIdArg,
+                        targetTitle = titleArg,
+                        caption = "### $titleArg"
+                    )
                 }
-                val chartJson = org.json.JSONObject().apply {
-                    put("type", if (chartType in setOf("bar", "pie", "line", "blocks", "timeline", "pyramid")) chartType else "bar")
-                    put("title", titleArg)
-                    put("labels", labelsArr)
-                    put("values", valuesArr)
-                    put("items", itemsArr)
-                }
-                latestArtifactBlocks.add("\n```chart\n${chartJson.toString(2)}\n```\n")
-                insertMarkdownBlockIntoTargetNote(
-                    fenceLang = "chart",
-                    blockBody = chartJson.toString(2),
-                    defaultTitle = titleArg,
-                    targetNoteId = noteIdArg,
-                    targetTitle = titleArg,
-                    caption = "### $titleArg"
-                )
             }
             "web_search" -> {
                 val query = args.optString("query", "").trim()
@@ -1579,8 +1721,8 @@ fun AiChatScreen(
                     val outcome = aiService.performWebSearch(query)
                     if (outcome.hits.isNotEmpty()) {
                         val marker = aiService.buildWebSourcesMarker(outcome.hits)
-                        if (marker.isNotBlank() && !latestArtifactBlocks.contains(marker)) {
-                            latestArtifactBlocks.add(marker)
+                        if (marker.isNotBlank() && !targetArtifactBlocks.contains(marker)) {
+                            targetArtifactBlocks.add(marker)
                         }
                     }
                     ToolOutcome(outcome.formattedContext)
@@ -1619,7 +1761,7 @@ fun AiChatScreen(
                         val displayWhere = savedDevice?.displayPath ?: pdfFile.absolutePath
                         val cleanTitle = title.replace("|", "-").replace("]", ")")
                         val cleanSummary = "Saved to $displayWhere".replace("|", "-").replace("]", ")")
-                        latestArtifactBlocks.add("[pdf_artifact:$cleanTitle|${pdfFile.absolutePath}|$cleanSummary]")
+                        targetArtifactBlocks.add("[pdf_artifact:$cleanTitle|${pdfFile.absolutePath}|$cleanSummary]")
                         ToolOutcome(
                             "DONE: Created PDF document \"$title\" and exported to $displayWhere. An interactive PDF card has been added to the chat.",
                             noteResults = if (openAfter) listOf(noteToExport) else null
@@ -1662,8 +1804,8 @@ fun AiChatScreen(
                     // Download-first: find + download every <img data-q="..."> BEFORE the card is shown
                     val built = com.example.data.ai.ArtifactBuilder.build(context, title, fullHtml) { done, total, label, ok ->
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            stepRunning((if (ok) "Downloaded image $done/$total" else "No image found $done/$total") + " — " + label.take(40))
-                            stepFinish(ok)
+                            stepRunning((if (ok) "Downloaded image $done/$total" else "No image found $done/$total") + " — " + label.take(40), targetSessionId)
+                            stepFinish(ok, targetSessionId)
                         }
                     }
                     val builtIndex = built.indexFile
@@ -1687,7 +1829,7 @@ fun AiChatScreen(
                     val cardPayload = if (builtIndex != null) "AUFILE:" + builtIndex.absolutePath else fullHtml
                     val b64 = android.util.Base64.encodeToString(cardPayload.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
                     val cleanTitle = title.replace("|", "-").replace("]", ")")
-                    latestArtifactBlocks.add("[html_artifact:$cleanTitle|$b64]")
+                    targetArtifactBlocks.add("[html_artifact:$cleanTitle|$b64]")
                     val imgNote = when {
                         built.total == 0 -> ""
                         built.skipped.isEmpty() -> " ${built.loaded}/${built.total} images were found and downloaded."
@@ -1707,8 +1849,8 @@ fun AiChatScreen(
                     )
                     val built = com.example.data.ai.ArtifactBuilder.build(context, title, fullHtml) { done, total, label, ok ->
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            stepRunning((if (ok) "Image ready $done/$total" else "No image found $done/$total") + " — " + label.take(40))
-                            stepFinish(ok)
+                            stepRunning((if (ok) "Image ready $done/$total" else "No image found $done/$total") + " — " + label.take(40), targetSessionId)
+                            stepFinish(ok, targetSessionId)
                         }
                     }
                     val builtIndex = built.indexFile
@@ -1728,7 +1870,7 @@ fun AiChatScreen(
                     }
                     val cardPayload = if (builtIndex != null) "AUFILE:" + builtIndex.absolutePath else fullHtml
                     val b64 = android.util.Base64.encodeToString(cardPayload.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
-                    latestArtifactBlocks.add("[html_artifact:${title.replace("|", "-").replace("]", ")")}|$b64]")
+                    targetArtifactBlocks.add("[html_artifact:${title.replace("|", "-").replace("]", ")")}|$b64]")
                     val imgNote = when {
                         built.total == 0 -> " No images were used."
                         built.skipped.isEmpty() -> " ${built.loaded}/${built.total} images placed."
@@ -1753,7 +1895,7 @@ fun AiChatScreen(
                         args.optString("accent_color", "").trim().takeIf { it.isNotBlank() }?.let { put("accentColorHex", it) }
                         put("slides", slidesArr)
                     }
-                    latestArtifactBlocks.add("\n```slides\n${deckJson.toString(2)}\n```\n")
+                    targetArtifactBlocks.add("\n```slides\n${deckJson.toString(2)}\n```\n")
                     if (addToNote) {
                         val out = insertMarkdownBlockIntoTargetNote(
                             fenceLang = "slides",
@@ -1843,7 +1985,7 @@ fun AiChatScreen(
                         put("values", values)
                         put("items", normalizedItems)
                     }
-                    latestArtifactBlocks.add("\n```json:apex\n${chartJson.toString(2)}\n```\n")
+                    targetArtifactBlocks.add("\n```json:apex\n${chartJson.toString(2)}\n```\n")
                     var noteOut: ToolOutcome? = null
                     if (addToNote) {
                         noteOut = insertMarkdownBlockIntoTargetNote(
@@ -1859,6 +2001,44 @@ fun AiChatScreen(
                         "DONE: Rendered interactive ApexCharts $type chart \"$title\" (${normalizedItems.length()} data points) in chat${if (noteOut != null) " and embedded live inside the note" else ""}.",
                         noteResults = noteOut?.noteResults
                     )
+                }
+            }
+            "save_attached_file_to_note" -> {
+                val reqTitle = args.optString("title", "").trim()
+                val rawBody = sequenceOf(
+                    args.optString("content", ""),
+                    attachedContent.orEmpty(),
+                    sessionAttachmentTextMap[targetSessionId].orEmpty(),
+                    sessionAttachmentText.orEmpty()
+                ).firstOrNull { it.isNotBlank() }.orEmpty()
+                val folderArg = args.optString("folder", "All Notes").trim().ifBlank { "All Notes" }
+                val categoryArg = args.optString("category", "").trim()
+                if (rawBody.isBlank()) {
+                    ToolOutcome("NOT DONE: No attached document or text was found to save.")
+                } else {
+                    val resolvedTitle = reqTitle.ifBlank {
+                        sessionAttachmentNameMap[targetSessionId]
+                            ?: attachedFileName
+                            ?: sessionAttachmentName
+                            ?: "Saved Document"
+                    }.substringBeforeLast('.').ifBlank { "Saved Document" }
+                    val resolvedCategory = categoryArg.ifBlank {
+                        com.example.data.model.AutoClassifier.detectCategory(resolvedTitle, rawBody)
+                    }
+                    val folderMatch = (systemFolders + preferences.customFolders.value).find { it.equals(folderArg, true) } ?: "All Notes"
+                    val entity = NoteEntity(
+                        title = resolvedTitle,
+                        content = rawBody,
+                        category = resolvedCategory,
+                        folder = folderMatch,
+                        originalFolder = folderMatch,
+                        isCodeFormat = resolvedCategory == "Code"
+                    )
+                    val newId = repository.saveNote(entity)
+                    val saved = repository.getNoteByIdOnce(newId) ?: entity.copy(id = newId)
+                    trackNote(saved)
+                    onUpdateCurrentNoteEntity?.invoke(saved)
+                    ToolOutcome("DONE: Saved full content (${rawBody.length} chars) verbatim into note \"$resolvedTitle\" (id=$newId, folder=$folderMatch).", noteResults = listOf(saved))
                 }
             }
             else -> ToolOutcome("Unknown tool '$name'.")
@@ -1986,27 +2166,39 @@ fun AiChatScreen(
         }
     }
 
-    fun saveCurrentChatSession() {
-        val firstUser = messages.firstOrNull { it.sender == "user" }?.text?.take(30)
-            ?: sessionAttachmentName?.take(30)
+    fun saveSessionFor(
+        sid: String = currentSessionId,
+        attName: String? = sessionAttachmentNameMap[sid] ?: sessionAttachmentName,
+        attText: String? = sessionAttachmentTextMap[sid] ?: sessionAttachmentText,
+        attUri: String? = (sessionAttachmentUriMap[sid] ?: sessionAttachmentUri)?.toString()
+    ) {
+        val listSnap = messagesFor(sid).toList()
+        if (listSnap.size <= 1 && attName.isNullOrBlank()) return
+        val firstUser = listSnap.firstOrNull { it.sender == "user" }?.text?.take(30)
+            ?: attName?.take(30)
             ?: "Chat Session"
-        sessionManager.saveSession(
-            ChatSession(
-                id = currentSessionId,
-                title = firstUser,
-                timestamp = System.currentTimeMillis(),
-                messages = messages.toList(),
-                attachmentName = sessionAttachmentName,
-                attachmentText = sessionAttachmentText,
-                attachmentImages = emptyList(),
-                attachmentUri = sessionAttachmentUri?.toString()
-            )
+        val sessionObj = ChatSession(
+            id = sid,
+            title = firstUser,
+            timestamp = System.currentTimeMillis(),
+            messages = listSnap,
+            attachmentName = attName,
+            attachmentText = attText,
+            attachmentImages = emptyList(),
+            attachmentUri = attUri
         )
-        savedSessions.clear()
-        savedSessions.addAll(sessionManager.loadAllSessions())
+        coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            sessionManager.saveSession(sessionObj)
+            val all = sessionManager.loadAllSessions()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                savedSessions.clear()
+                savedSessions.addAll(all)
+            }
+        }
     }
 
     fun startLive() {
+        val liveTargetSessionId = currentSessionId
         com.example.data.ai.LiveVoiceService.start(context)
         val key = preferences.getEffectiveApiKey()
         coroutineScope.launch {
@@ -2045,30 +2237,36 @@ fun AiChatScreen(
                 tools = if (enabledNow.isEmpty()) null else AgentTools.toDeclarations(enabledNow),
                 executeTool = { name, args ->
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        stepRunning(toolLabel(name))
+                        stepRunning(toolLabel(name), liveTargetSessionId)
                     }
-                    val out = runTool(name, args)
+                    val out = runTool(name, args, liveTargetSessionId)
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        stepFinish(!toolFailed(out.result))
-                        coroutineScope.launch { delay(2500); if (agentSteps.none { it.state == 0 }) agentSteps.clear() }
+                        stepFinish(!toolFailed(out.result), liveTargetSessionId)
+                        coroutineScope.launch {
+                            delay(2500)
+                            val st = stepsFor(liveTargetSessionId)
+                            if (st.none { it.state == 0 }) st.clear()
+                        }
                         if (out.pending != null || out.noteResults != null) {
-                            messages.add(ChatMessage(sender = "bot", text = out.result, noteResults = out.noteResults, pendingAction = out.pending))
+                            messagesFor(liveTargetSessionId).add(ChatMessage(sender = "bot", text = out.result, noteResults = out.noteResults, pendingAction = out.pending))
                         }
                     }
                     out.result
                 },
                 onTurn = { u, a ->
                     coroutineScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                        if (u.isNotBlank()) messages.add(ChatMessage(sender = "user", text = u))
+                        val liveMsgs = messagesFor(liveTargetSessionId)
+                        val liveArtifacts = artifactBlocksFor(liveTargetSessionId)
+                        if (u.isNotBlank()) liveMsgs.add(ChatMessage(sender = "user", text = u))
                         val botReply = buildString {
                             append(a)
-                            if (latestArtifactBlocks.isNotEmpty()) {
-                                append("\n").append(latestArtifactBlocks.joinToString("\n"))
-                                latestArtifactBlocks.clear()
+                            if (liveArtifacts.isNotEmpty()) {
+                                append("\n").append(liveArtifacts.joinToString("\n"))
+                                liveArtifacts.clear()
                             }
                         }.trim()
-                        if (botReply.isNotBlank()) messages.add(ChatMessage(sender = "bot", text = botReply))
-                        saveCurrentChatSession()
+                        if (botReply.isNotBlank()) liveMsgs.add(ChatMessage(sender = "bot", text = botReply))
+                        saveSessionFor(liveTargetSessionId)
                     }
                 },
                 onFatal = { msg ->
@@ -2137,23 +2335,30 @@ fun AiChatScreen(
     }
 
     fun handleSend(promptText: String) {
+        val targetSessionId = currentSessionId
+        val targetMessages = messagesFor(targetSessionId)
+        val targetSteps = stepsFor(targetSessionId)
+        val targetNotes = attachedNotesFor(targetSessionId)
+        val targetArtifactBlocks = artifactBlocksFor(targetSessionId)
+
         if (isUploadingAttachment) {
             Toast.makeText(context, "Please wait for the file upload timeline to reach 100%", Toast.LENGTH_SHORT).show()
             return
         }
-        if (promptText.isBlank() && attachedContent.isNullOrBlank() && attachedPdfImages.isNullOrEmpty() && attachedNotes.isEmpty()) return
-        if (isLoading) return
+        if (promptText.isBlank() && attachedContent.isNullOrBlank() && attachedPdfImages.isNullOrEmpty() && targetNotes.isEmpty()) return
+        if (loadingBySession[targetSessionId] == true) return
 
         val currentAttachmentName = attachedFileName
         val currentAttachmentText = attachedContent
         val currentPdfImages = attachedPdfImages
         val currentImgUri = attachedImageUri
-        val currentPickedNotes = attachedNotes.toList()
+        val currentPickedNotes = targetNotes.toList()
         if (currentPickedNotes.isNotEmpty()) {
             sessionAttachedNotes = currentPickedNotes
+            sessionAttachedNotesMap[targetSessionId] = currentPickedNotes
             currentPickedNotes.forEach { trackNote(it) }
         }
-        val activeAttachedNotes = if (currentPickedNotes.isNotEmpty()) currentPickedNotes else sessionAttachedNotes
+        val activeAttachedNotes = if (currentPickedNotes.isNotEmpty()) currentPickedNotes else sessionAttachedNotesMap[targetSessionId].orEmpty()
         val isDoc = currentImgUri == null && (!currentAttachmentText.isNullOrBlank() || !currentPdfImages.isNullOrEmpty())
 
         val userMsg = promptText.trim().ifBlank {
@@ -2167,13 +2372,26 @@ fun AiChatScreen(
             }
         }
 
-        if (!currentAttachmentName.isNullOrBlank()) sessionAttachmentName = currentAttachmentName
-        if (!currentAttachmentText.isNullOrBlank()) sessionAttachmentText = currentAttachmentText
-        if (!currentPdfImages.isNullOrEmpty()) sessionAttachmentImages = currentPdfImages
-        if (currentImgUri != null) sessionAttachmentUri = currentImgUri
+        if (!currentAttachmentName.isNullOrBlank()) {
+            sessionAttachmentName = currentAttachmentName
+            sessionAttachmentNameMap[targetSessionId] = currentAttachmentName
+        }
+        if (!currentAttachmentText.isNullOrBlank()) {
+            sessionAttachmentText = currentAttachmentText
+            sessionAttachmentTextMap[targetSessionId] = currentAttachmentText
+        }
+        if (!currentPdfImages.isNullOrEmpty()) {
+            sessionAttachmentImages = currentPdfImages
+            sessionAttachmentImagesMap[targetSessionId] = currentPdfImages
+        }
+        if (currentImgUri != null) {
+            sessionAttachmentUri = currentImgUri
+            sessionAttachmentUriMap[targetSessionId] = currentImgUri
+        }
 
-        val docText = currentAttachmentText ?: sessionAttachmentText
-        val docImages = currentPdfImages ?: sessionAttachmentImages
+        val docText = currentAttachmentText ?: sessionAttachmentTextMap[targetSessionId]
+        val docImages = currentPdfImages ?: sessionAttachmentImagesMap[targetSessionId]
+        val resolvedDocName = sessionAttachmentNameMap[targetSessionId] ?: currentAttachmentName
 
         val displayAttachLabel = buildString {
             if (!currentAttachmentName.isNullOrBlank()) append(currentAttachmentName)
@@ -2188,16 +2406,16 @@ fun AiChatScreen(
         attachedContent = null
         attachedPdfImages = null
         attachedImageUri = null
-        attachedNotes.clear()
+        targetNotes.clear()
         uploadTimelineSteps.clear()
         uploadProgressFraction = 0f
         uploadStatusHeadline = ""
         uploadRemainingDetail = ""
-        latestArtifactBlocks.clear()
+        targetArtifactBlocks.clear()
 
-        // Requirement 7: First add the user message in "Sending…" state BEFORE starting Agent's "Working…" state
+        // First add the user message in "Sending…" state BEFORE starting Agent's "Working…" state
         val userMsgId = java.util.UUID.randomUUID().toString()
-        messages.add(
+        targetMessages.add(
             ChatMessage(
                 id = userMsgId,
                 sender = "user",
@@ -2211,18 +2429,16 @@ fun AiChatScreen(
 
         val job = coroutineScope.launch {
             try {
-                // Brief delivery stage so large attachments/messages visibly transition Sending… -> Sent first
                 delay(if (currentAttachmentName != null) 340L else 200L)
-                // If network is still waking up after returning from external file picker, wait briefly before checking
                 if (!com.example.data.ai.ApiConnectivityChecker.isOnline(context)) {
                     delay(900L)
                 }
                 if (!com.example.data.ai.ApiConnectivityChecker.isOnline(context)) {
-                    val uIdxOffline = messages.indexOfFirst { it.id == userMsgId }
+                    val uIdxOffline = targetMessages.indexOfFirst { it.id == userMsgId }
                     if (uIdxOffline != -1) {
-                        messages[uIdxOffline] = messages[uIdxOffline].copy(deliveryStatus = "Offline")
+                        targetMessages[uIdxOffline] = targetMessages[uIdxOffline].copy(deliveryStatus = "Offline")
                     }
-                    messages.add(
+                    targetMessages.add(
                         ChatMessage(
                             sender = "bot",
                             text = "Error: You're currently offline. Please check your Wi-Fi or mobile data connection."
@@ -2230,85 +2446,83 @@ fun AiChatScreen(
                     )
                     return@launch
                 }
-                val uIdx = messages.indexOfFirst { it.id == userMsgId }
+                val uIdx = targetMessages.indexOfFirst { it.id == userMsgId }
                 if (uIdx != -1) {
-                    messages[uIdx] = messages[uIdx].copy(deliveryStatus = "Sent")
+                    targetMessages[uIdx] = targetMessages[uIdx].copy(deliveryStatus = "Sent")
                 }
 
-                // Now start Agent working state
-                isLoading = true
-                agentSteps.clear()
-                messages.add(ChatMessage(id = botMsgId, sender = "bot", text = ""))
+                // Isolated per-session loading & thinking timeline
+                loadingBySession[targetSessionId] = true
+                targetSteps.clear()
+                targetMessages.add(ChatMessage(id = botMsgId, sender = "bot", text = ""))
 
-                // Requirement 9: Granular per-page / document reading & analysis steps
                 if (!currentPdfImages.isNullOrEmpty() && currentImgUri == null) {
                     for (pageNum in 1..currentPdfImages.size) {
                         val ord = ordinalPage(pageNum)
-                        stepRunning("Reading $ord page")
+                        stepRunning("Reading $ord page", targetSessionId)
                         delay(150)
-                        val idx = agentSteps.indexOfLast { it.state == 0 }
+                        val idx = targetSteps.indexOfLast { it.state == 0 }
                         if (idx >= 0) {
-                            agentSteps[idx] = AgentStep("$ord page read", 1)
+                            targetSteps[idx] = AgentStep("$ord page read", 1)
                         }
                     }
-                    stepRunning("Analyzing document")
+                    stepRunning("Analyzing document", targetSessionId)
                     delay(140)
-                    val aIdx = agentSteps.indexOfLast { it.state == 0 }
-                    if (aIdx >= 0) agentSteps[aIdx] = AgentStep("Document analyzed", 1)
+                    val aIdx = targetSteps.indexOfLast { it.state == 0 }
+                    if (aIdx >= 0) targetSteps[aIdx] = AgentStep("Document analyzed", 1)
                 } else if (!currentAttachmentText.isNullOrBlank()) {
-                    stepRunning("Reading document")
+                    stepRunning("Reading document", targetSessionId)
                     delay(150)
-                    val rIdx = agentSteps.indexOfLast { it.state == 0 }
-                    if (rIdx >= 0) agentSteps[rIdx] = AgentStep("Document read", 1)
-                    stepRunning("Analyzing document")
+                    val rIdx = targetSteps.indexOfLast { it.state == 0 }
+                    if (rIdx >= 0) targetSteps[rIdx] = AgentStep("Document read", 1)
+                    stepRunning("Analyzing document", targetSessionId)
                     delay(140)
-                    val aIdx = agentSteps.indexOfLast { it.state == 0 }
-                    if (aIdx >= 0) agentSteps[aIdx] = AgentStep("Document analyzed", 1)
+                    val aIdx = targetSteps.indexOfLast { it.state == 0 }
+                    if (aIdx >= 0) targetSteps[aIdx] = AgentStep("Document analyzed", 1)
                 } else if (currentImgUri != null) {
-                    stepRunning("Reading attached image")
+                    stepRunning("Reading attached image", targetSessionId)
                     delay(150)
-                    val rIdx = agentSteps.indexOfLast { it.state == 0 }
-                    if (rIdx >= 0) agentSteps[rIdx] = AgentStep("Attached image read", 1)
+                    val rIdx = targetSteps.indexOfLast { it.state == 0 }
+                    if (rIdx >= 0) targetSteps[rIdx] = AgentStep("Attached image read", 1)
                 }
 
-                // Rule C3 fast-path: if the user attached/has an image and explicitly asks to add/insert it into the note
                 val lowerMsg = userMsg.lowercase()
-                val wantsImageInNote = (currentImgUri != null || sessionAttachmentUri != null || !docImages.isNullOrEmpty()) &&
+                val wantsImageInNote = (currentImgUri != null || sessionAttachmentUriMap[targetSessionId] != null || !docImages.isNullOrEmpty()) &&
                     (lowerMsg.contains("note me") || lowerMsg.contains("note mein") || lowerMsg.contains("add to note") || lowerMsg.contains("insert in note")) &&
                     (lowerMsg.contains("laga") || lowerMsg.contains("daal") || lowerMsg.contains("add") || lowerMsg.contains("insert") || lowerMsg.contains("paste") || lowerMsg.contains("chipka"))
 
                 if (wantsImageInNote) {
                     if (!isWorkMode && !voiceManager.isVoiceModeActive) {
-                        val finishedSteps = agentSteps.toList()
-                        agentSteps.clear()
-                        isLoading = false
+                        val finishedSteps = targetSteps.toList()
+                        targetSteps.clear()
+                        loadingBySession[targetSessionId] = false
                         val replyMsg = "You are currently in **Chat Mode** (for Q&A and note/document summaries). Please switch to **Work Mode** at the top to add or edit images in your notes."
-                        val idx = messages.indexOfFirst { it.id == botMsgId }
+                        val idx = targetMessages.indexOfFirst { it.id == botMsgId }
                         if (idx != -1) {
-                            messages[idx] = messages[idx].copy(text = replyMsg, steps = finishedSteps)
+                            targetMessages[idx] = targetMessages[idx].copy(text = replyMsg, steps = finishedSteps)
                         }
-                        saveCurrentChatSession()
+                        saveSessionFor(targetSessionId)
                         return@launch
                     }
-                    stepRunning("Inserting image into note")
+                    stepRunning("Inserting image into note", targetSessionId)
                     val out = insertImageIntoTargetNote(
-                        sourceUri = currentImgUri ?: sessionAttachmentUri,
+                        sourceUri = currentImgUri ?: sessionAttachmentUriMap[targetSessionId],
                         base64Img = docImages?.firstOrNull()
                     )
-                    stepFinish(!toolFailed(out.result))
-                    val finishedSteps = agentSteps.toList()
-                    agentSteps.clear()
-                    isLoading = false
+                    stepFinish(!toolFailed(out.result), targetSessionId)
+                    val finishedSteps = targetSteps.toList()
+                    targetSteps.clear()
+                    loadingBySession[targetSessionId] = false
                     val replyMsg = if (!toolFailed(out.result)) {
                         "Done! I have inserted the image into your note. You can pinch with 2 fingers to resize it and drag with 1 finger to reposition it in the note editor."
                     } else {
                         "Error: ${out.result}"
                     }
-                    val idx = messages.indexOfFirst { it.id == botMsgId }
+                    val idx = targetMessages.indexOfFirst { it.id == botMsgId }
                     if (idx != -1) {
-                        messages[idx] = messages[idx].copy(text = replyMsg, noteResults = out.noteResults, steps = finishedSteps)
+                        targetMessages[idx] = targetMessages[idx].copy(text = replyMsg, noteResults = out.noteResults, steps = finishedSteps)
                     }
-                    saveCurrentChatSession()
+                    saveSessionFor(targetSessionId)
                     return@launch
                 }
 
@@ -2321,7 +2535,7 @@ fun AiChatScreen(
                     }
                 }
 
-                val turns = messages.filter { it.id != botMsgId }.dropLast(1).takeLast(16)
+                val turns = targetMessages.filter { it.id != botMsgId }.dropLast(1).takeLast(16)
                     .map { ConversationTurn(it.sender, compactForHistory(it.text)) }.toMutableList()
 
                 val openNoteContext = buildString {
@@ -2350,8 +2564,6 @@ fun AiChatScreen(
                     spoken = voiceManager.isVoiceModeActive,
                     workMode = effectiveWorkMode,
                     searchModeEnabled = searchModeEnabled,
-                    // the attached document is already inside this turn's prompt and the chat history is sent as real turns:
-                    // sending them again inside the system prompt only made every reply slower
                     attachmentContext = if (!docText.isNullOrBlank()) null else buildAttachmentContextString(),
                     recentChatTranscript = null,
                     includeDesign = Regex(
@@ -2360,23 +2572,21 @@ fun AiChatScreen(
                     ).containsMatchIn(userMsg + " " + turns.takeLast(6).joinToString(" ") { it.content.take(300) })
                 )
 
-                // Smart SEARCH Mode: only pre-fetch web search when the query actually needs external/live facts
-                // (never waste time searching when converting attached notes/PDFs/images or answering casual greetings)
                 var preFetchedSearchContext = ""
                 val hasLocalAttachmentTask = currentPickedNotes.isNotEmpty() || !currentAttachmentText.isNullOrBlank() || !currentPdfImages.isNullOrEmpty() || currentImgUri != null
                 val shouldPreSearch = searchModeEnabled && (!hasLocalAttachmentTask || userMsg.contains("search", ignoreCase = true)) && aiService.shouldUseWebSearch(userMsg)
                 if (shouldPreSearch) {
-                    stepRunning("Searching the live web")
+                    stepRunning("Searching the live web", targetSessionId)
                     val searchOutcome = aiService.performWebSearch(userMsg)
                     if (searchOutcome.hits.isNotEmpty()) {
                         val marker = aiService.buildWebSourcesMarker(searchOutcome.hits)
-                        if (marker.isNotBlank() && !latestArtifactBlocks.contains(marker)) {
-                            latestArtifactBlocks.add(marker)
+                        if (marker.isNotBlank() && !targetArtifactBlocks.contains(marker)) {
+                            targetArtifactBlocks.add(marker)
                         }
                     }
-                    val sIdx = agentSteps.indexOfLast { it.state == 0 }
+                    val sIdx = targetSteps.indexOfLast { it.state == 0 }
                     if (sIdx >= 0) {
-                        agentSteps[sIdx] = AgentStep(
+                        targetSteps[sIdx] = AgentStep(
                             if (searchOutcome.sources.isNotEmpty()) "Searched ${searchOutcome.sources.size} live web sources" else "Web search completed",
                             1
                         )
@@ -2397,10 +2607,10 @@ fun AiChatScreen(
                         }
                     }
                     if (!docText.isNullOrBlank()) {
-                        append("The user attached this document (${sessionAttachmentName ?: "document"}). Read it fully and honor any user instructions on which sections/points to include or skip.\n=== DOCUMENT START ===\n")
+                        append("The user attached this document (${resolvedDocName ?: "document"}). Read it fully and honor any user instructions on which sections/points to include or skip.\n=== DOCUMENT START ===\n")
                         append(docText).append("\n=== DOCUMENT END ===\n\n")
                     } else if (!docImages.isNullOrEmpty()) {
-                        append("The user attached ${docImages.size} image(s)/page(s) (${sessionAttachmentName ?: "visual attachment"}). Read every page/image carefully and honor any user instructions on which points to include or skip.\n\n")
+                        append("The user attached ${docImages.size} image(s)/page(s) (${resolvedDocName ?: "visual attachment"}). Read every page/image carefully and honor any user instructions on which points to include or skip.\n\n")
                     }
                     val inboxNow = runCatching { com.example.data.ai.ChatInbox.list(context) }.getOrDefault(emptyList())
                     if (inboxNow.isNotEmpty()) {
@@ -2428,7 +2638,7 @@ fun AiChatScreen(
                 var streamedAny = false
                 val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
                 while (true) {
-                    stepRunning(if (steps == 0) "Thinking & planning response" else "Preparing next action")
+                    stepRunning(if (steps == 0) "Thinking & planning response" else "Preparing next action", targetSessionId)
                     val reply = aiService.chatOnce(
                         provider = activeProvider,
                         apiKey = key,
@@ -2444,18 +2654,16 @@ fun AiChatScreen(
                             if (vis.isNotBlank()) {
                                 streamedAny = true
                                 mainHandler.post {
-                                    val i = messages.indexOfFirst { it.id == botMsgId }
-                                    if (i != -1) messages[i] = messages[i].copy(text = vis)
+                                    val i = targetMessages.indexOfFirst { it.id == botMsgId }
+                                    if (i != -1) targetMessages[i] = targetMessages[i].copy(text = vis)
                                 }
                             }
                         } else null
                     )
                     val isReplyError = reply.startsWith("Error:") || reply.startsWith("⚠️")
-                    stepFinish(!isReplyError)
+                    stepFinish(!isReplyError, targetSessionId)
                     val call = if (enabled.isNotEmpty() && !isReplyError) AgentTools.parse(reply) else null
                     if (call == null && enabled.isNotEmpty() && !isReplyError && AgentTools.looksLikeToolCall(reply)) {
-                        // The model tried to call a tool but its JSON was broken. Never show that JSON to the user:
-                        // ask the model to resend it correctly (max 2 times), then fall back to a friendly message.
                         if (toolRepairTries < 2) {
                             toolRepairTries++
                             turns.add(ConversationTurn("user", prompt))
@@ -2467,20 +2675,20 @@ fun AiChatScreen(
                             images = emptyList()
                             continue
                         } else {
-                            finalText = "⚠️ Tool call galat format me aa gaya (JSON toot gaya), isliye kuch bana nahi. Ek baar phir se bolo, ya slides kam rakhne ko bolo."
+                            finalText = "⚠️ Tool call format issue (invalid JSON). Please try again."
                             break
                         }
                     }
                     if (call == null) { finalText = reply; break }
                     if (steps >= 12) { finalText = call.textBefore.ifBlank { "Done! I have completed the requested actions." }; break }
                     steps++
-                    stepRunning(toolLabel(call.name))
+                    stepRunning(toolLabel(call.name), targetSessionId)
                     val outcome = try {
-                        runTool(call.name, call.args)
+                        runTool(call.name, call.args, targetSessionId)
                     } catch (e: Exception) {
                         ToolOutcome("Tool failed: ${e.message}")
                     }
-                    stepFinish(!toolFailed(outcome.result))
+                    stepFinish(!toolFailed(outcome.result), targetSessionId)
                     outcome.noteResults?.let { results = it }
                     outcome.pending?.let { pending = it }
                     turns.add(ConversationTurn("user", prompt))
@@ -2489,24 +2697,22 @@ fun AiChatScreen(
                     images = emptyList()
                 }
 
-                if (latestArtifactBlocks.isNotEmpty()) {
-                    val extras = latestArtifactBlocks.filter { block ->
+                if (targetArtifactBlocks.isNotEmpty()) {
+                    val extras = targetArtifactBlocks.filter { block ->
                         !finalText.contains(block.trim())
                     }.joinToString("\n")
                     if (extras.isNotBlank()) {
                         finalText = (finalText + "\n" + extras).trim()
                     }
-                    latestArtifactBlocks.clear()
+                    targetArtifactBlocks.clear()
                 }
 
-                // Requirement 9: Persist all completed steps on the bot message so they auto-collapse & stay expandable
-                val completedSteps = agentSteps.map {
+                val completedSteps = targetSteps.map {
                     if (it.state == 0) it.copy(state = 1) else it
                 }
-                agentSteps.clear()
-                isLoading = false
+                targetSteps.clear()
+                loadingBySession[targetSessionId] = false
 
-                // If response contains structured blocks (slides, chart, diagram, organised_file, pdf_artifact, html_artifact, web_sources_json), render immediately without word-splitting corruption
                 if (
                     finalText.contains("```slides") ||
                     finalText.contains("```typography_slides") ||
@@ -2524,86 +2730,78 @@ fun AiChatScreen(
                     finalText.contains("[html_artifact:") ||
                     finalText.contains("[web_sources_json:")
                 ) {
-                    val idx = messages.indexOfFirst { it.id == botMsgId }
-                    if (idx != -1) messages[idx] = messages[idx].copy(text = finalText, noteResults = results, pendingAction = pending, steps = completedSteps)
+                    val idx = targetMessages.indexOfFirst { it.id == botMsgId }
+                    if (idx != -1) targetMessages[idx] = targetMessages[idx].copy(text = finalText, noteResults = results, pendingAction = pending, steps = completedSteps)
                 } else {
-                    val idxInit = messages.indexOfFirst { it.id == botMsgId }
-                    if (idxInit != -1) messages[idxInit] = messages[idxInit].copy(steps = completedSteps)
+                    val idxInit = targetMessages.indexOfFirst { it.id == botMsgId }
+                    if (idxInit != -1) targetMessages[idxInit] = targetMessages[idxInit].copy(steps = completedSteps)
                     if (streamedAny) {
-                        // already streamed live: put the final, complete text in place at once
-                        val idx0 = messages.indexOfFirst { it.id == botMsgId }
-                        if (idx0 != -1) messages[idx0] = messages[idx0].copy(text = finalText.ifBlank { "Done." }, steps = completedSteps)
+                        val idx0 = targetMessages.indexOfFirst { it.id == botMsgId }
+                        if (idx0 != -1) targetMessages[idx0] = targetMessages[idx0].copy(text = finalText.ifBlank { "Done." }, steps = completedSteps)
                     } else {
                         val words = finalText.ifBlank { "Done." }.split(" ")
                         val sb = StringBuilder()
                         for (i in words.indices) {
                             sb.append(words[i]).append(" ")
                             if (i % 6 == 0 || i == words.lastIndex) {
-                                val idx = messages.indexOfFirst { it.id == botMsgId }
-                                if (idx != -1) messages[idx] = messages[idx].copy(text = sb.toString().trim(), steps = completedSteps)
+                                val idx = targetMessages.indexOfFirst { it.id == botMsgId }
+                                if (idx != -1) targetMessages[idx] = targetMessages[idx].copy(text = sb.toString().trim(), steps = completedSteps)
                                 delay(12)
                             }
                         }
                     }
-                    val idx = messages.indexOfFirst { it.id == botMsgId }
-                    if (idx != -1) messages[idx] = messages[idx].copy(noteResults = results, pendingAction = pending, steps = completedSteps)
+                    val idx = targetMessages.indexOfFirst { it.id == botMsgId }
+                    if (idx != -1) targetMessages[idx] = targetMessages[idx].copy(noteResults = results, pendingAction = pending, steps = completedSteps)
                 }
 
-                saveCurrentChatSession()
+                saveSessionFor(targetSessionId)
                 if (voiceManager.isVoiceModeActive && finalText.isNotBlank()) {
                     val cleanSpoken = finalText.replace(Regex("```[\\s\\S]*?```"), "").trim()
                     if (cleanSpoken.isNotBlank()) voiceManager.speak(cleanSpoken)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                val idx = messages.indexOfFirst { it.id == botMsgId }
-                if (idx != -1 && messages[idx].text.isBlank()) {
-                    messages[idx] = messages[idx].copy(text = "[Response stopped by user]", steps = agentSteps.toList())
+                val idx = targetMessages.indexOfFirst { it.id == botMsgId }
+                if (idx != -1 && targetMessages[idx].text.isBlank()) {
+                    targetMessages[idx] = targetMessages[idx].copy(text = "[Response stopped by user]", steps = targetSteps.toList())
                 }
-                agentSteps.clear()
+                targetSteps.clear()
             } catch (e: Exception) {
-                val idx = messages.indexOfFirst { it.id == botMsgId }
-                if (idx != -1 && messages[idx].text.isBlank()) {
-                    messages[idx] = messages[idx].copy(text = "Error: ${e.message}", steps = agentSteps.toList())
+                val idx = targetMessages.indexOfFirst { it.id == botMsgId }
+                if (idx != -1 && targetMessages[idx].text.isBlank()) {
+                    targetMessages[idx] = targetMessages[idx].copy(text = "Error: ${e.message}", steps = targetSteps.toList())
                 }
-                agentSteps.clear()
+                targetSteps.clear()
             } finally {
-                isLoading = false
-                activeJob = null
+                loadingBySession[targetSessionId] = false
+                jobsBySession.remove(targetSessionId)
             }
         }
-        activeJob = job
+        jobsBySession[targetSessionId] = job
     }
 
     fun startNewChat() {
-        activeJob?.cancel()
+        // Never cancel jobs in previous sessions; they keep running strictly isolated to their own sessionId
         uploadJob?.cancel()
-        isLoading = false
         isUploadingAttachment = false
         uploadTimelineSteps.clear()
         uploadProgressFraction = 0f
         uploadStatusHeadline = ""
         uploadRemainingDetail = ""
-        if (messages.size > 1) {
-            saveCurrentChatSession()
+        if (messagesFor(currentSessionId).size > 1) {
+            saveSessionFor(currentSessionId)
         }
         sessionAttachmentName = null
         sessionAttachmentText = null
         sessionAttachmentImages = null
         sessionAttachmentUri = null
+        sessionAttachedNotes = emptyList()
         attachedFileName = null
         attachedContent = null
         attachedPdfImages = null
         attachedImageUri = null
         currentSessionId = java.util.UUID.randomUUID().toString()
-        messages.clear()
-        messages.add(
-            ChatMessage(
-                sender = "bot",
-                text = "Hello! I'm your AU Agent. How can I help you with your notes, PDFs, slides, or charts today?"
-            )
-        )
         isAgentSidebarOpen = false
-        Toast.makeText(context, "New chat started (previous saved)", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "New chat started (previous runs independently)", Toast.LENGTH_SHORT).show()
     }
 
     LaunchedEffect(Unit) {
@@ -2622,7 +2820,18 @@ fun AiChatScreen(
                 .background(if (isCompactMode) Color.Transparent else fullChatBg)
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .imePadding(),
+                .imePadding()
+                .handleHardwareShortcuts(
+                    onSend = { handleSend(inputText) },
+                    onNewNote = { startNewChat() },
+                    onEscape = {
+                        when {
+                            showNoteAttachDialog -> showNoteAttachDialog = false
+                            isAgentSidebarOpen -> isAgentSidebarOpen = false
+                            else -> onClose()
+                        }
+                    }
+                ),
             contentAlignment = Alignment.BottomCenter
         ) {
             // Container (Either full height or compact floating card)
@@ -3171,14 +3380,14 @@ fun AiChatScreen(
                                                         coroutineScope.launch {
                                                             val chartJsonStr = AgentVisualsParser.chartSpecToJson(spec)
                                                             val out = insertMarkdownBlockIntoTargetNote(
-                                                                fenceLang = "chart",
+                                                                fenceLang = "json:apex",
                                                                 blockBody = chartJsonStr,
                                                                 defaultTitle = spec.title,
                                                                 caption = "### ${spec.title}"
                                                             )
                                                             Toast.makeText(
                                                                 context,
-                                                                if (!toolFailed(out.result)) "Live Editorial Chart added to note!" else out.result,
+                                                                if (!toolFailed(out.result)) "Live ApexChart added to note!" else out.result,
                                                                 Toast.LENGTH_SHORT
                                                             ).show()
                                                         }
@@ -3741,29 +3950,53 @@ fun AiChatScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        // Circular Mic button for quick speech-to-text dictation
+                                        // Circular Mic button for continuous speech-to-text dictation
                                         Box(
                                             modifier = Modifier
                                                 .size(38.dp)
                                                 .clip(CircleShape)
-                                                .background(if (isDarkMode) Color(0xFF28282F) else Color(0xFFEEECE6))
+                                                .background(
+                                                    if (isDictatingInComposer) CrimsonPrimary
+                                                    else if (isDarkMode) Color(0xFF28282F)
+                                                    else Color(0xFFEEECE6)
+                                                )
                                                 .clickable {
-                                                    try {
-                                                        val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                                            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                                            putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Speak to AU Agent...")
+                                                    if (isDictatingInComposer) {
+                                                        stopComposerDictation()
+                                                        Toast.makeText(context, "Dictation stopped", Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        val hasAudioPerm = androidx.core.content.ContextCompat.checkSelfPermission(
+                                                            context,
+                                                            android.Manifest.permission.RECORD_AUDIO
+                                                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                                        if (hasAudioPerm && android.speech.SpeechRecognizer.isRecognitionAvailable(context)) {
+                                                            dictationBaseText = inputText
+                                                            isDictatingInComposer = true
+                                                            startComposerDictationPass()
+                                                            Toast.makeText(context, "Listening continuously… tap Mic again to stop", Toast.LENGTH_SHORT).show()
+                                                        } else if (!hasAudioPerm) {
+                                                            composerMicPermLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                                                        } else {
+                                                            try {
+                                                                val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                                                    putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                                                    putExtra(android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10000L)
+                                                                    putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Speak to AU Agent...")
+                                                                }
+                                                                voiceInputLauncher.launch(intent)
+                                                            } catch (_: Exception) {
+                                                                toggleVoiceMode()
+                                                            }
                                                         }
-                                                        voiceInputLauncher.launch(intent)
-                                                    } catch (_: Exception) {
-                                                        toggleVoiceMode()
                                                     }
                                                 },
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Default.Mic,
-                                                contentDescription = "Dictate",
-                                                tint = if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
+                                                imageVector = if (isDictatingInComposer) Icons.Default.Stop else Icons.Default.Mic,
+                                                contentDescription = if (isDictatingInComposer) "Stop Dictation" else "Dictate",
+                                                tint = if (isDictatingInComposer) Color.White
+                                                else if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
                                                 modifier = Modifier.size(19.dp)
                                             )
                                         }
@@ -3775,9 +4008,9 @@ fun AiChatScreen(
                                                     .clip(CircleShape)
                                                     .background(if (isDarkMode) Color(0xFF28282F) else Color(0xFFEEECE6))
                                                     .clickable {
-                                                        activeJob?.cancel()
+                                                        jobsBySession[currentSessionId]?.cancel()
+                                                        loadingBySession[currentSessionId] = false
                                                         voiceManager.stopSpeaking()
-                                                        isLoading = false
                                                         Toast.makeText(context, "Response stopped", Toast.LENGTH_SHORT).show()
                                                     },
                                                 contentAlignment = Alignment.Center
@@ -3801,7 +4034,10 @@ fun AiChatScreen(
                                                     .size(40.dp)
                                                     .clip(CircleShape)
                                                     .background(if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B))
-                                                    .clickable { handleSend(inputText) },
+                                                    .clickable {
+                                                        if (isDictatingInComposer) stopComposerDictation()
+                                                        handleSend(inputText)
+                                                    },
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 Icon(
@@ -4752,12 +4988,15 @@ fun AiChatScreen(
                                         )
                                         .clickable {
                                             currentSessionId = session.id
-                                            messages.clear()
-                                            messages.addAll(session.messages)
-                                            sessionAttachmentName = session.attachmentName
-                                            sessionAttachmentText = session.attachmentText
-                                            sessionAttachmentImages = session.attachmentImages.takeIf { it.isNotEmpty() }
-                                            sessionAttachmentUri = session.attachmentUri?.let { Uri.parse(it) }
+                                            val liveList = messagesFor(session.id)
+                                            if (liveList.size <= 1 || (loadingBySession[session.id] != true && liveList.size < session.messages.size)) {
+                                                liveList.clear()
+                                                liveList.addAll(session.messages)
+                                            }
+                                            sessionAttachmentName = sessionAttachmentNameMap[session.id] ?: session.attachmentName
+                                            sessionAttachmentText = sessionAttachmentTextMap[session.id] ?: session.attachmentText
+                                            sessionAttachmentImages = sessionAttachmentImagesMap[session.id] ?: session.attachmentImages.takeIf { it.isNotEmpty() }
+                                            sessionAttachmentUri = sessionAttachmentUriMap[session.id] ?: session.attachmentUri?.let { Uri.parse(it) }
                                             isAgentSidebarOpen = false
                                             Toast.makeText(context, "Loaded \"${session.title}\"", Toast.LENGTH_SHORT).show()
                                         }
@@ -5366,7 +5605,9 @@ fun AiChatScreen(
                         } else {
                             LazyColumn(
                                 verticalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 120.dp, max = 270.dp)
                             ) {
                                 items(visibleNotes, key = { it.id }) { noteItem ->
                                     val isAttached = attachedNotes.any { it.id == noteItem.id }

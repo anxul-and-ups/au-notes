@@ -59,6 +59,10 @@ import com.example.ui.screens.BackupRestoreScreen
 import com.example.ui.screens.StorageFileEditorScreen
 import com.example.ui.screens.TableEditorScreen
 import com.example.ui.screens.TempMailScreen
+import com.example.ui.screens.SplitScreenNotesScreen
+import com.example.ui.screens.KeyboardShortcutsScreen
+import com.example.ui.screens.ArtifactsLibraryScreen
+import androidx.compose.runtime.mutableIntStateOf
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.launch
 
@@ -73,7 +77,14 @@ sealed class Screen {
         val note: NoteEntity?,
         val returnScreen: Screen = MainWorkspace("All Notes")
     ) : Screen()
+    data class SplitNotes(
+        val primaryNote: NoteEntity? = null,
+        val initialPrimaryEdit: Boolean = false,
+        val returnScreen: Screen = MainWorkspace("All Notes")
+    ) : Screen()
     data object Settings : Screen()
+    data object KeyboardShortcuts : Screen()
+    data object ArtifactsLibrary : Screen()
     data object BackupRestore : Screen()
     data object SecurityArea : Screen()
     data object SecuritySettings : Screen()
@@ -135,22 +146,32 @@ class MainActivity : FragmentActivity() {
 
     private val incomingQuickNoteState = mutableStateOf(false)
     private val incomingOpenNoteIdState = mutableStateOf<Long?>(null)
+    private val incomingOpenNoteEditState = mutableStateOf(false)
+    val isInMultiWindowState = mutableStateOf(false)
 
     fun enterSmallWindowOrPip() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val params = android.app.PictureInPictureParams.Builder()
-                    .setAspectRatio(android.util.Rational(9, 16))
-                    .build()
-                val entered = enterPictureInPictureMode(params)
-                if (entered) return
-            }
-        } catch (_: Exception) {}
-        android.widget.Toast.makeText(
-            this,
-            "Tip: You can also use 'Small window' from Android Recents or tap 'Open Mini Overlay'!",
-            android.widget.Toast.LENGTH_LONG
-        ).show()
+        com.example.ui.util.SmallWindowHelper.launchAppSmallWindow(this)
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: android.content.res.Configuration) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+        isInMultiWindowState.value = isInMultiWindowMode
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode)
+        isInMultiWindowState.value = isInMultiWindowMode
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            isInMultiWindowState.value = isInMultiWindowMode
+        }
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
@@ -165,8 +186,10 @@ class MainActivity : FragmentActivity() {
         }
         val noteId = intent.getLongExtra("OPEN_NOTE_ID", -1L)
         if (noteId > 0L) {
+            incomingOpenNoteEditState.value = intent.getBooleanExtra("OPEN_NOTE_EDIT", false)
             incomingOpenNoteIdState.value = noteId
             intent.removeExtra("OPEN_NOTE_ID")
+            intent.removeExtra("OPEN_NOTE_EDIT")
         }
     }
 
@@ -217,8 +240,10 @@ class MainActivity : FragmentActivity() {
             }
             val noteId = intent?.getLongExtra("OPEN_NOTE_ID", -1L) ?: -1L
             if (noteId > 0L) {
+                incomingOpenNoteEditState.value = intent?.getBooleanExtra("OPEN_NOTE_EDIT", false) ?: false
                 incomingOpenNoteIdState.value = noteId
                 intent?.removeExtra("OPEN_NOTE_ID")
+                intent?.removeExtra("OPEN_NOTE_EDIT")
             }
         }
 
@@ -281,6 +306,7 @@ class MainActivity : FragmentActivity() {
             val pendingShareUri by incomingShareUriState
             val pendingQuickNote by incomingQuickNoteState
             val pendingOpenNoteId by incomingOpenNoteIdState
+            val pendingOpenNoteEdit by incomingOpenNoteEditState
 
             MyApplicationTheme(darkTheme = isDarkMode) {
                 CompositionLocalProvider(LocalAppBackdrop provides AppBackdropState(bgImage, bgDim)) {
@@ -299,7 +325,11 @@ class MainActivity : FragmentActivity() {
                             incomingQuickNote = pendingQuickNote,
                             onConsumeIncomingQuickNote = { incomingQuickNoteState.value = false },
                             incomingOpenNoteId = pendingOpenNoteId,
-                            onConsumeIncomingOpenNoteId = { incomingOpenNoteIdState.value = null },
+                            incomingOpenNoteEdit = pendingOpenNoteEdit,
+                            onConsumeIncomingOpenNoteId = {
+                                incomingOpenNoteIdState.value = null
+                                incomingOpenNoteEditState.value = false
+                            },
                             onEnterSmallWindowMode = { enterSmallWindowOrPip() },
                             onToggleDarkMode = {
                                 preferences.setThemeMode(if (isDarkMode) AppPreferences.THEME_DAY else AppPreferences.THEME_DARK)
@@ -324,6 +354,7 @@ fun AuNotesApp(
     incomingQuickNote: Boolean = false,
     onConsumeIncomingQuickNote: () -> Unit = {},
     incomingOpenNoteId: Long? = null,
+    incomingOpenNoteEdit: Boolean = false,
     onConsumeIncomingOpenNoteId: () -> Unit = {},
     onEnterSmallWindowMode: () -> Unit = {},
     onToggleDarkMode: () -> Unit
@@ -343,6 +374,8 @@ fun AuNotesApp(
     var startAiVoiceAssistantImmediately by remember { mutableStateOf(false) }
     var returnToAiChatFromApiRoom by remember { mutableStateOf(false) }
     var agentSharedUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var artifactsVersion by remember { mutableIntStateOf(0) }
+    val allActiveNotesForSplit by repository.allActiveNotes.collectAsState(initial = emptyList())
 
     LaunchedEffect(incomingQuickNote) {
         if (incomingQuickNote) {
@@ -354,10 +387,15 @@ fun AuNotesApp(
     LaunchedEffect(incomingOpenNoteId) {
         val noteId = incomingOpenNoteId
         if (noteId != null && noteId > 0L) {
+            val openEdit = incomingOpenNoteEdit
             onConsumeIncomingOpenNoteId()
             val note = repository.getNoteByIdOnce(noteId)
             if (note != null) {
-                currentScreen = Screen.ReadNote(note = note, returnScreen = Screen.MainWorkspace(currentFolder))
+                currentScreen = if (openEdit) {
+                    Screen.EditNote(note = note, returnScreen = Screen.ReadNote(note = note, returnScreen = Screen.MainWorkspace(currentFolder)))
+                } else {
+                    Screen.ReadNote(note = note, returnScreen = Screen.MainWorkspace(currentFolder))
+                }
             }
         }
     }
@@ -476,7 +514,10 @@ fun AuNotesApp(
             }
             screenNow is Screen.ThemeSettings -> currentScreen = Screen.Settings
             screenNow is Screen.AgentSettings -> currentScreen = Screen.Settings
+            screenNow is Screen.KeyboardShortcuts -> currentScreen = Screen.Settings
             screenNow is Screen.BackupRestore -> currentScreen = Screen.Settings
+            screenNow is Screen.SplitNotes -> currentScreen = screenNow.returnScreen
+            screenNow is Screen.ArtifactsLibrary -> currentScreen = Screen.MainWorkspace(currentFolder)
             screenNow is Screen.SecuritySettings -> currentScreen = Screen.SecurityArea
             screenNow is Screen.MainWorkspace && screenNow.pickForHide -> currentScreen = Screen.SecurityArea
             screenNow is Screen.SecurityArea -> leaveSecurityArea()
@@ -567,6 +608,13 @@ fun AuNotesApp(
                     onToggleDarkMode = onToggleDarkMode,
                     onOpenSidebar = { isSidebarOpen = true },
                     onOpenSettings = { currentScreen = Screen.Settings },
+                    onOpenSplitScreen = {
+                        currentScreen = Screen.SplitNotes(
+                            primaryNote = null,
+                            initialPrimaryEdit = false,
+                            returnScreen = Screen.MainWorkspace(currentFolder)
+                        )
+                    },
                     onOpenAiChat = { isAiChatOpen = true },
                     onOpenNote = { note ->
                         currentScreen = Screen.ReadNote(
@@ -598,6 +646,20 @@ fun AuNotesApp(
                     preferences = preferences,
                     isDarkMode = isDarkMode,
                     onBack = navigateBackFromRead,
+                    onOpenInSplitScreen = { note ->
+                        currentScreen = Screen.SplitNotes(
+                            primaryNote = note,
+                            initialPrimaryEdit = false,
+                            returnScreen = screen
+                        )
+                    },
+                    onOpenInSmallWindow = { note ->
+                        com.example.ui.util.SmallWindowHelper.launchNoteInSmallWindow(
+                            activity,
+                            noteId = note.id.takeIf { it > 0L },
+                            openEdit = false
+                        )
+                    },
                     onEditNote = { note ->
                         latestEditedNote = note
                         currentScreen = Screen.EditNote(
@@ -656,6 +718,20 @@ fun AuNotesApp(
                     repository = repository,
                     preferences = preferences,
                     onBack = navigateBackFromEdit,
+                    onOpenInSplitScreen = { note ->
+                        currentScreen = Screen.SplitNotes(
+                            primaryNote = note,
+                            initialPrimaryEdit = true,
+                            returnScreen = screen
+                        )
+                    },
+                    onOpenInSmallWindow = { note ->
+                        com.example.ui.util.SmallWindowHelper.launchNoteInSmallWindow(
+                            activity,
+                            noteId = note?.id?.takeIf { it > 0L },
+                            openEdit = true
+                        )
+                    },
                     onOpenTableEditor = { initialData, onResult ->
                         currentScreen = Screen.TableEditor(
                             initialTableData = initialData,
@@ -738,6 +814,19 @@ fun AuNotesApp(
                 )
             }
 
+            is Screen.SplitNotes -> {
+                SplitScreenNotesScreen(
+                    allNotes = allActiveNotesForSplit,
+                    initialPrimaryNote = screen.primaryNote,
+                    initialSecondaryNote = null,
+                    initialPrimaryEdit = screen.initialPrimaryEdit,
+                    repository = repository,
+                    preferences = preferences,
+                    isDarkMode = isDarkMode,
+                    onBack = { currentScreen = screen.returnScreen }
+                )
+            }
+
             is Screen.Settings -> {
                 SettingsScreen(
                     preferences = preferences,
@@ -753,11 +842,28 @@ fun AuNotesApp(
                     onOpenThemeSettings = { currentScreen = Screen.ThemeSettings },
                     onOpenAgentSettings = { currentScreen = Screen.AgentSettings },
                     onOpenBackupRestore = { currentScreen = Screen.BackupRestore },
+                    onOpenKeyboardShortcuts = { currentScreen = Screen.KeyboardShortcuts },
                     onEnterSmallWindowMode = onEnterSmallWindowMode,
                     onOpenRecycleBin = {
                         screenBeforeRecycleBin = Screen.Settings
                         currentScreen = Screen.RecycleBin
                     }
+                )
+            }
+
+            is Screen.KeyboardShortcuts -> {
+                KeyboardShortcutsScreen(
+                    isDarkMode = isDarkMode,
+                    onBack = { currentScreen = Screen.Settings }
+                )
+            }
+
+            is Screen.ArtifactsLibrary -> {
+                ArtifactsLibraryScreen(
+                    repository = repository,
+                    isDarkMode = isDarkMode,
+                    onArtifactsPurged = { artifactsVersion++ },
+                    onBack = { currentScreen = Screen.MainWorkspace(currentFolder) }
                 )
             }
 
@@ -975,6 +1081,10 @@ fun AuNotesApp(
                 isSidebarOpen = false
                 currentScreen = Screen.HtmlViewer
             },
+            onOpenArtifactsLibrary = {
+                isSidebarOpen = false
+                currentScreen = Screen.ArtifactsLibrary
+            },
             onOpenMyDocuments = {
                 isSidebarOpen = false
                 currentScreen = Screen.MyDocuments
@@ -1017,6 +1127,7 @@ fun AuNotesApp(
         // AI Chat Engine Drawer
         AiChatScreen(
             isOpen = isAiChatOpen,
+            artifactsVersion = artifactsVersion,
             isDarkMode = isDarkMode,
             preferences = preferences,
             repository = repository,

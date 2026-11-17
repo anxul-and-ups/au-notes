@@ -30,11 +30,14 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -88,6 +91,7 @@ fun SettingsScreen(
     onOpenThemeSettings: () -> Unit = {},
     onOpenAgentSettings: () -> Unit = {},
     onOpenBackupRestore: () -> Unit = {},
+    onOpenKeyboardShortcuts: () -> Unit = {},
     onEnterSmallWindowMode: () -> Unit = {},
     onOpenRecycleBin: () -> Unit
 ) {
@@ -404,23 +408,15 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // 6. Small Window & Mini Screen Overlay Setting (Only Open Mini Overlay button)
+            // 6. Small Window (Native Android Freeform Multi-Window — zero overlay hack)
             GlassCard(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_small_window_card"),
                 shape = RoundedCornerShape(16.dp),
                 isDarkMode = isDarkMode,
                 elevation = 3.dp,
-                onClick = {
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && !android.provider.Settings.canDrawOverlays(context)) {
-                        val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + context.packageName))
-                        context.startActivity(intent)
-                        android.widget.Toast.makeText(context, "Please enable Overlay Permission for Mini Window", android.widget.Toast.LENGTH_LONG).show()
-                    } else {
-                        val intent = android.content.Intent(context, com.example.ui.util.FloatingWindowService::class.java)
-                        context.startService(intent)
-                        android.widget.Toast.makeText(context, "Mini Window active! Drag header or tap — to minimize.", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                }
+                onClick = onEnterSmallWindowMode
             ) {
                 Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
                     Row(
@@ -433,35 +429,63 @@ fun SettingsScreen(
                                 modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF10B981).copy(alpha = 0.15f)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(androidx.compose.material.icons.Icons.Default.Visibility, null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
+                                Icon(Icons.Default.OpenInNew, null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
                             }
                             Spacer(modifier = Modifier.width(12.dp))
                             Column {
-                                Text("Small Window & Mini Screen", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
-                                Text("Run AU Notes in a floating mini window over Home or any app", fontSize = 11.sp, color = Color(0xFF10B981))
+                                Text("Small Window (Multi-Window)", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                                Text("Native Android Freeform window with system resize, close & expand controls", fontSize = 11.sp, color = Color(0xFF10B981))
                             }
                         }
                         Icon(Icons.Default.ChevronRight, null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     Button(
-                        onClick = {
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && !android.provider.Settings.canDrawOverlays(context)) {
-                                val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + context.packageName))
-                                context.startActivity(intent)
-                                android.widget.Toast.makeText(context, "Enable Overlay Permission first", android.widget.Toast.LENGTH_LONG).show()
-                            } else {
-                                val intent = android.content.Intent(context, com.example.ui.util.FloatingWindowService::class.java)
-                                context.startService(intent)
-                                android.widget.Toast.makeText(context, "Mini Screen Window launched!", android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
+                        onClick = onEnterSmallWindowMode,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_small_window_button"),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
                         shape = RoundedCornerShape(10.dp)
                     ) {
-                        Text("Open Mini Overlay", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Open in Small Window", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // 7. Physical Keyboard Shortcuts Reference
+            GlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_keyboard_shortcuts"),
+                shape = RoundedCornerShape(16.dp),
+                isDarkMode = isDarkMode,
+                elevation = 3.dp,
+                onClick = onOpenKeyboardShortcuts
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF6366F1).copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Keyboard, contentDescription = "Keyboard Shortcuts", tint = Color(0xFF6366F1), modifier = Modifier.size(22.dp))
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text("Keyboard Shortcuts", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                            Text("Physical keyboard navigation, text selection, formatting & scroll guide", fontSize = 11.sp, color = Color(0xFF6366F1))
+                        }
+                    }
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color(0xFF6366F1), modifier = Modifier.size(20.dp))
                 }
             }
 

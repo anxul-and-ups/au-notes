@@ -225,6 +225,17 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
+import androidx.compose.material.icons.filled.Splitscreen
+import androidx.compose.material.icons.filled.OpenInNew
+import com.example.ui.components.PageStyleDialog
+import com.example.ui.components.drawPageRules
+import com.example.ui.components.isLightPageStyle
+import com.example.ui.components.loadNotePageStyle
+import com.example.ui.components.pageLineColor
+import com.example.ui.components.pagePaperColor
+import com.example.ui.components.saveNotePageStyle
+import com.example.ui.util.handleHardwareShortcuts
+
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun NoteEditorScreen(
@@ -234,6 +245,8 @@ fun NoteEditorScreen(
     preferences: AppPreferences,
     onBack: () -> Unit,
     onOpenTableEditor: (initialTableData: String, onResult: (String) -> Unit) -> Unit = { _, _ -> },
+    onOpenInSplitScreen: ((NoteEntity?) -> Unit)? = null,
+    onOpenInSmallWindow: ((NoteEntity?) -> Unit)? = null,
     onSaveNote: (
         id: Long,
         title: String,
@@ -454,7 +467,8 @@ fun NoteEditorScreen(
     val redoStack = remember { mutableStateListOf<EditorHistorySnapshot>() }
 
     fun pushUndo() {
-        if (undoStack.size > 25) undoStack.removeAt(0)
+        val maxKeep = if (contentValue.text.length > 50_000) 6 else 25
+        while (undoStack.size >= maxKeep && undoStack.isNotEmpty()) undoStack.removeAt(0)
         undoStack.add(EditorHistorySnapshot(contentValue.text, spans, attachments.toList()))
         redoStack.clear()
     }
@@ -1031,27 +1045,17 @@ fun NoteEditorScreen(
         listType = if (currentListKind == "check") "none" else currentListKind
     }
 
-    // Page style (standard | ruled | legal | grid | dotted | word_white) + line spacing: remembered PER NOTE
-    // (new notes start with the style you used last).
-    val pagePrefs = remember { context.getSharedPreferences("au_page_styles", android.content.Context.MODE_PRIVATE) }
-    val pageKey = remember(initialNote?.id) { "note_${initialNote?.id ?: 0L}" }
-    var pageStyle by remember {
-        mutableStateOf(
-            pagePrefs.getString(pageKey, null)
-                ?: if ((initialNote?.id ?: 0L) == 0L) (pagePrefs.getString("default", "standard") ?: "standard") else "standard"
-        )
-    }
-    var lineSpacing by remember { mutableStateOf(pagePrefs.getString(pageKey + "_ls", null)?.toFloatOrNull() ?: 1.5f) }
+    // Page style (standard | ruled | legal | grid | dotted | word_white) + line spacing synced with Read Mode & PDF Export
+    val initialStylePair = remember(initialNote?.id) { loadNotePageStyle(context, initialNote?.id ?: 0L, preferences) }
+    var pageStyle by remember { mutableStateOf(initialStylePair.first) }
+    var lineSpacing by remember { mutableStateOf(initialStylePair.second) }
     var showPageSheet by remember { mutableStateOf(false) }
     var showDrawingModal by remember { mutableStateOf(false) }
     // light paper (legal pad / A4 white) always uses dark ink, in day and night mode
-    val lightPaper = pageStyle == "word_white" || pageStyle == "legal"
+    val lightPaper = isLightPageStyle(pageStyle)
 
     // DAY MODE CONTRAST FIX: Default text color in Day mode is dark (Color(0xFF111111))
     val defaultTextColor = if (lightPaper) Color(0xFF111111) else if (isDarkMode) Color.White else Color(0xFF111111)
-    // Base text colour: the note's saved colour, but never one that disappears into the background
-    // (a note saved in day mode with black text used to stay black in dark mode). Colours the user
-    // picked for a selection (spans) are untouched.
     val effectiveTextColor = run {
         val parsed = try { Color(android.graphics.Color.parseColor(selectedColorHex)) } catch (e: Exception) { null }
         when {
@@ -1063,6 +1067,56 @@ fun NoteEditorScreen(
         }
     }
 
+    fun undoEdit() {
+        if (undoStack.isNotEmpty()) {
+            redoStack.add(EditorHistorySnapshot(contentValue.text, spans, attachments.toList()))
+            val last = undoStack.removeAt(undoStack.size - 1)
+            contentValue = TextFieldValue(last.text, selection = TextRange(last.text.length))
+            spans = last.spans
+            attachments = last.attachments
+        }
+    }
+
+    fun redoEdit() {
+        if (redoStack.isNotEmpty()) {
+            undoStack.add(EditorHistorySnapshot(contentValue.text, spans, attachments.toList()))
+            val next = redoStack.removeAt(redoStack.size - 1)
+            contentValue = TextFieldValue(next.text, selection = TextRange(next.text.length))
+            spans = next.spans
+            attachments = next.attachments
+        }
+    }
+
+    fun insertTabIndent() {
+        val cur = contentValue
+        val s = cur.selection.min.coerceIn(0, cur.text.length)
+        val e = cur.selection.max.coerceIn(0, cur.text.length)
+        val newText = cur.text.substring(0, s) + "    " + cur.text.substring(e)
+        pushUndo()
+        spans = RichTextFormatter.adjustSpansForEdit(spans, cur.text, newText)
+        contentValue = TextFieldValue(newText, selection = TextRange((s + 4).coerceAtMost(newText.length)))
+    }
+
+    fun currentSnapshotForWindow(): NoteEntity = NoteEntity(
+        id = currentNoteId,
+        title = title.ifBlank { "Untitled Note" },
+        content = contentValue.text,
+        category = selectedCategory,
+        isBold = isBold,
+        isItalic = isItalic,
+        isUnderline = isUnderline,
+        isStrikethrough = isStrikethrough,
+        isCodeFormat = isCodeFormat,
+        fontSize = fontSize,
+        fontColorHex = selectedColorHex,
+        alignment = alignment,
+        listType = listType,
+        tableData = tableData,
+        styleSpansJson = RichTextFormatter.serializeSpans(spans),
+        attachmentsJson = RichTextFormatter.serializeAttachments(attachments),
+        folder = saveInChoice ?: (initialNote?.folder ?: "All Notes")
+    )
+
     com.example.ui.components.NoteBackground(isDarkMode = isDarkMode) {
         Box(
             modifier = Modifier
@@ -1070,6 +1124,32 @@ fun NoteEditorScreen(
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .imePadding()
+                .handleHardwareShortcuts(
+                    onSave = { performSave(showToast = true, thenNavigateBack = false) },
+                    onUndo = { undoEdit() },
+                    onRedo = { redoEdit() },
+                    onBold = { applyOrToggleBooleanFormat("bold", isBold) { isBold = it } },
+                    onItalic = { applyOrToggleBooleanFormat("italic", isItalic) { isItalic = it } },
+                    onUnderline = { applyOrToggleBooleanFormat("underline", isUnderline) { isUnderline = it } },
+                    onStrike = { applyOrToggleBooleanFormat("strikethrough", isStrikethrough) { isStrikethrough = it } },
+                    onTabIndent = { insertTabIndent() },
+                    onOpenSplitScreen = {
+                        performSave(showToast = false, thenNavigateBack = false)
+                        onOpenInSplitScreen?.invoke(currentSnapshotForWindow())
+                    },
+                    onOpenSmallWindow = {
+                        performSave(showToast = false, thenNavigateBack = false)
+                        onOpenInSmallWindow?.invoke(currentSnapshotForWindow())
+                    },
+                    onEscape = {
+                        when {
+                            showPageSheet -> showPageSheet = false
+                            showFormatSheet -> showFormatSheet = false
+                            showParagraphStyleSheet -> showParagraphStyleSheet = false
+                            else -> performSave(showToast = false, thenNavigateBack = true)
+                        }
+                    }
+                )
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 // Top Navigation Bar
@@ -1114,6 +1194,36 @@ fun NoteEditorScreen(
                             onClick = { titleBarHidden = !titleBarHidden }
                         )
 
+                        if (onOpenInSplitScreen != null) {
+                            NeuIconButton(
+                                icon = Icons.Default.Splitscreen,
+                                contentDescription = "Split Screen",
+                                isDarkMode = isDarkMode,
+                                size = 32.dp,
+                                iconSize = 16.dp,
+                                tint = if (isDarkMode) Color.White else Color.Black,
+                                onClick = {
+                                    performSave(showToast = false, thenNavigateBack = false)
+                                    onOpenInSplitScreen(currentSnapshotForWindow())
+                                }
+                            )
+                        }
+
+                        if (onOpenInSmallWindow != null) {
+                            NeuIconButton(
+                                icon = Icons.Default.OpenInNew,
+                                contentDescription = "Small Window",
+                                isDarkMode = isDarkMode,
+                                size = 32.dp,
+                                iconSize = 16.dp,
+                                tint = if (isDarkMode) Color.White else Color.Black,
+                                onClick = {
+                                    performSave(showToast = false, thenNavigateBack = false)
+                                    onOpenInSmallWindow(currentSnapshotForWindow())
+                                }
+                            )
+                        }
+
                         // Undo
                         NeuIconButton(
                             icon = Icons.AutoMirrored.Filled.Undo,
@@ -1122,15 +1232,7 @@ fun NoteEditorScreen(
                             size = 32.dp,
                             iconSize = 16.dp,
                             tint = if (undoStack.isNotEmpty()) (if (isDarkMode) Color.White else Color.Black) else Color.Gray.copy(0.3f),
-                            onClick = {
-                                if (undoStack.isNotEmpty()) {
-                                    redoStack.add(EditorHistorySnapshot(contentValue.text, spans, attachments.toList()))
-                                    val last = undoStack.removeAt(undoStack.size - 1)
-                                    contentValue = TextFieldValue(last.text, selection = TextRange(last.text.length))
-                                    spans = last.spans
-                                    attachments = last.attachments
-                                }
-                            }
+                            onClick = { undoEdit() }
                         )
 
                         // Redo
@@ -1141,15 +1243,7 @@ fun NoteEditorScreen(
                             size = 32.dp,
                             iconSize = 16.dp,
                             tint = if (redoStack.isNotEmpty()) (if (isDarkMode) Color.White else Color.Black) else Color.Gray.copy(0.3f),
-                            onClick = {
-                                if (redoStack.isNotEmpty()) {
-                                    undoStack.add(EditorHistorySnapshot(contentValue.text, spans, attachments.toList()))
-                                    val next = redoStack.removeAt(redoStack.size - 1)
-                                    contentValue = TextFieldValue(next.text, selection = TextRange(next.text.length))
-                                    spans = next.spans
-                                    attachments = next.attachments
-                                }
-                            }
+                            onClick = { redoEdit() }
                         )
 
                         // Save Button
@@ -1559,6 +1653,10 @@ fun NoteEditorScreen(
                     val editorVisualTransformation = remember(spans, isJsonMode, effectiveTextColor, fontSize, isDarkMode) {
                         VisualTransformation { text ->
                             val raw = text.text
+                            // Performance guard: huge pastes (>25k chars) skip heavy multi-regex syntax loops so typing/pasting stays instant
+                            if (raw.length > 25_000) {
+                                return@VisualTransformation TransformedText(AnnotatedString(raw), OffsetMapping.Identity)
+                            }
                             val baseStyled = if (isJsonMode) {
                                 buildJsonHighlightedText(raw)
                             } else {
@@ -1572,12 +1670,14 @@ fun NoteEditorScreen(
                             val finalStyled = androidx.compose.ui.text.buildAnnotatedString {
                                 append(baseStyled)
                                 // Completely hide [img:id] markers so they never show behind the image
-                                val imgMarkerRegex = Regex("(?m)^\\[img:([A-Za-z0-9]{4,32})]$")
-                                for (m in imgMarkerRegex.findAll(raw)) {
-                                    val start = m.range.first.coerceIn(0, raw.length)
-                                    val end = (m.range.last + 1).coerceIn(start, raw.length)
-                                    if (start < end) {
-                                        addStyle(SpanStyle(color = Color.Transparent, fontSize = 0.sp), start, end)
+                                if (raw.contains("[img:")) {
+                                    val imgMarkerRegex = Regex("(?m)^\\[img:([A-Za-z0-9]{4,32})]$")
+                                    for (m in imgMarkerRegex.findAll(raw)) {
+                                        val start = m.range.first.coerceIn(0, raw.length)
+                                        val end = (m.range.last + 1).coerceIn(start, raw.length)
+                                        if (start < end) {
+                                            addStyle(SpanStyle(color = Color.Transparent, fontSize = 0.sp), start, end)
+                                        }
                                     }
                                 }
                                 if (raw.contains("```")) {
@@ -1602,15 +1702,17 @@ fun NoteEditorScreen(
                                                 cStart,
                                                 cEnd
                                             )
-                                            try {
-                                                SyntaxHighlighter.tokens(f.code, f.lang, isDarkMode).forEach { tok ->
-                                                    val tokStart = (cStart + tok.start).coerceIn(cStart, cEnd)
-                                                    val tokEnd = (cStart + tok.end).coerceIn(tokStart, cEnd)
-                                                    if (tokStart < tokEnd) {
-                                                        addStyle(SpanStyle(color = tok.color), tokStart, tokEnd)
+                                            if (f.code.length <= 8000) {
+                                                try {
+                                                    SyntaxHighlighter.tokens(f.code, f.lang, isDarkMode).forEach { tok ->
+                                                        val tokStart = (cStart + tok.start).coerceIn(cStart, cEnd)
+                                                        val tokEnd = (cStart + tok.end).coerceIn(tokStart, cEnd)
+                                                        if (tokStart < tokEnd) {
+                                                            addStyle(SpanStyle(color = tok.color), tokStart, tokEnd)
+                                                        }
                                                     }
-                                                }
-                                            } catch (_: Exception) {}
+                                                } catch (_: Exception) {}
+                                            }
                                         }
                                         val closeStart = (f.end - 3).coerceIn(0, raw.length)
                                         val closeEnd = f.end.coerceIn(closeStart, raw.length)
@@ -2884,11 +2986,11 @@ Row(
             isDarkMode = isDarkMode,
             onPick = { id ->
                 pageStyle = id
-                pagePrefs.edit().putString(pageKey, id).putString("default", id).apply()
+                saveNotePageStyle(context, currentNoteId, id, lineSpacing, preferences)
             },
             onSpacing = { v ->
                 lineSpacing = v
-                pagePrefs.edit().putString(pageKey + "_ls", v.toString()).apply()
+                saveNotePageStyle(context, currentNoteId, pageStyle, v, preferences)
             },
             onDismiss = { showPageSheet = false }
         )
@@ -3324,182 +3426,3 @@ private fun decorateCodeFences(vararg args: Any?): androidx.compose.ui.text.Anno
     return androidx.compose.ui.text.AnnotatedString("")
 }
 
-
-// ======================================================================================
-// PAGE STYLES (paper colours, rules and the style picker)
-// ======================================================================================
-
-private data class PageStyleOption(val id: String, val label: String, val hint: String)
-
-private val PAGE_STYLE_OPTIONS = listOf(
-    PageStyleOption("standard", "Plain", "Default screen"),
-    PageStyleOption("ruled", "Ruled", "Notebook lines + margin"),
-    PageStyleOption("legal", "Legal pad", "Yellow paper"),
-    PageStyleOption("grid", "Grid", "Graph paper"),
-    PageStyleOption("dotted", "Dotted", "Bullet journal"),
-    PageStyleOption("word_white", "A4 page", "White Word-style page")
-)
-
-internal fun pagePaperColor(style: String, dark: Boolean): Color? = when (style) {
-    "ruled", "grid", "dotted" -> if (dark) Color(0xFF1C1C23) else Color(0xFFFFFDF6)
-    "legal" -> Color(0xFFFFF3AE)
-    "word_white" -> Color.White
-    else -> null
-}
-
-internal fun pageLineColor(style: String, dark: Boolean): Color = when (style) {
-    "legal" -> Color(0xFFC9A22E).copy(alpha = 0.55f)
-    "grid", "dotted" -> if (dark) Color(0x33FFFFFF) else Color(0x4460A5FA)
-    else -> if (dark) Color(0x30FFFFFF) else Color(0x5560A5FA)
-}
-
-internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPageRules(
-    style: String, ys: List<Float>, step: Float, x0: Float, x1: Float, top: Float, bottom: Float, color: Color, stroke: Float
-) {
-    when (style) {
-        "ruled", "legal" -> ys.forEach { y ->
-            drawLine(color, androidx.compose.ui.geometry.Offset(x0, y), androidx.compose.ui.geometry.Offset(x1, y), stroke)
-        }
-        "grid" -> {
-            ys.forEach { y -> drawLine(color, androidx.compose.ui.geometry.Offset(x0, y), androidx.compose.ui.geometry.Offset(x1, y), stroke) }
-            var x = 0f
-            while (x <= x1) {
-                drawLine(color, androidx.compose.ui.geometry.Offset(x, top), androidx.compose.ui.geometry.Offset(x, bottom), stroke)
-                x += step
-            }
-        }
-        "dotted" -> ys.forEach { y ->
-            var x = 0f
-            while (x < x1) {
-                drawCircle(color.copy(alpha = (color.alpha * 2.2f).coerceAtMost(0.9f)), stroke * 1.2f, androidx.compose.ui.geometry.Offset(x, y))
-                x += step
-            }
-        }
-    }
-}
-
-@Composable
-private fun PageThumb(style: String, dark: Boolean) {
-    val paper = pagePaperColor(style, dark) ?: if (dark) Color(0xFF101015) else Color(0xFFF1F1F4)
-    val line = pageLineColor(style, dark)
-    val ink = if (style == "word_white" || style == "legal") Color(0xFF111111) else if (dark) Color.White else Color(0xFF111111)
-    androidx.compose.foundation.Canvas(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(84.dp)
-            .clip(RoundedCornerShape(10.dp))
-    ) {
-        drawRect(paper)
-        val step = 13.dp.toPx()
-        val ys = ArrayList<Float>()
-        var y = 20.dp.toPx()
-        while (y < size.height) { ys.add(y); y += step }
-        drawPageRules(style, ys, step, 0f, size.width, 0f, size.height, line, 1.dp.toPx())
-        if (style == "ruled" || style == "legal") {
-            val mx = 16.dp.toPx()
-            drawLine(Color(0xFFEF4444).copy(alpha = 0.6f), androidx.compose.ui.geometry.Offset(mx, 0f), androidx.compose.ui.geometry.Offset(mx, size.height), 1.dp.toPx())
-        }
-        // little "text" strokes sitting on the rules
-        val startX = if (style == "ruled" || style == "legal") 22.dp.toPx() else 10.dp.toPx()
-        val widths = listOf(0.82f, 0.64f, 0.74f)
-        widths.forEachIndexed { i, wf ->
-            val yy = if (ys.size > i) ys[i] - 5.dp.toPx() else 20.dp.toPx() + i * step - 5.dp.toPx()
-            drawRoundRect(
-                ink.copy(alpha = 0.55f),
-                topLeft = androidx.compose.ui.geometry.Offset(startX, yy),
-                size = androidx.compose.ui.geometry.Size((size.width - startX - 10.dp.toPx()) * wf, 3.dp.toPx()),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f, 2f)
-            )
-        }
-    }
-}
-
-@Composable
-private fun PageStyleDialog(
-    current: String,
-    lineSpacing: Float,
-    isDarkMode: Boolean,
-    onPick: (String) -> Unit,
-    onSpacing: (Float) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val sheetBg = if (isDarkMode) Color(0xFF1B1B21) else Color.White
-    val fg = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B)
-    val border = if (isDarkMode) Color(0xFF34343E) else Color(0xFFE4E4E7)
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth(0.94f)
-                .clip(RoundedCornerShape(22.dp))
-                .background(sheetBg)
-                .border(1.dp, border, RoundedCornerShape(22.dp))
-                .padding(16.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AutoStories, null, tint = CrimsonPrimary, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.width(8.dp))
-                Column {
-                    Text("Page style", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = fg)
-                    Text("Pick the paper your note is written on", fontSize = 12.sp, color = fg.copy(alpha = 0.6f))
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-            PAGE_STYLE_OPTIONS.chunked(2).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    row.forEach { opt ->
-                        val selected = opt.id == current
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(14.dp))
-                                .border(if (selected) 2.dp else 1.dp, if (selected) CrimsonPrimary else border, RoundedCornerShape(14.dp))
-                                .clickable { onPick(opt.id) }
-                                .padding(6.dp)
-                        ) {
-                            PageThumb(opt.id, isDarkMode)
-                            Spacer(Modifier.height(6.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(opt.label, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (selected) CrimsonPrimary else fg, modifier = Modifier.weight(1f))
-                                if (selected) Icon(Icons.Default.Check, null, tint = CrimsonPrimary, modifier = Modifier.size(15.dp))
-                            }
-                            Text(opt.hint, fontSize = 10.5.sp, color = fg.copy(alpha = 0.55f), maxLines = 1)
-                        }
-                    }
-                    if (row.size == 1) Spacer(Modifier.weight(1f))
-                }
-                Spacer(Modifier.height(10.dp))
-            }
-            Text("Line spacing", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = fg.copy(alpha = 0.75f))
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                listOf("Compact" to 1.3f, "Normal" to 1.5f, "Wide" to 1.85f).forEach { (label, v) ->
-                    val on = kotlin.math.abs(lineSpacing - v) < 0.05f
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(36.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (on) CrimsonPrimary.copy(alpha = 0.16f) else fg.copy(alpha = 0.06f))
-                            .border(1.dp, if (on) CrimsonPrimary else Color.Transparent, RoundedCornerShape(10.dp))
-                            .clickable { onSpacing(v) },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (on) CrimsonPrimary else fg)
-                    }
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(CrimsonPrimary)
-                    .clickable { onDismiss() },
-                contentAlignment = Alignment.Center
-            ) {
-                Text("Done", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            }
-        }
-    }
-}

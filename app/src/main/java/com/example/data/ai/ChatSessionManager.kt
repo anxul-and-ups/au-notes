@@ -23,7 +23,11 @@ class ChatSessionManager(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("au_ai_chat_sessions", Context.MODE_PRIVATE)
 
-    fun loadAllSessions(): List<ChatSession> {
+    companion object {
+        private val ioLock = Any()
+    }
+
+    fun loadAllSessions(): List<ChatSession> = synchronized(ioLock) {
         val raw = prefs.getString("sessions_json", null) ?: return emptyList()
         return try {
             val array = JSONArray(raw)
@@ -76,7 +80,7 @@ class ChatSessionManager(context: Context) {
         }
     }
 
-    fun saveSession(session: ChatSession) {
+    fun saveSession(session: ChatSession) = synchronized(ioLock) {
         val existing = loadAllSessions().toMutableList()
         val index = existing.indexOfFirst { it.id == session.id }
         if (index >= 0) {
@@ -87,12 +91,12 @@ class ChatSessionManager(context: Context) {
         persistSessions(existing.take(30))
     }
 
-    fun deleteSession(sessionId: String) {
+    fun deleteSession(sessionId: String) = synchronized(ioLock) {
         val existing = loadAllSessions().filter { it.id != sessionId }
         persistSessions(existing)
     }
 
-    fun renameSession(sessionId: String, newTitle: String) {
+    fun renameSession(sessionId: String, newTitle: String) = synchronized(ioLock) {
         val clean = newTitle.trim()
         if (clean.isBlank()) return
         val existing = loadAllSessions().map {
@@ -101,7 +105,11 @@ class ChatSessionManager(context: Context) {
         persistSessions(existing)
     }
 
-    fun clearAllSessions() {
+    fun replaceAllSessions(sessions: List<ChatSession>) = synchronized(ioLock) {
+        persistSessions(sessions)
+    }
+
+    fun clearAllSessions() = synchronized(ioLock) {
         prefs.edit().remove("sessions_json").apply()
     }
 

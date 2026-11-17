@@ -475,7 +475,7 @@ object ArtifactBuilder {
      * Converts ```json:apex and ```mermaid blocks inside HTML into secure <div> containers
      * and injects local offline ApexCharts & Mermaid.js scripts with custom toolbars and error boundaries.
      */
-    fun harden(html: String, isDarkMode: Boolean = false): String {
+    fun harden(html: String, isDarkMode: Boolean = false, desktopMode: Boolean = false): String {
         var h = html
         var counter = 1
 
@@ -492,11 +492,25 @@ object ArtifactBuilder {
             buildMermaidContainerHtml(counter++, m.groupValues[1])
         }
 
+        if (desktopMode) {
+            val viewportMetaRegex = Regex("<meta[^>]+name\\s*=\\s*[\"']viewport[\"'][^>]*>", RegexOption.IGNORE_CASE)
+            val desktopViewport = "<meta name=\"viewport\" content=\"width=1280, initial-scale=0.35, minimum-scale=0.15, maximum-scale=5.0, user-scalable=yes\">"
+            h = if (viewportMetaRegex.containsMatchIn(h)) {
+                viewportMetaRegex.replaceFirst(h, desktopViewport)
+            } else {
+                h
+            }
+        }
+
         if (h.contains("<!--au-viz-->")) return h
         val head = Regex("<head[^>]*>", RegexOption.IGNORE_CASE).find(h)
         val extra = StringBuilder("<!--au-viz-->")
         if (!Regex("name\\s*=\\s*[\"']viewport[\"']", RegexOption.IGNORE_CASE).containsMatchIn(h)) {
-            extra.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">")
+            if (desktopMode) {
+                extra.append("<meta name=\"viewport\" content=\"width=1280, initial-scale=0.35, minimum-scale=0.15, maximum-scale=5.0, user-scalable=yes\">")
+            } else {
+                extra.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">")
+            }
         }
         extra.append(
             """

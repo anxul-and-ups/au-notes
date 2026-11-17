@@ -71,9 +71,11 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Splitscreen
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -151,6 +153,7 @@ fun MainWorkspaceScreen(
     onToggleDarkMode: () -> Unit,
     onOpenSidebar: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenSplitScreen: () -> Unit = {},
     onOpenAiChat: () -> Unit,
     onOpenNote: (NoteEntity) -> Unit,
     onCreateNote: () -> Unit,
@@ -475,15 +478,28 @@ fun MainWorkspaceScreen(
                                 Icon(Icons.Default.Close, contentDescription = "Cancel selection", tint = if (isDarkMode) Color.White else Color.DarkGray)
                             }
                         } else {
-                            NeuIconButton(
-                                painter = painterResource(R.drawable.ic_settings_gear),
-                                contentDescription = "Settings",
-                                isDarkMode = isDarkMode,
-                                size = 34.dp,
-                                iconSize = 17.dp,
-                                tint = CrimsonPrimary,
-                                onClick = onOpenSettings
-                            )
+                            Box(modifier = Modifier.testTag("open_split_screen_button")) {
+                                NeuIconButton(
+                                    icon = Icons.Default.Splitscreen,
+                                    contentDescription = "Split Screen (Two Notes)",
+                                    isDarkMode = isDarkMode,
+                                    size = 34.dp,
+                                    iconSize = 17.dp,
+                                    tint = CrimsonPrimary,
+                                    onClick = onOpenSplitScreen
+                                )
+                            }
+                            Box(modifier = Modifier.testTag("open_settings_button")) {
+                                NeuIconButton(
+                                    painter = painterResource(R.drawable.ic_settings_gear),
+                                    contentDescription = "Settings",
+                                    isDarkMode = isDarkMode,
+                                    size = 34.dp,
+                                    iconSize = 17.dp,
+                                    tint = CrimsonPrimary,
+                                    onClick = onOpenSettings
+                                )
+                            }
                         }
                     }
                 }

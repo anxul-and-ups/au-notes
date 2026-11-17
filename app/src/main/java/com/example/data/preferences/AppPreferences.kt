@@ -544,6 +544,30 @@ class AppPreferences(context: Context) {
         prefs.edit().putString("note_typing_sessions_$noteId", updated.joinToString(";;")).apply()
     }
 
+    private val _notePageStyles = MutableStateFlow(
+        (prefs.getString("note_page_styles", "") ?: "").split(",").mapNotNull {
+            val p = it.split(":")
+            if (p.size == 2) (p[0].toLongOrNull() ?: return@mapNotNull null) to p[1] else null
+        }.toMap()
+    )
+    val notePageStyles: StateFlow<Map<Long, String>> = _notePageStyles.asStateFlow()
+
+    fun getNotePageStyle(noteId: Long): String {
+        if (noteId <= 0L) return "standard"
+        return _notePageStyles.value[noteId] ?: "standard"
+    }
+
+    fun setNotePageStyle(noteId: Long, style: String) {
+        if (noteId <= 0L) return
+        val clean = when (style) {
+            "ruled", "legal", "grid", "dotted", "word_white" -> style
+            else -> "standard"
+        }
+        val updated = _notePageStyles.value + (noteId to clean)
+        _notePageStyles.value = updated
+        prefs.edit().putString("note_page_styles", updated.entries.joinToString(",") { "${it.key}:${it.value}" }).apply()
+    }
+
     // ---- AU Agent: user's name (asked on first open) + which tools the agent may use ----
     private val _agentUserName = MutableStateFlow(prefs.getString("agent_user_name", "") ?: "")
     val agentUserName: StateFlow<String> = _agentUserName.asStateFlow()

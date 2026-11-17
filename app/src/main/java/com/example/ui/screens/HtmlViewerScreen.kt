@@ -220,8 +220,11 @@ fun HtmlViewerScreen(
         }
     }
 
+    var desktopMode by remember { mutableStateOf(true) }
+    var docLoading by remember { mutableStateOf(false) }
+
     Surface(modifier = Modifier.fillMaxSize(), color = bgPrimary) {
-        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             if (!isFullScreen) {
                 // Clean, focused Top Bar: Back, Title, Import from Notes, Import from File, Code/Preview toggle, Fullscreen
                 Row(
@@ -389,20 +392,39 @@ fun HtmlViewerScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (desktopMode) accent.copy(alpha = 0.16f) else bgCard)
+                                .border(1.dp, if (desktopMode) accent else borderCol, RoundedCornerShape(6.dp))
+                                .clickable { desktopMode = !desktopMode }
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                text = if (desktopMode) "Desktop" else "Mobile",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (desktopMode) accent else textSecondary
+                            )
+                        }
                         Text(
                             text = "Reload",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = accent,
                             modifier = Modifier.clickable {
-                                val fullDoc = ArtifactBuilder.harden(ensureValidHtmlDocument(htmlCode), isDarkMode)
-                                webViewRef?.loadDataWithBaseURL(
-                                    "file:///android_asset/",
-                                    fullDoc,
-                                    "text/html",
-                                    "UTF-8",
-                                    null
-                                )
+                                scope.launch {
+                                    val fullDoc = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                        ArtifactBuilder.harden(ensureValidHtmlDocument(htmlCode), isDarkMode, desktopMode = desktopMode)
+                                    }
+                                    webViewRef?.loadDataWithBaseURL(
+                                        "file:///android_asset/",
+                                        fullDoc,
+                                        "text/html",
+                                        "UTF-8",
+                                        null
+                                    )
+                                }
                             }
                         )
                         Text(
@@ -495,52 +517,74 @@ fun HtmlViewerScreen(
                         )
                     }
                 } else {
-                    val fullDoc = remember(htmlCode, isDarkMode) {
-                        ArtifactBuilder.harden(ensureValidHtmlDocument(htmlCode), isDarkMode)
+                    val preparedDoc by produceState<String?>(initialValue = null, htmlCode, isDarkMode, desktopMode) {
+                        docLoading = true
+                        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                            ArtifactBuilder.harden(ensureValidHtmlDocument(htmlCode), isDarkMode, desktopMode = desktopMode)
+                        }
+                        docLoading = false
                     }
-                    AndroidView(
-                        modifier = Modifier.fillMaxSize(),
-                        factory = { ctx ->
-                            WebView(ctx).apply {
-                                layoutParams = ViewGroup.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ViewGroup.LayoutParams.MATCH_PARENT
-                                )
-                                settings.apply {
-                                    javaScriptEnabled = true
-                                    domStorageEnabled = true
-                                    databaseEnabled = true
-                                    allowFileAccess = true
-                                    allowContentAccess = true
-                                    loadWithOverviewMode = true
-                                    useWideViewPort = true
-                                    builtInZoomControls = true
-                                    displayZoomControls = false
-                                    setSupportZoom(true)
-                                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                    textZoom = zoomPercent
-                                }
-                                webChromeClient = object : WebChromeClient() {
-                                    override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean = true
-                                }
-                                webViewClient = object : WebViewClient() {
-                                    override fun shouldOverrideUrlLoading(
-                                        view: WebView?,
-                                        request: WebResourceRequest?
-                                    ): Boolean = false
-                                }
-                                webViewRef = this
-                                tag = fullDoc
-                                loadDataWithBaseURL("file:///android_asset/", fullDoc, "text/html", "UTF-8", null)
-                            }
-                        },
-                        update = { wv ->
-                            if (wv.tag != fullDoc) {
-                                wv.tag = fullDoc
-                                wv.loadDataWithBaseURL("file:///android_asset/", fullDoc, "text/html", "UTF-8", null)
+                    val fullDoc = preparedDoc
+                    if (fullDoc == null) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                CircularProgressIndicator(color = accent, modifier = Modifier.size(28.dp))
+                                Text("Preparing HTML view…", fontSize = 12.sp, color = textSecondary)
                             }
                         }
-                    )
+                    } else {
+                        AndroidView(
+                            modifier = Modifier.fillMaxSize(),
+                            factory = { ctx ->
+                                WebView(ctx).apply {
+                                    layoutParams = ViewGroup.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
+                                    settings.apply {
+                                        javaScriptEnabled = true
+                                        domStorageEnabled = true
+                                        databaseEnabled = true
+                                        allowFileAccess = true
+                                        allowContentAccess = true
+                                        @Suppress("DEPRECATION")
+                                        allowFileAccessFromFileURLs = true
+                                        @Suppress("DEPRECATION")
+                                        allowUniversalAccessFromFileURLs = true
+                                        loadWithOverviewMode = true
+                                        useWideViewPort = true
+                                        builtInZoomControls = true
+                                        displayZoomControls = false
+                                        setSupportZoom(true)
+                                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                        textZoom = zoomPercent
+                                        if (desktopMode) {
+                                            userAgentString = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                                        }
+                                    }
+                                    webChromeClient = object : WebChromeClient() {
+                                        override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean = true
+                                    }
+                                    webViewClient = object : WebViewClient() {
+                                        override fun shouldOverrideUrlLoading(
+                                            view: WebView?,
+                                            request: WebResourceRequest?
+                                        ): Boolean = false
+                                    }
+                                    webViewRef = this
+                                    tag = fullDoc
+                                    loadDataWithBaseURL("file:///android_asset/", fullDoc, "text/html", "UTF-8", null)
+                                }
+                            },
+                            update = { wv ->
+                                wv.settings.textZoom = zoomPercent
+                                if (wv.tag != fullDoc) {
+                                    wv.tag = fullDoc
+                                    wv.loadDataWithBaseURL("file:///android_asset/", fullDoc, "text/html", "UTF-8", null)
+                                }
+                            }
+                        )
+                    }
 
                     if (isFullScreen) {
                         IconButton(

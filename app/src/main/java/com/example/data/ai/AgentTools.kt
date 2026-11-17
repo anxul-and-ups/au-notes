@@ -86,6 +86,18 @@ object AgentTools {
             )
         ),
         AgentTool(
+            id = "save_attached_file_to_note",
+            group = "Notes",
+            label = "Save attached file/note verbatim to Note",
+            description = "Directly save the full, unmodified text of the currently attached document, code file, or long text snippet into a new or existing note WITHOUT summarizing or truncating it.",
+            params = listOf(
+                AgentTool.Param("title", "STRING", "Title for the saved note (defaults to attached filename)", required = false),
+                AgentTool.Param("category", "STRING", "Code, General, Personal, API, or Media", required = false),
+                AgentTool.Param("folder", "STRING", "Target folder name (default All Notes or Code)", required = false),
+                AgentTool.Param("note_id", "INTEGER", "Optional existing note_id to overwrite/append instead of creating new", required = false)
+            )
+        ),
+        AgentTool(
             id = "create_note",
             group = "Notes",
             label = "Create a new note",
@@ -567,14 +579,16 @@ object AgentTools {
             1. Fact Verification:
                - NEVER fabricate benchmark numbers, parameter counts, or release dates.
                - When `SEARCH` mode is ON or `web_search` tool is enabled, search the web for the exact topic to gather real, up-to-date facts, dates, statistics, and official sources before answering or writing notes/PDFs.
-            2. DETAILED NOTES & PDF GENERATION (NO LENGTH OR DATA LIMITS):
-               - Whenever the user asks for detailed notes, an in-depth study guide, a report, or a PDF on any topic (`create_note`, `edit_note`, `edit_current_note`, or `create_pdf_document`), you MUST first call `web_search` (if enabled) to gather comprehensive facts, and then write an **exhaustive, long-form, deeply detailed document** with:
-                 • Multiple structured `#`, `##`, and `###` sections covering every aspect of the topic in depth
-                 • Complete explanations, historical context, key statistics, real-world examples, and step-by-step breakdowns
-                 • Markdown comparison tables (`| Col 1 | Col 2 |`) and key definitions wrapped in `==highlight==`
-               - NEVER cut short, summarize briefly, or omit details when creating notes or PDFs. Write as much thorough, well-organized detail as the topic deserves.
+            2. FULL CODING ABILITY, LONG-FORM ANSWERS & ZERO TRUNCATION:
+               - Use 100% of your engineering, analytical, and writing capability! NEVER give superficial 3-4 line summaries when the user asks for an explanation, comparison, architecture, code implementation, HTML dashboard, or slide deck.
+               - When writing code or HTML artifacts (`create_html_page`), build complete, production-quality, rich, interactive, multi-section pages with thorough CSS, clean responsive grids, real JS interactivity, and embedded `<div class="au-apex-mount">` / ` ```json:apex ` charts or ` ```mermaid ` diagrams where appropriate. Never leave `// TODO` or `...` placeholders!
+               - When generating Slide Decks (`create_html_slides` or `create_slide_deck`), include AT LEAST 6-10 rich, information-dense slides covering overview, stats, timelines, comparisons, charts/diagrams, and takeaways — never tiny 2-slide stubs unless explicitly requested.
+               - When the user asks to save an attached file or large pasted text to a note AS-IS / verbatim, call `save_attached_file_to_note` so not a single character is lost!
+               - Whenever the user asks for detailed notes, an in-depth study guide, a report, or a PDF on any topic (`create_note`, `edit_note`, `edit_current_note`, or `create_pdf_document`), write an **exhaustive, long-form, deeply detailed document** with multiple structured `#`, `##`, `###` sections, complete explanations, historical context, key statistics, real-world examples, Markdown comparison tables (`| Col 1 | Col 2 |`), and `==highlight==` takeaways. NEVER cut short or omit details.
             3. SLIDES IN INTERACTIVE SLIDING HTML ARTIFACT STYLE:
                - Whenever the user asks for slides or a presentation, call `create_html_slides` (or `create_slide_deck` if they ask for editorial typography slides).
+            4. REAL CHARTS & DIAGRAMS:
+               - Only create charts from real data in the prompt, attached documents/notes, or verified sources. If the user asks to plot data from a document that has no numeric values, explain clearly instead of inventing placeholder Q1-Q4 numbers.
             """.trimIndent()
         ).append("\n")
 
@@ -690,7 +704,15 @@ object AgentTools {
             Regex("\"name\"\\s*:\\s*\"[A-Za-z0-9_]+\"").containsMatchIn(body)
     }
 
-    private val SALVAGE_TOOLS = setOf("create_html_slides", "create_slide_deck", "add_chart", "update_chart")
+    private val SALVAGE_TOOLS = setOf(
+        "create_html_slides", "create_slide_deck", "add_chart", "update_chart",
+        "create_note", "edit_note", "edit_current_note", "create_html_page", "create_pdf_document"
+    )
+
+    private fun extractStringField(body: String, key: String): String? {
+        val m = Regex("\"$key\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)(?:\"|$)").find(body) ?: return null
+        return unescapeJson(m.groupValues[1])
+    }
 
     private fun salvage(reply: String): ParsedToolCall? {
         val start = reply.indexOf("<tool_call>")
@@ -698,15 +720,27 @@ object AgentTools {
         val name = Regex("\"name\"\\s*:\\s*\"([A-Za-z0-9_]+)\"").find(body)?.groupValues?.get(1) ?: return null
         if (name !in SALVAGE_TOOLS) return null
         val args = JSONObject()
-        for (k in listOf("title", "theme", "accent_color", "type", "chart_type", "unit", "subtitle")) {
-            Regex("\"$k\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(body)?.groupValues?.get(1)?.let { v -> args.put(k, unescapeJson(v)) }
+        for (k in listOf("title", "theme", "accent_color", "type", "chart_type", "unit", "subtitle", "category", "folder", "mode")) {
+            extractStringField(body, k)?.let { v -> if (v.isNotEmpty()) args.put(k, v) }
         }
+        Regex("\"note_id\"\\s*:\\s*(\\d+)").find(body)?.groupValues?.get(1)?.toLongOrNull()?.let { args.put("note_id", it) }
+
+        if (name in setOf("create_note", "edit_note", "edit_current_note", "create_html_page", "create_pdf_document")) {
+            val fieldKey = when (name) {
+                "create_html_page" -> "html_code"
+                "edit_note", "edit_current_note" -> "new_content"
+                else -> "content"
+            }
+            val salvagedBody = extractStringField(body, fieldKey)?.takeIf { it.isNotBlank() } ?: return null
+            args.put(fieldKey, salvagedBody)
+            return ParsedToolCall(name = name, args = args, textBefore = if (start > 0) reply.substring(0, start).trim() else "")
+        }
+
         val key = listOf("slides_json", "slides", "items", "data").firstOrNull { body.contains("\"$it\"") } ?: return null
         var i = body.indexOf("\"$key\"") + key.length + 2
         while (i < body.length && (body[i] == ':' || body[i].isWhitespace())) i++
         if (i >= body.length) return null
         val payload: String = if (body[i] == '"') {
-            // the model wrote the JSON as an escaped string: read to the closing quote, then unescape it
             val sb = StringBuilder()
             var j = i + 1
             while (j < body.length) {

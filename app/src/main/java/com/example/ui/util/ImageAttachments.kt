@@ -10,7 +10,7 @@ import java.io.File
 
 /** Inline image lines: a note line that is exactly "[img:<id>]" holds the image at that spot. */
 object ImageMarkers {
-    private val lineRegex = Regex("^\\[img:([A-Za-z0-9]{4,32})]$")
+    private val lineRegex = Regex("^\\[img:([A-Za-z0-9_-]{3,48})]$")
 
     fun marker(id: String) = "[img:$id]"
 
@@ -57,33 +57,57 @@ object AttachmentRenderer {
         return (targetH / (widthDp * aspect)).coerceIn(0.28f, 0.9f)
     }
 
+    private fun openImageBytes(path: String, context: android.content.Context?): ByteArray? = try {
+        when {
+            path.startsWith("data:image/", ignoreCase = true) -> {
+                val b64 = path.substringAfter("base64,", "")
+                if (b64.isNotBlank()) android.util.Base64.decode(b64, android.util.Base64.DEFAULT) else null
+            }
+            path.startsWith("content://") && context != null -> {
+                context.contentResolver.openInputStream(android.net.Uri.parse(path))?.use { it.readBytes() }
+            }
+            path.startsWith("file://") -> {
+                val raw = android.net.Uri.parse(path).path ?: path.removePrefix("file://")
+                val f = File(raw)
+                if (f.exists()) f.readBytes() else context?.contentResolver?.openInputStream(android.net.Uri.parse(path))?.use { it.readBytes() }
+            }
+            else -> null
+        }
+    } catch (_: Exception) { null }
+
     /** Source pixel size (cached). Falls back to reading just the bitmap header. */
-    fun sourceSize(att: AttachmentInfo): Pair<Int, Int> {
+    fun sourceSize(att: AttachmentInfo, context: android.content.Context? = null): Pair<Int, Int> {
         if (att.srcWidth > 0 && att.srcHeight > 0) return att.srcWidth to att.srcHeight
         dimCache[att.uri]?.let { return it }
         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        try { BitmapFactory.decodeFile(att.uri, o) } catch (_: Exception) {}
+        try {
+            val bytes = openImageBytes(att.uri, context)
+            if (bytes != null) {
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, o)
+            } else {
+                BitmapFactory.decodeFile(att.uri, o)
+            }
+        } catch (_: Exception) {}
         val r = (o.outWidth.coerceAtLeast(1)) to (o.outHeight.coerceAtLeast(1))
-        dimCache[att.uri] = r
+        if (o.outWidth > 0) dimCache[att.uri] = r
         return r
     }
 
-    /** Aspect ratio (width / height) of the frame after rotation and crop. */
     /** A4 portrait: the frame of an image that has its own page. */
     const val FULL_PAGE_ASPECT = 210f / 297f
 
     /** Aspect of the rotated + cropped picture itself (not of its frame). */
-    fun pictureAspect(att: AttachmentInfo): Float {
-        var (w, h) = sourceSize(att)
+    fun pictureAspect(att: AttachmentInfo, context: android.content.Context? = null): Float {
+        var (w, h) = sourceSize(att, context)
         if (att.rotation == 90 || att.rotation == 270) { val t = w; w = h; h = t }
         val cw = w * (1f - att.cropLeft - att.cropRight).coerceAtLeast(0.1f)
         val ch = h * (1f - att.cropTop - att.cropBottom).coerceAtLeast(0.1f)
         return cw / ch
     }
 
-    fun frameAspect(att: AttachmentInfo): Float {
+    fun frameAspect(att: AttachmentInfo, context: android.content.Context? = null): Float {
         if (att.fullPage) return FULL_PAGE_ASPECT
-        var (w, h) = sourceSize(att)
+        var (w, h) = sourceSize(att, context)
         if (att.rotation == 90 || att.rotation == 270) { val t = w; w = h; h = t }
         val cw = w * (1f - att.cropLeft - att.cropRight).coerceAtLeast(0.1f)
         val ch = h * (1f - att.cropTop - att.cropBottom).coerceAtLeast(0.1f)
@@ -91,21 +115,34 @@ object AttachmentRenderer {
     }
 
     /** Height in px of the frame when drawn [widthPx] wide. */
-    fun frameHeightPx(att: AttachmentInfo, widthPx: Float): Float = widthPx / frameAspect(att)
+    fun frameHeightPx(att: AttachmentInfo, widthPx: Float, context: android.content.Context? = null): Float =
+        widthPx / frameAspect(att, context)
 
-    private fun decode(path: String, maxSide: Int): Bitmap? = try {
-        val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(path, b)
-        if (b.outWidth <= 0) null else {
-            var sample = 1
-            while (maxOf(b.outWidth, b.outHeight) / sample > maxSide * 2) sample *= 2
-            BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+    fun decode(path: String, maxSide: Int, context: android.content.Context? = null): Bitmap? = try {
+        val bytes = openImageBytes(path, context)
+        if (bytes != null) {
+            val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, b)
+            if (b.outWidth <= 0) null else {
+                var sample = 1
+                while (maxOf(b.outWidth, b.outHeight) / sample > maxSide * 2) sample *= 2
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+            }
+        } else {
+            val cleanPath = path.removePrefix("file://")
+            val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(cleanPath, b)
+            if (b.outWidth <= 0) null else {
+                var sample = 1
+                while (maxOf(b.outWidth, b.outHeight) / sample > maxSide * 2) sample *= 2
+                BitmapFactory.decodeFile(cleanPath, BitmapFactory.Options().apply { inSampleSize = sample })
+            }
         }
     } catch (e: Exception) { null }
 
     /** Rotated + cropped picture (no zoom / offset yet). */
-    fun baseBitmap(att: AttachmentInfo, maxSide: Int): Bitmap? {
-        val src = decode(att.uri, maxSide) ?: return null
+    fun baseBitmap(att: AttachmentInfo, maxSide: Int, context: android.content.Context? = null): Bitmap? {
+        val src = decode(att.uri, maxSide, context) ?: return null
         val rotated = if (att.rotation % 360 != 0) {
             Bitmap.createBitmap(src, 0, 0, src.width, src.height, Matrix().apply { postRotate(att.rotation.toFloat()) }, true)
         } else src
@@ -120,8 +157,13 @@ object AttachmentRenderer {
     }
 
     /** Final frame bitmap: the base picture scaled by zoom and shifted by posX/posY inside its frame. */
-    fun frameBitmap(att: AttachmentInfo, outWidth: Int, background: Int = android.graphics.Color.WHITE): Bitmap? {
-        val base = baseBitmap(att, maxOf(outWidth, 800)) ?: return null
+    fun frameBitmap(
+        att: AttachmentInfo,
+        outWidth: Int,
+        background: Int = android.graphics.Color.WHITE,
+        context: android.content.Context? = null
+    ): Bitmap? {
+        val base = baseBitmap(att, maxOf(outWidth, 800), context) ?: return null
         val outW = outWidth.coerceAtLeast(1)
         val outH = if (att.fullPage) (outW / FULL_PAGE_ASPECT).toInt().coerceAtLeast(1)
         else (outW * base.height.toFloat() / base.width).toInt().coerceAtLeast(1)

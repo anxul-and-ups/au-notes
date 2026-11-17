@@ -196,7 +196,10 @@ object NoteExporter {
     private fun htmlEscape(s: String) = xmlEscape(s).replace("\n", "<br/>")
 
     private val slideFenceRegex = Regex("```(?:[\\w ]*,)?(?:slides|slide_deck|typography_slides)\\s*\\n([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
-    private val chartFenceRegex = Regex("```(?:[\\w ]*,)?(?:chart|graph)\\s*\\n([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
+    private val chartFenceRegex = Regex("```(?:[\\w ]*,)?(?:json:apex|apexcharts|apexchart|apex|chart|graph)\\s*\\n([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
+    private val diagramFenceRegex = Regex("```(?:[\\w ]*,)?(?:mermaid|diagram|flowchart|mindmap|sequence|svg)\\s*\\n([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
+    private val markdownImgRegex = Regex("!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+\"[^\"]*\")?\\)")
+    private val htmlImgRegex = Regex("<img[^>]*src=[\"']([^\"']+)[\"'][^>]*>", RegexOption.IGNORE_CASE)
     private val webSourcesMarkerRegex = Regex("\\[web_sources_json:([^\\]]+)\\]")
 
     private fun buildHtml(note: NoteEntity): String {
@@ -289,19 +292,8 @@ object NoteExporter {
 
     // ---------------------------------------------------------------- images
 
-    private fun decodeScaled(path: String, maxDim: Int): Bitmap? {
-        return try {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
-            if (bounds.outWidth <= 0) return null
-            var sample = 1
-            while (bounds.outWidth / sample > maxDim * 2 || bounds.outHeight / sample > maxDim * 2) sample *= 2
-            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-            val bmp = BitmapFactory.decodeFile(path, opts) ?: return null
-            val scale = minOf(1f, maxDim.toFloat() / maxOf(bmp.width, bmp.height))
-            if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt().coerceAtLeast(1), (bmp.height * scale).toInt().coerceAtLeast(1), true) else bmp
-        } catch (e: Exception) { null }
-    }
+    private fun decodeScaled(path: String, maxDim: Int): Bitmap? =
+        AttachmentRenderer.decode(path, maxDim, appContext)
 
     private fun loadScaledJpeg(path: String, maxDim: Int): ByteArray? {
         val bmp = decodeScaled(path, maxDim) ?: return null
@@ -335,11 +327,13 @@ object NoteExporter {
     /** Switch used by the PDF mode screen. The watermark only appears when assets/watermark.png exists. */
     @Volatile var watermarkEnabled: Boolean = true
     @Volatile private var watermark: Bitmap? = null
+    @Volatile private var appContext: Context? = null
 
     fun hasWatermarkAsset(context: Context): Boolean =
         try { context.assets.open("watermark.png").close(); true } catch (e: Exception) { false }
 
     private fun prepareWatermark(context: Context) {
+        appContext = context.applicationContext
         // every export (dialog, bulk zip, PDF mode) uses the page size / margins chosen in PDF mode
         val o = context.getSharedPreferences("au_pdf_options", Context.MODE_PRIVATE)
         setPdfOptions(o.getString("size", "A4") ?: "A4", o.getFloat("margin", 40f))
@@ -368,7 +362,12 @@ object NoteExporter {
     /** Tallest page we create when the whole note is exported as ONE continuous page. */
     private const val MAX_SINGLE_PAGE_H = 14000
 
-    private class Pager(val pageH: Int = PAGE_H, val single: Boolean = false) {
+    private class Pager(
+        val pageH: Int = PAGE_H,
+        val single: Boolean = false,
+        val pageStyle: String = "standard",
+        val lineStep: Float = 20f
+    ) {
         val doc = PdfDocument()
         var page: PdfDocument.Page? = null
         var canvas: Canvas? = null
@@ -382,7 +381,13 @@ object NoteExporter {
             pageNo++
             page = doc.startPage(PdfDocument.PageInfo.Builder(PAGE_W, pageH, pageNo).create())
             canvas = page!!.canvas
-            canvas!!.drawColor(AColor.WHITE)
+            com.example.ui.components.drawPdfPagePaper(
+                canvas = canvas!!,
+                style = pageStyle,
+                pageW = PAGE_W.toFloat(),
+                pageH = pageH.toFloat(),
+                lineStep = lineStep
+            )
             drawWatermark(canvas!!, pageH)
             y = MARGIN
         }
@@ -536,13 +541,14 @@ object NoteExporter {
      * and its saved size (fraction of the page's content width).
      */
     private fun drawImageAt(pager: Pager, att: RichTextFormatter.AttachmentInfo, paint: TextPaint, cw: Int) {
+        val ctx = appContext
         if (att.fullPage && !pager.single) {
             // dedicated page: the image alone, centred, aspect ratio kept
             if (pager.y > MARGIN + 1f) pager.newPage()
             val availH = pager.pageH - 2 * MARGIN
             val fw = minOf(pager.contentW, availH * AttachmentRenderer.FULL_PAGE_ASPECT)
             val fh = fw / AttachmentRenderer.FULL_PAGE_ASPECT
-            val fb = AttachmentRenderer.frameBitmap(att, (fw * 4).toInt().coerceIn(400, 3600))
+            val fb = AttachmentRenderer.frameBitmap(att, (fw * 4).toInt().coerceIn(400, 3600), context = ctx)
             if (fb != null) {
                 val l = MARGIN + (pager.contentW - fw) / 2f
                 val t = MARGIN + (availH - fh) / 2f
@@ -554,66 +560,105 @@ object NoteExporter {
         pager.y += 6f
         val maxH = pager.bottom - MARGIN
         var w = pager.contentW * att.widthFraction.coerceIn(0.2f, 1f)
-        var h = AttachmentRenderer.frameHeightPx(att, w)
+        var h = AttachmentRenderer.frameHeightPx(att, w, ctx)
         if (h > maxH) { w *= maxH / h; h = maxH }
         // Fit into the space that is LEFT on this page instead of leaving it blank and jumping to the next page
-        // (a tall picture right after the title used to push page 1 empty and land on page 2).
         if (!pager.single) {
             val avail = pager.bottom - pager.y - 6f
             if (h > avail && avail >= maxH * 0.30f) { w *= avail / h; h = avail }
         }
-        val bmp = AttachmentRenderer.frameBitmap(att, (w * 4).toInt().coerceIn(400, 3600))
+        val bmp = AttachmentRenderer.frameBitmap(att, (w * 4).toInt().coerceIn(400, 3600), context = ctx)
         if (bmp == null) {
             drawLayout(pager, makeLayout("[Image could not be loaded: ${att.fileName}]", paint, cw), MARGIN)
             return
         }
         pager.ensure(h)
-        val left = MARGIN + (pager.contentW - w) / 2f * 0f // images are left-aligned like in the editor
+        val left = MARGIN
         pager.canvas!!.drawBitmap(bmp, null, android.graphics.RectF(left, pager.y, left + w, pager.y + h),
             Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
         pager.y += h + 6f
     }
 
+    private fun drawDecodedBitmapAt(pager: Pager, bmp: Bitmap) {
+        val aspect = bmp.height.toFloat() / bmp.width.coerceAtLeast(1)
+        var drawW = pager.contentW
+        var drawH = drawW * aspect
+        val maxH = (pager.bottom - MARGIN) * 0.72f
+        if (drawH > maxH && maxH > 40f) {
+            drawW *= maxH / drawH
+            drawH = maxH
+        }
+        pager.y += 8f
+        pager.ensure(drawH)
+        val left = MARGIN + (pager.contentW - drawW) / 2f
+        pager.canvas!!.drawBitmap(
+            bmp,
+            null,
+            android.graphics.RectF(left, pager.y, left + drawW, pager.y + drawH),
+            Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        )
+        pager.y += drawH + 10f
+    }
+
     /** Writes the PDF; returns how far down the last page was filled (used to size single-page PDFs). */
     private fun writePdfPass(note: NoteEntity, target: File, pageH: Int, single: Boolean): Float {
-        val pager = Pager(pageH, single)
+        val (notePageStyle, noteLineSpacing) = com.example.ui.components.loadNotePageStyle(appContext, note.id)
+        val pdfLineStep = (note.fontSize.coerceIn(9, 28).toFloat() * noteLineSpacing.coerceIn(1.0f, 2.2f) * 0.9f).coerceIn(14f, 44f)
+        val pager = Pager(pageH, single, notePageStyle, pdfLineStep)
         pager.newPage()
         val cw = pager.contentW.toInt()
+        val bodyLeft = if (notePageStyle in listOf("ruled", "legal")) MARGIN + 14f else MARGIN
 
         // Title
         val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AColor.rgb(255, 45, 85); textSize = 22f; typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        drawLayout(pager, makeLayout(note.title.ifBlank { "Untitled Note" }, titlePaint, cw), MARGIN)
+        drawLayout(pager, makeLayout(note.title.ifBlank { "Untitled Note" }, titlePaint, (cw - (bodyLeft - MARGIN)).toInt()), bodyLeft)
         pager.y += 10f
 
-        // Body — default text is dark on white paper regardless of app theme,
+        // Body — default text is dark on white/tinted paper regardless of app theme,
         // explicit color spans keep their chosen colors.
         val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AColor.rgb(25, 25, 25); textSize = note.fontSize.coerceIn(9, 28).toFloat() * 0.8f
         }
         val allAtts = RichTextFormatter.deserializeAttachments(note.attachmentsJson)
         val placedInline = HashSet<String>()
-        // Extract embedded slide decks and chart blocks so we render them visually instead of raw JSON
+        // Extract embedded slide decks, charts, diagrams, and markdown/HTML image refs
         val embeddedSlideDecks = slideFenceRegex.findAll(note.content).mapNotNull { m ->
             com.example.ui.components.AgentVisualsParser.parseSlideDeck(m.groupValues[1])
         }.toList()
         val embeddedCharts = chartFenceRegex.findAll(note.content).mapNotNull { m ->
-            com.example.ui.components.AgentVisualsParser.parseChart(m.groupValues[1])
+            com.example.ui.components.AgentVisualsParser.parseChart(m.groupValues[1])?.takeIf { !it.isBroken }
         }.toList()
-        val cleanedNoteForPdf = if (embeddedSlideDecks.isNotEmpty() || embeddedCharts.isNotEmpty() || note.content.contains("[web_sources_json:")) {
+        val embeddedDiagrams = diagramFenceRegex.findAll(note.content).mapNotNull { m ->
+            com.example.ui.components.AgentVisualsParser.parseDiagram(m.groupValues[1])?.takeIf { !it.isBroken }
+        }.toList()
+        val inlineImageSources = (
+            markdownImgRegex.findAll(note.content).map { it.groupValues[1].trim() }.toList() +
+                htmlImgRegex.findAll(note.content).map { it.groupValues[1].trim() }.toList()
+            ).filter { it.isNotBlank() && !it.startsWith("http://", true) && !it.startsWith("https://", true) }
+            .distinct()
+
+        val hasEmbeds = embeddedSlideDecks.isNotEmpty() || embeddedCharts.isNotEmpty() ||
+            embeddedDiagrams.isNotEmpty() || note.content.contains("[web_sources_json:") ||
+            inlineImageSources.isNotEmpty()
+        val cleanedNoteForPdf = if (hasEmbeds) {
             note.copy(
                 content = note.content
                     .replace(slideFenceRegex, "")
                     .replace(chartFenceRegex, "")
+                    .replace(diagramFenceRegex, "")
                     .replace(webSourcesMarkerRegex, "")
+                    .replace(markdownImgRegex, "")
+                    .replace(htmlImgRegex, "")
                     .trim(),
-                styleSpansJson = if (embeddedSlideDecks.isNotEmpty() || embeddedCharts.isNotEmpty()) "" else note.styleSpansJson
+                styleSpansJson = if (embeddedSlideDecks.isNotEmpty() || embeddedCharts.isNotEmpty() || embeddedDiagrams.isNotEmpty()) "" else note.styleSpansJson
             )
         } else {
             note
         }
 
+        val textW = (cw - (bodyLeft - MARGIN)).toInt().coerceAtLeast(120)
         if (cleanedNoteForPdf.content.isNotEmpty()) {
             val body = buildSpannable(cleanedNoteForPdf)
             if (cleanedNoteForPdf.isCodeFormat) body.setSpan(TypefaceSpan("monospace"), 0, body.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
@@ -622,10 +667,10 @@ object NoteExporter {
             var offset = 0
             var segStart = 0
             fun flushText(endExclusive: Int) {
-                var a = segStart
+                val a = segStart
                 var b = endExclusive
                 if (b > a && b <= body.length && body[b - 1] == '\n') b--
-                if (b > a) drawLayout(pager, makeLayout(body.subSequence(a, b), bodyPaint, cw), MARGIN)
+                if (b > a) drawLayout(pager, makeLayout(body.subSequence(a, b), bodyPaint, textW), bodyLeft)
             }
             for (line in lines) {
                 val lineStart = offset
@@ -634,13 +679,22 @@ object NoteExporter {
                 if (id != null) {
                     flushText(lineStart)
                     val att = allAtts.firstOrNull { it.id == id }
-                    if (att != null) { placedInline.add(id); drawImageAt(pager, att, bodyPaint, cw) }
+                    if (att != null) { placedInline.add(id); drawImageAt(pager, att, bodyPaint, textW) }
                     segStart = (lineEnd + 1).coerceAtMost(body.length)
                 }
                 offset = lineEnd + 1
             }
             if (segStart < body.length) {
-                drawLayout(pager, makeLayout(body.subSequence(segStart, body.length), bodyPaint, cw), MARGIN)
+                drawLayout(pager, makeLayout(body.subSequence(segStart, body.length), bodyPaint, textW), bodyLeft)
+            }
+        }
+
+        // Render Markdown / HTML local or data-URI images into the PDF
+        inlineImageSources.forEach { src ->
+            val bmp = AttachmentRenderer.decode(src, 1400, appContext)
+            if (bmp != null) {
+                drawDecodedBitmapAt(pager, bmp)
+                bmp.recycle()
             }
         }
 
@@ -653,7 +707,8 @@ object NoteExporter {
                     slideIndex = idx,
                     totalSlides = deck.slides.size,
                     width = 1080,
-                    height = 1440
+                    height = 1440,
+                    context = appContext
                 )
                 val targetW = pager.contentW
                 val targetH = targetW * (1440f / 1080f)
@@ -679,6 +734,23 @@ object NoteExporter {
             val bmp = com.example.ui.components.AgentVisualsParser.renderChartBitmap(chartSpec, 1200, 820)
             val drawW = pager.contentW
             val drawH = drawW * (820f / 1200f)
+            pager.y += 10f
+            pager.ensure(drawH)
+            pager.canvas!!.drawBitmap(
+                bmp,
+                null,
+                android.graphics.RectF(MARGIN, pager.y, MARGIN + drawW, pager.y + drawH),
+                Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+            )
+            pager.y += drawH + 12f
+            bmp.recycle()
+        }
+
+        // Render embedded Mermaid / SVG Diagrams visually in the PDF
+        embeddedDiagrams.forEach { diagSpec ->
+            val bmp = com.example.ui.components.AgentVisualsParser.renderDiagramBitmap(diagSpec, 1200, 760)
+            val drawW = pager.contentW
+            val drawH = drawW * (760f / 1200f)
             pager.y += 10f
             pager.ensure(drawH)
             pager.canvas!!.drawBitmap(

@@ -82,6 +82,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -153,14 +154,32 @@ fun MyDocumentsScreen(
 
     fun refresh() { files = MyDocuments.list(context) }
 
-    val filteredFiles = remember(files, searchQuery) {
-        if (searchQuery.isBlank()) files
-        else {
-            val q = searchQuery.trim().lowercase()
-            files.filter { f ->
-                f.name.lowercase().contains(q) ||
-                    (MyDocuments.kindOf(f) == MyDocuments.Kind.TEXT && runCatching { f.readText().lowercase().contains(q) }.getOrDefault(false))
+    var filteredFiles by remember { mutableStateOf(files) }
+    var isSearching by remember { mutableStateOf(false) }
+    LaunchedEffect(files, searchQuery) {
+        val q = searchQuery.trim().lowercase()
+        if (q.isEmpty()) {
+            filteredFiles = files
+            isSearching = false
+        } else {
+            isSearching = true
+            kotlinx.coroutines.delay(180)
+            val matched = withContext(Dispatchers.IO) {
+                files.filter { f ->
+                    if (f.name.lowercase().contains(q)) true
+                    else if (MyDocuments.kindOf(f) == MyDocuments.Kind.TEXT) {
+                        runCatching {
+                            f.bufferedReader().use { reader ->
+                                val buf = CharArray(256 * 1024)
+                                val read = reader.read(buf)
+                                read > 0 && String(buf, 0, read).contains(q, ignoreCase = true)
+                            }
+                        }.getOrDefault(false)
+                    } else false
+                }
             }
+            filteredFiles = matched
+            isSearching = false
         }
     }
 
@@ -238,6 +257,13 @@ fun MyDocumentsScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             )
+
+            if (isSearching) {
+                androidx.compose.material3.LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    color = CrimsonPrimary
+                )
+            }
 
             if (filteredFiles.isEmpty()) {
                 Column(
@@ -1065,7 +1091,19 @@ private fun AdvancedArtifactTextFileView(
         }
     }
 
-    val scrollState = rememberScrollState()
+    val hScroll = rememberScrollState()
+    val hasScrollableContainer = remember(content) { content.isNotEmpty() }
+
+    if (!hasScrollableContainer) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, _, _, _ -> }
+                }
+        )
+        return
+    }
 
     Box(
         modifier = Modifier
@@ -1074,22 +1112,24 @@ private fun AdvancedArtifactTextFileView(
                 detectTransformGestures { _, _, _, _ -> }
             }
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(scrollState)
-                .padding(14.dp)
-        ) {
-            if (isSourceMode || !isMarkdown) {
-                // Source Code Mode: Monospace font, line numbers, horizontal scroll, search highlights
-                SourceCodeView(
-                    text = content,
-                    searchQuery = searchQuery,
-                    zoomScale = zoomScale,
-                    isDarkMode = isDarkMode,
-                    fg = fg
-                )
-            } else {
+        if (isSourceMode || !isMarkdown) {
+            // Virtualized Source Code Mode: LazyColumn avoids UI stall on large code files
+            SourceCodeView(
+                text = content,
+                searchQuery = searchQuery,
+                zoomScale = zoomScale,
+                isDarkMode = isDarkMode,
+                fg = fg,
+                hScroll = hScroll
+            )
+        } else {
+            val scrollState = rememberScrollState()
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState)
+                    .padding(14.dp)
+            ) {
                 // Advanced Markdown Preview: Headings, Tables, Code Fences with Copy, Blockquotes
                 MarkdownRenderedBody(
                     markdown = content,
@@ -1104,68 +1144,71 @@ private fun AdvancedArtifactTextFileView(
     }
 }
 
-/** Renders source code with line numbers and highlighted search matches */
+/** Renders source code with virtualized LazyColumn, line numbers, and search highlights */
 @Composable
 private fun SourceCodeView(
     text: String,
     searchQuery: String,
     zoomScale: Float,
     isDarkMode: Boolean,
-    fg: Color
+    fg: Color,
+    hScroll: androidx.compose.foundation.ScrollState = rememberScrollState()
 ) {
-    val lines = remember(text) { text.lines() }
+    val linesState by produceState<List<String>?>(initialValue = null, text) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { text.lines() }
+    }
+    val lines = linesState ?: run {
+        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = CrimsonPrimary)
+        }
+        return
+    }
     val lineNumColor = if (isDarkMode) Color(0xFF5C6370) else Color(0xFF94A3B8)
-    val hScroll = rememberScrollState()
+    val gutterDigits = lines.size.toString().length.coerceAtLeast(3)
+    val gutterWidth = ((gutterDigits * 9) + 12).dp
+    val q = searchQuery.trim().lowercase()
 
-    val styledLines = remember(text, searchQuery, isDarkMode) {
-        lines.map { line ->
-            if (searchQuery.isBlank()) AnnotatedString(line)
-            else {
-                val q = searchQuery.trim().lowercase()
-                val lower = line.lowercase()
-                buildAnnotatedString {
-                    var cursor = 0
-                    while (cursor < line.length) {
-                        val idx = lower.indexOf(q, cursor)
-                        if (idx < 0) {
-                            append(line.substring(cursor))
-                            break
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .horizontalScroll(hScroll)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        items(lines.size, key = { it }) { idx ->
+            val line = lines[idx]
+            val lineAnnotated = remember(line, q) {
+                if (q.isEmpty()) AnnotatedString(line)
+                else {
+                    val lower = line.lowercase()
+                    if (!lower.contains(q)) AnnotatedString(line)
+                    else buildAnnotatedString {
+                        var cursor = 0
+                        while (cursor < line.length) {
+                            val hit = lower.indexOf(q, cursor)
+                            if (hit < 0) {
+                                append(line.substring(cursor))
+                                break
+                            }
+                            if (hit > cursor) append(line.substring(cursor, hit))
+                            val matchEnd = hit + q.length
+                            pushStyle(SpanStyle(background = Color(0xFFFFD54F), color = Color(0xFF111111), fontWeight = FontWeight.Bold))
+                            append(line.substring(hit, matchEnd))
+                            pop()
+                            cursor = matchEnd
                         }
-                        if (idx > cursor) append(line.substring(cursor, idx))
-                        val matchEnd = idx + q.length
-                        pushStyle(SpanStyle(background = Color(0xFFFFD54F), color = Color(0xFF111111), fontWeight = FontWeight.Bold))
-                        append(line.substring(idx, matchEnd))
-                        pop()
-                        cursor = matchEnd
                     }
                 }
             }
-        }
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(hScroll)
-            .padding(vertical = 4.dp)
-    ) {
-        // Line numbers column
-        Column(modifier = Modifier.padding(end = 12.dp)) {
-            for (i in 1..lines.size) {
+            Row(verticalAlignment = Alignment.Top) {
                 Text(
-                    text = "$i",
+                    text = "${idx + 1}",
                     fontFamily = FontFamily.Monospace,
                     fontSize = (12 * zoomScale).sp,
                     lineHeight = (18 * zoomScale).sp,
                     color = lineNumColor,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.width(gutterWidth)
                 )
-            }
-        }
-
-        // Code content column
-        Column {
-            styledLines.forEach { lineAnnotated ->
                 Text(
                     text = lineAnnotated,
                     fontFamily = FontFamily.Monospace,

@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.ContactMail
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Email
@@ -56,6 +57,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.ui.platform.testTag
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -100,6 +102,7 @@ fun GlassSidebar(
     onNavigateFolder: (String) -> Unit = {},
     onOpenFileEditor: () -> Unit,
     onOpenHtmlViewer: () -> Unit = {},
+    onOpenArtifactsLibrary: () -> Unit = {},
     onOpenMyDocuments: () -> Unit = {},
     onOpenCommandMode: () -> Unit,
     onOpenTempMail: () -> Unit = {},
@@ -270,7 +273,20 @@ fun GlassSidebar(
                         }
                     )
 
-                    // 4. My Documents
+                    // 4. Slides & HTML Library (all chats + files)
+                    Box(modifier = Modifier.testTag("sidebar_artifacts_library")) {
+                        SidebarMenuItem(
+                            icon = Icons.Default.Collections,
+                            title = "Slides & HTML Library",
+                            isDarkMode = isDarkMode,
+                            onClick = {
+                                onClose()
+                                onOpenArtifactsLibrary()
+                            }
+                        )
+                    }
+
+                    // 5. My Documents
                     SidebarMenuItemPainter(
                         icon = androidx.compose.ui.graphics.vector.rememberVectorPainter(androidx.compose.material.icons.Icons.Default.FolderOpen),
                         title = "My Documents",

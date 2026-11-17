@@ -114,6 +114,18 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.material.icons.filled.Splitscreen
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material3.CircularProgressIndicator
+import com.example.ui.components.drawPageRules
+import com.example.ui.components.isLightPageStyle
+import com.example.ui.components.loadNotePageStyle
+import com.example.ui.components.pageLineColor
+import com.example.ui.components.pagePaperColor
+import com.example.ui.components.pageStyleDisplayName
+import com.example.ui.util.handleHardwareShortcuts
+
 @Composable
 fun ReadNoteScreen(
     note: NoteEntity,
@@ -122,7 +134,9 @@ fun ReadNoteScreen(
     onBack: () -> Unit,
     onEditNote: (NoteEntity) -> Unit,
     onDeleteNote: (Long) -> Unit,
-    onToggleLock: (Long, Boolean) -> Unit
+    onToggleLock: (Long, Boolean) -> Unit,
+    onOpenInSplitScreen: ((NoteEntity) -> Unit)? = null,
+    onOpenInSmallWindow: ((NoteEntity) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -329,20 +343,48 @@ fun ReadNoteScreen(
         SimpleDateFormat("EEE, MMM dd, yyyy 'at' HH:mm", Locale.getDefault())
     }
 
+    val (savedPageStyle, savedLineSpacing) = remember(note.id) {
+        loadNotePageStyle(context, note.id, preferences)
+    }
+    val lightPaper = isLightPageStyle(savedPageStyle)
+    val paperColor = pagePaperColor(savedPageStyle, isDarkMode)
+    val marginLineColor = Color(0xFFEF4444).copy(alpha = if (savedPageStyle == "legal") 0.75f else 0.38f)
+    val hasMargin = savedPageStyle == "ruled" || savedPageStyle == "legal"
+    val bodyScrollState = rememberScrollState()
+
     com.example.ui.components.NoteBackground(isDarkMode = isDarkMode) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
+                .handleHardwareShortcuts(
+                    onToggleEdit = { onEditNote(note) },
+                    onFind = { showInNoteSearch = !showInNoteSearch },
+                    onOpenSplitScreen = { onOpenInSplitScreen?.invoke(note) },
+                    onOpenSmallWindow = { onOpenInSmallWindow?.invoke(note) },
+                    onPageDown = { coroutineScope.launch { bodyScrollState.animateScrollTo((bodyScrollState.value + 700).coerceAtMost(bodyScrollState.maxValue)) } },
+                    onPageUp = { coroutineScope.launch { bodyScrollState.animateScrollTo((bodyScrollState.value - 700).coerceAtLeast(0)) } },
+                    onScrollLineDown = { coroutineScope.launch { bodyScrollState.animateScrollTo((bodyScrollState.value + 160).coerceAtMost(bodyScrollState.maxValue)) } },
+                    onScrollLineUp = { coroutineScope.launch { bodyScrollState.animateScrollTo((bodyScrollState.value - 160).coerceAtLeast(0)) } },
+                    onScrollTop = { coroutineScope.launch { bodyScrollState.animateScrollTo(0) } },
+                    onScrollBottom = { coroutineScope.launch { bodyScrollState.animateScrollTo(bodyScrollState.maxValue) } },
+                    onEscape = {
+                        if (showInNoteSearch) {
+                            showInNoteSearch = false
+                            inNoteSearchQuery = ""
+                        } else {
+                            onBack()
+                        }
+                    }
+                )
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 6.dp, vertical = 6.dp)
             ) {
-                // Compact header: back | title + category/date | alarm | edit.
-                // (The old separate title card used a full extra row of screen height.)
+                // Compact header: back | title + category/date | split | small-window | info | alarm | edit.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -357,7 +399,7 @@ fun ReadNoteScreen(
                         onClick = onBack
                     )
 
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -381,33 +423,59 @@ fun ReadNoteScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                    if (onOpenInSplitScreen != null) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        NeuIconButton(
+                            icon = Icons.Default.Splitscreen,
+                            contentDescription = "Split Screen",
+                            isDarkMode = isDarkMode,
+                            size = 34.dp,
+                            iconSize = 16.dp,
+                            tint = if (isDarkMode) Color.White else Color.Black,
+                            onClick = { onOpenInSplitScreen(note) }
+                        )
+                    }
+
+                    if (onOpenInSmallWindow != null) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        NeuIconButton(
+                            icon = Icons.Default.OpenInNew,
+                            contentDescription = "Small Window",
+                            isDarkMode = isDarkMode,
+                            size = 34.dp,
+                            iconSize = 16.dp,
+                            tint = if (isDarkMode) Color.White else Color.Black,
+                            onClick = { onOpenInSmallWindow(note) }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
 
                     // Info (i): writing time, lines, words, letters
                     NeuIconButton(
                         icon = Icons.Default.Info,
                         contentDescription = "Note info",
                         isDarkMode = isDarkMode,
-                        size = 38.dp,
-                        iconSize = 18.dp,
+                        size = 34.dp,
+                        iconSize = 16.dp,
                         tint = if (isDarkMode) Color.White else Color.Black,
                         onClick = { showInfoDialog = true }
                     )
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
 
                     // Alarm / Reminder
                     NeuIconButton(
                         icon = Icons.Default.Alarm,
                         contentDescription = "Set Alarm Reminder",
                         isDarkMode = isDarkMode,
-                        size = 38.dp,
-                        iconSize = 18.dp,
+                        size = 34.dp,
+                        iconSize = 16.dp,
                         tint = if (activeAlarm != null) CrimsonPrimary else (if (isDarkMode) Color.White else Color.Black),
                         onClick = { showAlarmDialog = true }
                     )
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
 
                     // Edit button
                     GlassCard(
@@ -443,9 +511,8 @@ fun ReadNoteScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .verticalScroll(rememberScrollState())
                 ) {
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
 
 
                 // Active Alarm Details — Item 17: note name, time, countdown,
@@ -820,13 +887,56 @@ fun ReadNoteScreen(
                             }
                         }
 
-                        // Scroll the note body independently so the title and action toolbar remain fixed.
+                        // Scroll the note body independently with Page Style paper background, margin, and rules.
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
-                                .verticalScroll(rememberScrollState())
-                                .padding(top = 10.dp)
+                                .then(
+                                    if (viewAsFormat == "normal" && paperColor != null) {
+                                        Modifier
+                                            .padding(horizontal = 4.dp, vertical = 4.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(paperColor)
+                                            .border(1.dp, if (lightPaper) Color(0xFFD4D4D8) else Color.Gray.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                                    } else Modifier
+                                )
+                                .verticalScroll(bodyScrollState)
+                                .drawBehind {
+                                    if (viewAsFormat == "normal") {
+                                        if (hasMargin) {
+                                            val x = 28.dp.toPx()
+                                            drawLine(marginLineColor, androidx.compose.ui.geometry.Offset(x, 0f), androidx.compose.ui.geometry.Offset(x, size.height), 1.2.dp.toPx())
+                                            if (savedPageStyle == "legal") {
+                                                drawLine(marginLineColor, androidx.compose.ui.geometry.Offset(x + 3.dp.toPx(), 0f), androidx.compose.ui.geometry.Offset(x + 3.dp.toPx(), size.height), 1.2.dp.toPx())
+                                            }
+                                        }
+                                        if (savedPageStyle in setOf("ruled", "legal", "grid", "dotted")) {
+                                            val stepPx = ((note.fontSize * savedLineSpacing).sp.toPx()).coerceAtLeast(22.dp.toPx())
+                                            val ys = ArrayList<Float>()
+                                            var yy = stepPx
+                                            val limit = maxOf(size.height, 420.dp.toPx())
+                                            while (yy < limit) { ys.add(yy); yy += stepPx }
+                                            drawPageRules(
+                                                savedPageStyle,
+                                                ys,
+                                                stepPx,
+                                                0f,
+                                                size.width,
+                                                0f,
+                                                limit,
+                                                pageLineColor(savedPageStyle, isDarkMode),
+                                                1.dp.toPx()
+                                            )
+                                        }
+                                    }
+                                }
+                                .padding(
+                                    start = if (viewAsFormat == "normal" && hasMargin) 38.dp else if (viewAsFormat == "normal" && savedPageStyle != "standard") 14.dp else 4.dp,
+                                    end = if (viewAsFormat == "normal" && savedPageStyle != "standard") 14.dp else 4.dp,
+                                    top = 10.dp,
+                                    bottom = 14.dp
+                                )
                         ) {
                         if (viewAsFormat == "md") {
                             val mdText = remember(note) { com.example.ui.util.NoteExporter.buildMarkdown(note) }
@@ -971,14 +1081,15 @@ fun ReadNoteScreen(
                             note.content
                         }
 
-                        // Day mode contrast fix: Ensure text is dark and readable
-                        val baseDefaultColor = if (isDarkMode) Color.White.copy(0.92f) else Color(0xFF111111)
+                        // Content Area with PAGE PAPER + DAY MODE CONTRAST FIX
+                        val baseDefaultColor = if (lightPaper) Color(0xFF111111) else if (isDarkMode) Color.White.copy(0.92f) else Color(0xFF111111)
                         val currentFontColor = run {
                             val parsed = try { Color(android.graphics.Color.parseColor(note.fontColorHex)) } catch (e: Exception) { null }
                             when {
                                 parsed == null -> baseDefaultColor
-                                isDarkMode && parsed.luminance() < 0.12f -> baseDefaultColor
-                                !isDarkMode && parsed.luminance() > 0.88f -> baseDefaultColor
+                                lightPaper && parsed.luminance() > 0.85f -> Color(0xFF111111)
+                                !lightPaper && isDarkMode && parsed.luminance() < 0.12f -> baseDefaultColor
+                                !lightPaper && !isDarkMode && parsed.luminance() > 0.88f -> baseDefaultColor
                                 else -> parsed
                             }
                         }
@@ -986,12 +1097,18 @@ fun ReadNoteScreen(
                         if ((note.category == "Code" || note.isCodeFormat) &&
                             !com.example.data.model.AutoClassifier.hasRichStructure(note.content, note.tableData, note.styleSpansJson, note.attachmentsJson)) {
                             // Syntax colours are computed in the background so big code never freezes the screen.
-                            val coloredCode by androidx.compose.runtime.produceState(
-                                initialValue = AnnotatedString(displayContent),
-                                displayContent
+                            val coloredCode by produceState<AnnotatedString?>(
+                                initialValue = if (displayContent.length <= 2000) com.example.ui.util.CodeHighlight.highlight(displayContent, isDarkMode && !lightPaper) else null,
+                                displayContent, lightPaper
                             ) {
                                 value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                    com.example.ui.util.CodeHighlight.highlight(displayContent, isDarkMode)
+                                    com.example.ui.util.CodeHighlight.highlight(displayContent, isDarkMode && !lightPaper)
+                                }
+                            }
+                            if (coloredCode == null) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(8.dp)) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = CrimsonPrimary)
+                                    Text("Formatting code…", fontSize = 12.sp, color = Color.Gray)
                                 }
                             }
                             Box(
@@ -1000,21 +1117,20 @@ fun ReadNoteScreen(
                                     .padding(horizontal = 2.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = coloredCode,
+                                    text = coloredCode ?: AnnotatedString(displayContent),
                                     fontSize = 13.sp,
                                     fontFamily = FontFamily.Monospace,
-                                    color = com.example.ui.util.CodeHighlight.baseColor(isDarkMode),
+                                    color = if (lightPaper) Color(0xFF111111) else com.example.ui.util.CodeHighlight.baseColor(isDarkMode),
                                     lineHeight = 19.sp
                                 )
                             }
                         } else {
-                            // Heavy styling of big notes runs on a background thread; the plain text shows instantly
-                            // and the styled version swaps in as soon as it is ready (no frozen open).
+                            // Heavy styling of big notes runs on a background thread with loading badge for huge content
                             val styledState = produceState<AnnotatedString?>(
                                 initialValue = null, displayContent, spans, currentFontColor, note.fontSize
                             ) {
                                 value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                    if (spans.isNotEmpty()) {
+                                    if (spans.isNotEmpty() && displayContent.length <= 35_000) {
                                         RichTextFormatter.buildStyledText(
                                             text = displayContent,
                                             spans = spans,
@@ -1026,15 +1142,21 @@ fun ReadNoteScreen(
                                     }
                                 }
                             }
-                            val styledText = styledState.value ?: remember(displayContent) { AnnotatedString(displayContent) }
+                            if (styledState.value == null && displayContent.length > 8000) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 6.dp)) {
+                                    CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp, color = CrimsonPrimary)
+                                    Text("Loading large note…", fontSize = 12.sp, color = Color.Gray)
+                                }
+                            }
+                            val styledText = styledState.value ?: remember(displayContent) { AnnotatedString(displayContent.take(15_000)) }
 
                             val linkedText = remember(styledText, inNoteSearchQuery, inNoteMatchIndex) {
-                                val baseLinked = com.example.ui.util.LinkText.linkify(styledText, context)
+                                val baseLinked = if (styledText.length <= 30_000) com.example.ui.util.LinkText.linkify(styledText, context) else styledText
                                 val q = inNoteSearchQuery.trim()
                                 if (q.isEmpty()) {
                                     baseLinked
                                 } else {
-                                    val found = Regex(Regex.escape(q), RegexOption.IGNORE_CASE).findAll(baseLinked.text).toList()
+                                    val found = Regex(Regex.escape(q), RegexOption.IGNORE_CASE).findAll(baseLinked.text).take(200).toList()
                                     if (found.isEmpty()) baseLinked
                                     else {
                                         val activeIdx = inNoteMatchIndex.mod(found.size)
@@ -1063,7 +1185,7 @@ fun ReadNoteScreen(
                                     attachments = allAttachments,
                                     fontSize = note.fontSize,
                                     color = currentFontColor,
-                                    isDarkMode = isDarkMode
+                                    isDarkMode = isDarkMode && !lightPaper
                                 )
                             }
                         }
@@ -1145,6 +1267,18 @@ fun ReadNoteScreen(
         val writeSecs = preferences.noteWriteSeconds.collectAsState().value[note.id] ?: 0L
         val openCount = preferences.noteOpenCount.collectAsState().value[note.id] ?: 1L
         val readSecs = preferences.noteOpenSeconds.collectAsState().value[note.id] ?: 0L
+        val pastedChars = (preferences.notePastedChars.collectAsState().value[note.id] ?: 0L).coerceAtMost(chars.toLong())
+        val typedChars = (chars.toLong() - pastedChars).coerceAtLeast(0L)
+        val (effectivePageStyle, _) = remember(note.id, showInfoDialog) {
+            loadNotePageStyle(context, note.id, preferences)
+        }
+        val pageStyleLabel = pageStyleDisplayName(effectivePageStyle)
+        val estReadMinutes = (words / 200.0).let { if (it < 1.0 && words > 0) "< 1 min" else "${kotlin.math.ceil(it).toInt()} min" }
+        val typingSessions = remember(note.id, showInfoDialog) {
+            preferences.getNoteTypingSessions(note.id).reversed()
+        }
+        val sessionDateFmt = remember { SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()) }
+
         fun formatDuration(secs: Long): String = when {
             secs <= 0L -> "Just started"
             secs < 60 -> "${secs}s"
@@ -1160,21 +1294,70 @@ fun ReadNoteScreen(
                 }
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 430.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(9.dp)
+                ) {
                     listOf(
                         "Times opened" to "${openCount}x",
                         "Total reading time" to formatDuration(readSecs),
                         "Total writing time" to formatDuration(writeSecs),
+                        "Estimated read time" to estReadMinutes,
                         "Total lines" to "$lines",
                         "Total words" to "$words",
                         "Total letters" to "$letters",
                         "Total characters" to "$chars",
+                        "Typed characters" to "$typedChars",
+                        "Pasted characters" to "$pastedChars",
+                        "Page style" to pageStyleLabel,
                         "Folder / Category" to "${note.folder} • ${note.category}",
                         "Last updated" to dateFormatter.format(Date(note.updatedAt))
                     ).forEach { (k, v) ->
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(k, fontSize = 13.sp, color = Color.Gray)
-                            Text(v, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text(k, fontSize = 12.5.sp, color = Color.Gray)
+                            Text(v, fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    if (typingSessions.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        HorizontalDivider(color = Color.Gray.copy(alpha = 0.25f))
+                        Text(
+                            text = "WRITING SESSION LOGS (${typingSessions.size})",
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.8.sp,
+                            color = CrimsonPrimary
+                        )
+                        typingSessions.take(15).forEach { rawSession ->
+                            val parts = rawSession.split("|")
+                            val ts = parts.getOrNull(0)?.toLongOrNull() ?: 0L
+                            val dur = parts.getOrNull(1)?.toLongOrNull() ?: 0L
+                            val cTyped = parts.getOrNull(2)?.toIntOrNull() ?: 0
+                            val wTyped = parts.getOrNull(3)?.toIntOrNull() ?: 0
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(CrimsonPrimary.copy(alpha = 0.08f))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (ts > 0L) sessionDateFmt.format(Date(ts)) else "Session",
+                                    fontSize = 11.5.sp,
+                                    color = Color.Gray
+                                )
+                                Text(
+                                    text = "${formatDuration(dur)} • +$cTyped chars${if (wTyped > 0) " ($wTyped w)" else ""}",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                         }
                     }
                 }

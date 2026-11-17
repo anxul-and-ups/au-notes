@@ -19,6 +19,7 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.ViewGroup
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -39,6 +40,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -60,11 +62,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Share
 import coil.compose.AsyncImage
@@ -83,6 +87,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -1472,6 +1477,73 @@ object AgentVisualsParser {
                     canvas.drawText(st.label.take(22), lx, statsY + 106f, lblPaint)
                 }
             }
+            slide.chartItems.isNotEmpty() -> {
+                val validItems = slide.chartItems.take(8)
+                val maxV = (validItems.maxOfOrNull { it.value } ?: 100f).coerceAtLeast(1f)
+                val chartTop = y + 20f
+                val chartBot = (height - 200f).coerceAtLeast(chartTop + 260f)
+                val chartH = chartBot - chartTop
+                val slotW = contentWidth.toFloat() / validItems.size.coerceAtLeast(1)
+                val barW = (slotW * 0.56f).coerceAtMost(110f)
+                val lblPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = inkCol
+                    textSize = 24f
+                    typeface = Typeface.create(interTypeface, Typeface.BOLD)
+                }
+                canvas.drawLine(padX, chartBot, padX + contentWidth, chartBot, rulePaint)
+                validItems.forEachIndexed { idx, item ->
+                    val cx = padX + slotW * idx + slotW / 2f
+                    val bh = ((item.value / maxV) * (chartH - 50f)).coerceAtLeast(18f)
+                    val top = chartBot - bh
+                    val barFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = parseColorSafe(item.colorHex, accentCol)
+                        style = Paint.Style.FILL
+                    }
+                    val rect = RectF(cx - barW / 2f, top, cx + barW / 2f, chartBot)
+                    canvas.drawRect(rect, barFill)
+                    canvas.drawRect(rect, rulePaint)
+                    val valTxt = if (item.value % 1f == 0f) item.value.toInt().toString() else String.format(Locale.US, "%.1f", item.value)
+                    val vw = lblPaint.measureText(valTxt)
+                    canvas.drawText(valTxt, cx - vw / 2f, top - 12f, lblPaint)
+                    val shortLbl = item.label.take(10)
+                    val lw = lblPaint.measureText(shortLbl)
+                    canvas.drawText(shortLbl, cx - lw / 2f, chartBot + 34f, lblPaint)
+                }
+                y = chartBot + 56f
+            }
+            slide.diagramNodes.isNotEmpty() -> {
+                val nodes = slide.diagramNodes.take(5)
+                val nodeH = 74f
+                val gap = 18f
+                val nodeW = contentWidth * 0.38f
+                val centerW = contentWidth * 0.30f
+                val nodePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = inkCol
+                    textSize = 24f
+                    typeface = Typeface.create(interTypeface, Typeface.BOLD)
+                }
+                val startY = y + 10f
+                val midY = startY + (nodes.size * (nodeH + gap) - gap) / 2f
+                val centerRect = RectF(padX + nodeW + 60f, midY - 64f, padX + nodeW + 60f + centerW, midY + 64f)
+                val centerFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accentCol; style = Paint.Style.FILL }
+                canvas.drawRoundRect(centerRect, 14f, 14f, centerFill)
+                canvas.drawRoundRect(centerRect, 14f, 14f, rulePaint)
+                val cwPaint = TextPaint(nodePaint).apply { color = android.graphics.Color.WHITE; textSize = 22f }
+                val cTitle = slide.diagramCenter.take(18)
+                canvas.drawText(cTitle, centerRect.centerX() - cwPaint.measureText(cTitle) / 2f, centerRect.centerY() + 8f, cwPaint)
+
+                nodes.forEachIndexed { idx, label ->
+                    val top = startY + idx * (nodeH + gap)
+                    val nr = RectF(padX, top, padX + nodeW, top + nodeH)
+                    val nFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.parseColor("#FAF8F3") }
+                    canvas.drawRoundRect(nr, 12f, 12f, nFill)
+                    canvas.drawRoundRect(nr, 12f, 12f, rulePaint)
+                    val lbl = label.take(22)
+                    canvas.drawText(lbl, nr.left + 16f, nr.centerY() + 8f, nodePaint)
+                    canvas.drawLine(nr.right, nr.centerY(), centerRect.left, centerRect.centerY(), rulePaint)
+                }
+                y = startY + nodes.size * (nodeH + gap) + 30f
+            }
             else -> {
                 for (b in slide.bullets) {
                     if (y > height - 160f) break
@@ -1869,6 +1941,99 @@ object AgentVisualsParser {
                     canvas.drawText(cleanLbl, cx - lw / 2f, bottomY + 44f, labelPaint)
                 }
             }
+        }
+        return bmp
+    }
+
+    /**
+     * Renders a Mermaid / Flow / SVG DiagramSpec into an offline Bitmap for PDF export.
+     */
+    fun renderDiagramBitmap(spec: DiagramSpec, width: Int = 1200, height: Int = 760): Bitmap {
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val paperBg = android.graphics.Color.parseColor("#EFECE4")
+        val inkCol = android.graphics.Color.parseColor("#18181B")
+        val accentCol = android.graphics.Color.parseColor("#EA580C")
+        canvas.drawColor(paperBg)
+
+        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = inkCol
+            strokeWidth = 5f
+            style = Paint.Style.STROKE
+        }
+        canvas.drawRect(18f, 18f, width - 18f, height - 18f, borderPaint)
+
+        val headerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = inkCol
+            textSize = 36f
+            typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+        }
+        canvas.drawText(spec.title.uppercase().take(42), 56f, 82f, headerPaint)
+        canvas.drawLine(56f, 106f, width - 56f, 106f, borderPaint)
+
+        val bodyText = if (spec.mermaidCode.isNotBlank()) spec.mermaidCode else spec.svgContent
+        // Extract node labels & arrows from Mermaid / text syntax if present
+        val nodeLabels = LinkedHashSet<String>()
+        Regex("""[A-Za-z0-9_]+\s*[\[\(\{]+([^\]\)\}]+)[\]\)\}]+""").findAll(bodyText).forEach {
+            val clean = it.groupValues[1].trim().replace("\"", "")
+            if (clean.isNotBlank()) nodeLabels.add(clean)
+        }
+        if (nodeLabels.isEmpty()) {
+            bodyText.lines().map { it.trim() }.filter {
+                it.isNotBlank() && !it.startsWith("graph ", true) && !it.startsWith("flowchart ", true) && !it.startsWith("%%")
+            }.take(8).forEach { line ->
+                nodeLabels.add(line.take(40))
+            }
+        }
+        val nodes = nodeLabels.toList().take(8)
+        val boxFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.parseColor("#FAF8F3") }
+        val accentFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accentCol }
+        val nodePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = inkCol
+            textSize = 24f
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        }
+        val whitePaint = TextPaint(nodePaint).apply { color = android.graphics.Color.WHITE }
+        val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accentCol; strokeWidth = 5f }
+
+        if (nodes.isNotEmpty()) {
+            val cols = 2
+            val padX = 72f
+            val padY = 148f
+            val boxW = (width - padX * 2 - 120f) / cols
+            val rowsCount = ((nodes.size + cols - 1) / cols).coerceAtLeast(1)
+            val boxH = ((height - padY - 70f) / rowsCount - 28f).coerceIn(70f, 130f)
+            nodes.forEachIndexed { idx, label ->
+                val col = idx % cols
+                val row = idx / cols
+                val left = padX + col * (boxW + 120f)
+                val top = padY + row * (boxH + 28f)
+                val rect = RectF(left, top, left + boxW, top + boxH)
+                canvas.drawRoundRect(rect, 16f, 16f, if (idx == 0) accentFill else boxFill)
+                canvas.drawRoundRect(rect, 16f, 16f, borderPaint)
+                val txt = label.take(28)
+                val p = if (idx == 0) whitePaint else nodePaint
+                canvas.drawText(txt, rect.left + 20f, rect.centerY() + 8f, p)
+                if (idx + 1 < nodes.size) {
+                    val nextCol = (idx + 1) % cols
+                    val nextRow = (idx + 1) / cols
+                    val nLeft = padX + nextCol * (boxW + 120f)
+                    val nTop = padY + nextRow * (boxH + 28f)
+                    canvas.drawLine(rect.centerX(), rect.bottom, nLeft + boxW / 2f, nTop, arrowPaint)
+                }
+            }
+        } else {
+            val codePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = inkCol
+                textSize = 22f
+                typeface = Typeface.MONOSPACE
+            }
+            val sl = StaticLayout.Builder.obtain(bodyText.take(600), 0, bodyText.take(600).length, codePaint, width - 120)
+                .build()
+            canvas.save()
+            canvas.translate(60f, 140f)
+            sl.draw(canvas)
+            canvas.restore()
         }
         return bmp
     }
@@ -2559,13 +2724,25 @@ fun SlidesMakerCard(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     WebView(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         settings.loadWithOverviewMode = true
                         settings.useWideViewPort = true
+                        settings.allowFileAccess = true
+                        settings.allowContentAccess = true
+                        settings.allowFileAccessFromFileURLs = true
+                        settings.allowUniversalAccessFromFileURLs = true
+                        settings.setSupportZoom(true)
+                        settings.builtInZoomControls = true
+                        settings.displayZoomControls = false
+                        webChromeClient = WebChromeClient()
                         webViewClient = createSafeWebViewClient()
                         tag = slidingHtml
-                        loadDataWithBaseURL("https://aunotes.local/", slidingHtml, "text/html", "UTF-8", null)
+                        loadDataWithBaseURL("file:///android_asset/", slidingHtml, "text/html", "UTF-8", null)
                         inlineWebView = this
                     }
                 },
@@ -2573,7 +2750,7 @@ fun SlidesMakerCard(
                     inlineWebView = wv
                     if (wv.tag != slidingHtml) {
                         wv.tag = slidingHtml
-                        wv.loadDataWithBaseURL("https://aunotes.local/", slidingHtml, "text/html", "UTF-8", null)
+                        wv.loadDataWithBaseURL("file:///android_asset/", slidingHtml, "text/html", "UTF-8", null)
                     }
                 },
                 onRelease = { wv ->
@@ -2736,7 +2913,8 @@ fun SlidesMakerCard(
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
-                    .statusBarsPadding(),
+                    .statusBarsPadding()
+                    .navigationBarsPadding(),
                 color = Color(0xFFFAF8F5),
                 shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)
             ) {
@@ -2815,12 +2993,31 @@ fun SlidesMakerCard(
                             .weight(1f),
                         factory = { ctx ->
                             WebView(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
                                 settings.javaScriptEnabled = true
                                 settings.domStorageEnabled = true
                                 settings.loadWithOverviewMode = true
                                 settings.useWideViewPort = true
+                                settings.allowFileAccess = true
+                                settings.allowContentAccess = true
+                                settings.allowFileAccessFromFileURLs = true
+                                settings.allowUniversalAccessFromFileURLs = true
+                                settings.setSupportZoom(true)
+                                settings.builtInZoomControls = true
+                                settings.displayZoomControls = false
+                                webChromeClient = WebChromeClient()
                                 webViewClient = createSafeWebViewClient()
-                                loadDataWithBaseURL("https://aunotes.local/", slidingHtml, "text/html", "UTF-8", null)
+                                tag = slidingHtml
+                                loadDataWithBaseURL("file:///android_asset/", slidingHtml, "text/html", "UTF-8", null)
+                            }
+                        },
+                        update = { wv ->
+                            if (wv.tag != slidingHtml) {
+                                wv.tag = slidingHtml
+                                wv.loadDataWithBaseURL("file:///android_asset/", slidingHtml, "text/html", "UTF-8", null)
                             }
                         },
                         onRelease = { wv ->
@@ -3965,24 +4162,49 @@ fun HtmlArtifactCard(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // Built artifacts (images already downloaded) arrive as "AUFILE:<path to local index.html>"
     val fileMode = htmlCode.startsWith("AUFILE:")
     val filePath = htmlCode.removePrefix("AUFILE:")
-    val resolvedHtml = remember(htmlCode, isDarkMode) {
-        if (fileMode) {
-            runCatching {
-                val f = File(filePath)
-                if (f.exists()) com.example.data.ai.ArtifactBuilder.harden(com.example.data.ai.ArtifactBuilder.inlineForExport(f), isDarkMode) else ""
-            }.getOrDefault("")
-        } else {
-            com.example.data.ai.ArtifactBuilder.harden(htmlCode, isDarkMode)
+    var desktopMode by remember { mutableStateOf(false) }
+
+    val resolvedHtmlState = produceState(initialValue = "", htmlCode, isDarkMode, desktopMode) {
+        value = withContext(Dispatchers.Default) {
+            if (fileMode) {
+                runCatching {
+                    val f = File(filePath)
+                    if (f.exists()) {
+                        val inlined = com.example.data.ai.ArtifactBuilder.inlineForExport(f, context)
+                        com.example.data.ai.ArtifactBuilder.harden(inlined, isDarkMode, desktopMode)
+                    } else ""
+                }.getOrDefault("")
+            } else {
+                com.example.data.ai.ArtifactBuilder.harden(htmlCode, isDarkMode, desktopMode)
+            }
         }
     }
-    val loadPage: (WebView) -> Unit = { wv ->
-        if (wv.tag != resolvedHtml) {
-            wv.tag = resolvedHtml
-            wv.settings.allowFileAccess = true
-            wv.settings.allowContentAccess = true
+    val resolvedHtml = resolvedHtmlState.value
+
+    val configureAndLoad: (WebView, Boolean) -> Unit = { wv, isDesktop ->
+        wv.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            allowFileAccess = true
+            allowContentAccess = true
+            allowFileAccessFromFileURLs = true
+            allowUniversalAccessFromFileURLs = true
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+            useWideViewPort = true
+            loadWithOverviewMode = isDesktop
+            userAgentString = if (isDesktop) {
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            } else {
+                null
+            }
+        }
+        val tagKey = "$isDesktop::$resolvedHtml"
+        if (wv.tag != tagKey) {
+            wv.tag = tagKey
             if (resolvedHtml.isNotBlank()) {
                 val baseUrl = if (fileMode) {
                     val parent = File(filePath).parentFile
@@ -3992,7 +4214,7 @@ fun HtmlArtifactCard(
                 }
                 wv.loadDataWithBaseURL(baseUrl, resolvedHtml, "text/html", "UTF-8", null)
             } else if (fileMode) {
-                wv.loadUrl("file://" + filePath)
+                wv.loadUrl("file://$filePath")
             }
         }
     }
@@ -4036,19 +4258,34 @@ fun HtmlArtifactCard(
                 Spacer(Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("Interactive HTML Artifact • Swipe or tap arrows • Fullscreen", fontSize = 11.sp, color = fg.copy(alpha = 0.62f))
+                    Text(
+                        if (desktopMode) "Desktop 1280px View • Pinch to zoom • Fullscreen"
+                        else "Interactive HTML Artifact • Tap Desktop or Fullscreen",
+                        fontSize = 11.sp,
+                        color = fg.copy(alpha = 0.62f)
+                    )
                 }
             }
-            Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color(0xFFEA580C), modifier = Modifier.size(22.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                IconButton(onClick = { desktopMode = !desktopMode }, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        if (desktopMode) Icons.Default.DesktopWindows else Icons.Default.PhoneAndroid,
+                        contentDescription = if (desktopMode) "Desktop mode active" else "Switch to desktop mode",
+                        tint = if (desktopMode) Color(0xFFEA580C) else fg.copy(alpha = 0.72f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color(0xFFEA580C), modifier = Modifier.size(22.dp))
+            }
         }
 
         Spacer(Modifier.height(8.dp))
 
-        // Live Inline Preview
+        // Live Inline Preview (taller 320.dp + pinch-zoom + Desktop toggle)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(260.dp)
+                .height(320.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .border(1.5.dp, borderCol, RoundedCornerShape(12.dp))
         ) {
@@ -4056,12 +4293,10 @@ fun HtmlArtifactCard(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     WebView(ctx).apply {
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.loadWithOverviewMode = false
-                        settings.useWideViewPort = false
-                        settings.allowFileAccess = true
-                        settings.allowContentAccess = true
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
                         addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
                         setOnTouchListener { v, event ->
                             when (event.actionMasked) {
@@ -4070,12 +4305,13 @@ fun HtmlArtifactCard(
                             }
                             false
                         }
+                        webChromeClient = WebChromeClient()
                         webViewClient = createSafeWebViewClient()
-                        loadPage(this)
+                        configureAndLoad(this, desktopMode)
                     }
                 },
                 update = { wv ->
-                    loadPage(wv)
+                    configureAndLoad(wv, desktopMode)
                 },
                 onRelease = { wv ->
                     runCatching {
@@ -4185,7 +4421,13 @@ fun HtmlArtifactCard(
             onDismissRequest = { showFullScreen = false },
             properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
         ) {
-            Surface(modifier = Modifier.fillMaxSize().statusBarsPadding(), color = Color(0xFFFAF8F5)) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding(),
+                color = Color(0xFFFAF8F5)
+            ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     Row(
                         modifier = Modifier
@@ -4207,46 +4449,65 @@ fun HtmlArtifactCard(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
-                        IconButton(
-                            onClick = {
-                                scope.launch(Dispatchers.IO) {
-                                    val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "page" } + ".html"
-                                    val tmp = File(context.cacheDir, safeName)
-                                    val exportContent = if (fileMode) {
-                                        com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath), context)
-                                    } else {
-                                        com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(context, htmlCode)
-                                    }
-                                    tmp.writeText(exportContent)
-                                    val saved = NoteExporter.saveToDevice(context, tmp, safeName, "text/html")
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(
-                                            context,
-                                            if (saved != null) "Saved $safeName to ${saved.displayPath}" else "Could not save HTML",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { desktopMode = !desktopMode }) {
+                                Icon(
+                                    if (desktopMode) Icons.Default.DesktopWindows else Icons.Default.PhoneAndroid,
+                                    contentDescription = null,
+                                    tint = if (desktopMode) Color(0xFFEA580C) else Color(0xFF52525B),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    if (desktopMode) "Desktop" else "Mobile",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (desktopMode) Color(0xFFEA580C) else Color(0xFF18181B)
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    scope.launch(Dispatchers.IO) {
+                                        val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "page" } + ".html"
+                                        val tmp = File(context.cacheDir, safeName)
+                                        val exportContent = if (fileMode) {
+                                            com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath), context)
+                                        } else {
+                                            com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(context, htmlCode)
+                                        }
+                                        tmp.writeText(exportContent)
+                                        val saved = NoteExporter.saveToDevice(context, tmp, safeName, "text/html")
+                                        withContext(Dispatchers.Main) {
+                                            Toast.makeText(
+                                                context,
+                                                if (saved != null) "Saved $safeName to ${saved.displayPath}" else "Could not save HTML",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
                                     }
                                 }
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = "Save HTML", tint = Color(0xFF18181B))
                             }
-                        ) {
-                            Icon(Icons.Default.Download, contentDescription = "Save HTML", tint = Color(0xFF18181B))
                         }
                     }
                     HorizontalDivider(color = Color(0xFFE4E4E7))
                     AndroidView(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxWidth().weight(1f),
                         factory = { ctx ->
                             WebView(ctx).apply {
-                                settings.javaScriptEnabled = true
-                                settings.domStorageEnabled = true
-                                settings.loadWithOverviewMode = false
-                                settings.useWideViewPort = false
-                                settings.allowFileAccess = true
-                                settings.allowContentAccess = true
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
                                 addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
+                                webChromeClient = WebChromeClient()
                                 webViewClient = createSafeWebViewClient()
-                                loadPage(this)
+                                configureAndLoad(this, desktopMode)
                             }
+                        },
+                        update = { wv ->
+                            configureAndLoad(wv, desktopMode)
                         },
                         onRelease = { wv ->
                             runCatching {

@@ -221,12 +221,15 @@ object NoteAgentFormatter {
                     lang in setOf("diagram", "svg", "shape") -> segments.add(ChatSegment.DiagramBlock(blockBody))
                     lang in setOf("organised_file", "organized_file") -> segments.add(ChatSegment.OrganisedFileBlock(blockBody))
                     lang in setOf("html_artifact", "html_page") -> {
-                        val extractedTitle = Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE)
+                        val commentTitle = Regex("<!--\\s*title\\s*:(.*?)-->", RegexOption.IGNORE_CASE)
                             .find(blockBody)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
-                            ?: "Interactive HTML Artifact"
+                        val tagTitle = Regex("<title[^>]*>(.*?)</title>", RegexOption.IGNORE_CASE)
+                            .find(blockBody)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+                        val extractedTitle = commentTitle ?: tagTitle ?: "Interactive HTML Artifact"
                         segments.add(ChatSegment.HtmlArtifactBlock(extractedTitle, blockBody))
                     }
                     else -> {
+                        val bodyNoComments = tBody.replace(Regex("^(\\s*<!--[\\s\\S]*?-->\\s*)+"), "").trim()
                         if ((lang == "json" || lang == "code") && tBody.startsWith("{") && tBody.contains("\"slides\"")) {
                             segments.add(ChatSegment.SlideDeckBlock(blockBody))
                         } else if ((lang == "json" || lang == "code") && tBody.startsWith("{") &&
@@ -237,10 +240,18 @@ object NoteAgentFormatter {
                             segments.add(ChatSegment.ChartBlock(blockBody))
                         } else if (looksLikeMermaidBody || tBody.startsWith("<svg", ignoreCase = true)) {
                             segments.add(ChatSegment.DiagramBlock(blockBody))
-                        } else if (lang == "html" && (tBody.startsWith("<!doctype html", ignoreCase = true) || tBody.startsWith("<html", ignoreCase = true) || (tBody.contains("<style", ignoreCase = true) && tBody.contains("</", ignoreCase = true)))) {
-                            val extractedTitle = Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE)
+                        } else if (lang in setOf("html", "htm") && (
+                                bodyNoComments.startsWith("<!doctype", ignoreCase = true) ||
+                                    bodyNoComments.startsWith("<html", ignoreCase = true) ||
+                                    (tBody.contains("<style", ignoreCase = true) && tBody.contains("</", ignoreCase = true)) ||
+                                    (tBody.contains("<script", ignoreCase = true) && tBody.contains("</", ignoreCase = true))
+                                )
+                        ) {
+                            val commentTitle = Regex("<!--\\s*title\\s*:(.*?)-->", RegexOption.IGNORE_CASE)
                                 .find(tBody)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
-                                ?: "Interactive HTML Page"
+                            val tagTitle = Regex("<title[^>]*>(.*?)</title>", RegexOption.IGNORE_CASE)
+                                .find(tBody)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+                            val extractedTitle = commentTitle ?: tagTitle ?: "Interactive HTML Page"
                             segments.add(ChatSegment.HtmlArtifactBlock(extractedTitle, blockBody))
                         } else {
                             segments.add(ChatSegment.CodeBlock(lang, blockBody))
@@ -548,8 +559,12 @@ object NoteAgentFormatter {
                     }
                 }
                 is ChatSegment.DiagramBlock -> {
-                    appendStyledSegment("[Diagram / Shape Included]", forceBold = true)
-                    sb.append("\n")
+                    val rawDiag = seg.rawContent.trim()
+                    if (rawDiag.isNotBlank()) {
+                        if (sb.isNotEmpty() && !sb.endsWith("\n")) sb.append("\n")
+                        val lang = if (rawDiag.startsWith("<svg", ignoreCase = true) || rawDiag.startsWith("{")) "diagram" else "mermaid"
+                        sb.append("```$lang\n").append(rawDiag).append("\n```\n")
+                    }
                 }
                 is ChatSegment.OrganisedFileBlock -> {
                     val f = com.example.ui.components.AgentVisualsParser.parseOrganisedFile(seg.rawJson)
@@ -558,8 +573,18 @@ object NoteAgentFormatter {
                     }
                 }
                 is ChatSegment.HtmlArtifactBlock -> {
-                    appendStyledSegment("HTML Artifact: ${seg.title}", forceBold = true)
-                    sb.append("\n")
+                    val rawHtml = seg.htmlCode.trim()
+                    val resolvedHtml = if (rawHtml.startsWith("AUFILE:")) {
+                        val f = java.io.File(rawHtml.removePrefix("AUFILE:"))
+                        if (f.exists()) runCatching { f.readText() }.getOrDefault(rawHtml) else rawHtml
+                    } else rawHtml
+                    if (resolvedHtml.isNotBlank() && !resolvedHtml.startsWith("AUFILE:")) {
+                        if (sb.isNotEmpty() && !sb.endsWith("\n")) sb.append("\n")
+                        sb.append("```html\n<!-- title:${seg.title} -->\n").append(resolvedHtml).append("\n```\n")
+                    } else {
+                        appendStyledSegment("HTML Artifact: ${seg.title}", forceBold = true)
+                        sb.append("\n")
+                    }
                 }
                 is ChatSegment.PdfArtifactBlock -> {
                     appendStyledSegment("PDF Document: ${seg.title} (${seg.summary})", forceBold = true)
