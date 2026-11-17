@@ -112,6 +112,7 @@ fun GlassSidebar(
     val context = LocalContext.current
     var showDeveloperModal by remember { mutableStateOf(false) }
     var showAlarmListModal by remember { mutableStateOf(false) }
+    var alarmTab by remember { mutableStateOf(0) } // 0 = Alarms, 1 = Timer
     val noteAlarms by preferences.noteAlarms.collectAsState()
     val blinkEnabled by preferences.blinkOnAlarmActive.collectAsState()
     val hasActiveAlarm = noteAlarms.isNotEmpty()
@@ -411,6 +412,35 @@ fun GlassSidebar(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
+                    // Alarms | Timer tabs
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0F000000))
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf("Alarms", "Timer").forEachIndexed { i, label ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(34.dp)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(if (alarmTab == i) CrimsonPrimary else Color.Transparent)
+                                    .clickable { alarmTab = i },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(label, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (alarmTab == i) Color.White else (if (isDarkMode) Color.White else Color.Black))
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (alarmTab == 1) {
+                        com.example.ui.components.TimerPanel(isDarkMode = isDarkMode)
+                    } else {
+
                     // Toggle to turn the Red Blinking Indicator Light ON or OFF directly inside Alarm section
                     Row(
                         modifier = Modifier
@@ -542,6 +572,7 @@ fun GlassSidebar(
                             }
                         }
                     }
+                    } // end Alarms tab
                 }
             }
         }

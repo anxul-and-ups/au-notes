@@ -129,6 +129,31 @@ import java.util.Locale
 import kotlin.math.min
 
 private fun createSafeWebViewClient(): WebViewClient = object : WebViewClient() {
+    // A page that cannot load (e.g. no internet) shows a friendly message instead of a blank / broken view
+    override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
+        super.onReceivedError(view, request, error)
+        if (request?.isForMainFrame != true || view == null) return
+        runCatching {
+            val online = runCatching {
+                val cm = view.context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                val caps = cm?.getNetworkCapabilities(cm.activeNetwork)
+                caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+            }.getOrDefault(true)
+            val title = if (online) "This content could not be loaded" else "No internet connection"
+            val hint = if (online) "Please try again in a moment." else "Connect to Wi-Fi or mobile data, then tap Retry. Everything saved on your phone still works offline."
+            val failedUrl = request.url?.toString().orEmpty().replace("\"", "")
+            view.loadDataWithBaseURL(
+                null,
+                "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>" +
+                    "<body style='margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#F4F1EA;color:#18181B;text-align:center'>" +
+                    "<div style='padding:24px'><div style='font-size:34px'>&#128246;</div><h3 style='margin:8px 0'>" + title + "</h3>" +
+                    "<p style='margin:0 0 16px;opacity:.7;font-size:14px'>" + hint + "</p>" +
+                    "<button onclick=\"location.href='" + failedUrl + "'\" style='background:#EA580C;color:#fff;border:0;border-radius:12px;padding:12px 22px;font-weight:700;font-size:14px'>Retry</button></div></body></html>",
+                "text/html", "UTF-8", null
+            )
+        }
+    }
+
     override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
         runCatching {
             (view?.parent as? ViewGroup)?.removeView(view)
