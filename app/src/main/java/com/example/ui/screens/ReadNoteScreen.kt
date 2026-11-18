@@ -436,19 +436,6 @@ fun ReadNoteScreen(
                         )
                     }
 
-                    if (onOpenInSmallWindow != null) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        NeuIconButton(
-                            icon = Icons.Default.OpenInNew,
-                            contentDescription = "Small Window",
-                            isDarkMode = isDarkMode,
-                            size = 34.dp,
-                            iconSize = 16.dp,
-                            tint = if (isDarkMode) Color.White else Color.Black,
-                            onClick = { onOpenInSmallWindow(note) }
-                        )
-                    }
-
                     Spacer(modifier = Modifier.width(4.dp))
 
                     // Info (i): writing time, lines, words, letters
@@ -606,12 +593,14 @@ fun ReadNoteScreen(
                                         )
                                         .clickable {
                                             if (!isNoteLocked) {
+                                                com.example.ui.util.UiSoundManager.playSciFiLock(context, isUnlock = false)
                                                 isNoteLocked = true
                                                 lockedInThisSession = true
                                                 onToggleLock(note.id, true)
                                                 Toast.makeText(context, "Note Locked", Toast.LENGTH_SHORT).show()
                                             } else {
                                                 if (!hasCustomPin || lockedInThisSession) {
+                                                    com.example.ui.util.UiSoundManager.playSciFiLock(context, isUnlock = true)
                                                     isNoteLocked = false
                                                     lockedInThisSession = false
                                                     onToggleLock(note.id, false)
@@ -669,6 +658,7 @@ fun ReadNoteScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
                                         .clickable {
+                                            com.example.ui.util.UiSoundManager.playDeleteSound(context)
                                             onDeleteNote(note.id)
                                             Toast.makeText(context, "Moved to Recycle Bin", Toast.LENGTH_SHORT).show()
                                         }
@@ -911,11 +901,11 @@ fun ReadNoteScreen(
                                                 drawLine(marginLineColor, androidx.compose.ui.geometry.Offset(x + 3.dp.toPx(), 0f), androidx.compose.ui.geometry.Offset(x + 3.dp.toPx(), size.height), 1.2.dp.toPx())
                                             }
                                         }
-                                        if (savedPageStyle in setOf("ruled", "legal", "grid", "dotted")) {
+                                        if (savedPageStyle in setOf("ruled", "legal", "grid", "dotted", "cornell", "a4")) {
                                             val stepPx = ((note.fontSize * savedLineSpacing).sp.toPx()).coerceAtLeast(22.dp.toPx())
                                             val ys = ArrayList<Float>()
                                             var yy = stepPx
-                                            val limit = maxOf(size.height, 420.dp.toPx())
+                                            val limit = maxOf(size.height, 640.dp.toPx())
                                             while (yy < limit) { ys.add(yy); yy += stepPx }
                                             drawPageRules(
                                                 savedPageStyle,
@@ -1094,35 +1084,66 @@ fun ReadNoteScreen(
                             }
                         }
 
-                        if ((note.category == "Code" || note.isCodeFormat) &&
+                        // Point 11: Notes saved from the Full-Screen HTML/Slides Artifact Viewer (or standalone HTML documents)
+                        // open directly as a full-screen interactive WebView in Read Mode!
+                        val webViewHtmlPayload = remember(displayContent) {
+                            val trimmed = displayContent.trim()
+                            when {
+                                trimmed.startsWith("<!--au_webview_note-->", ignoreCase = true) ->
+                                    trimmed.removePrefix("<!--au_webview_note-->").trim()
+                                trimmed.startsWith("<!DOCTYPE html", ignoreCase = true) ||
+                                    trimmed.startsWith("<html", ignoreCase = true) ||
+                                    trimmed.startsWith("AUFILE:", ignoreCase = true) -> trimmed
+                                else -> null
+                            }
+                        }
+
+                        if (webViewHtmlPayload != null) {
+                            com.example.ui.components.DirectNoteWebView(
+                                title = note.title.ifBlank { "Interactive Artifact" },
+                                htmlCode = webViewHtmlPayload,
+                                isDarkMode = isDarkMode
+                            )
+                        } else if ((note.category == "Code" || note.isCodeFormat) &&
                             !com.example.data.model.AutoClassifier.hasRichStructure(note.content, note.tableData, note.styleSpansJson, note.attachmentsJson)) {
-                            // Syntax colours are computed in the background so big code never freezes the screen.
-                            val coloredCode by produceState<AnnotatedString?>(
-                                initialValue = if (displayContent.length <= 2000) com.example.ui.util.CodeHighlight.highlight(displayContent, isDarkMode && !lightPaper) else null,
-                                displayContent, lightPaper
-                            ) {
-                                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                    com.example.ui.util.CodeHighlight.highlight(displayContent, isDarkMode && !lightPaper)
-                                }
-                            }
-                            if (coloredCode == null) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(8.dp)) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = CrimsonPrimary)
-                                    Text("Formatting code…", fontSize = 12.sp, color = Color.Gray)
-                                }
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 2.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = coloredCode ?: AnnotatedString(displayContent),
-                                    fontSize = 13.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = if (lightPaper) Color(0xFF111111) else com.example.ui.util.CodeHighlight.baseColor(isDarkMode),
-                                    lineHeight = 19.sp
+                            // Point 9: Use virtualized CodeBoxCard for large code (>6KB) so 50KB+ code notes never lag or crash!
+                            if (displayContent.length > 6_000) {
+                                com.example.ui.components.CodeBoxCard(
+                                    title = note.title.ifBlank { "Code" },
+                                    code = displayContent,
+                                    lang = "",
+                                    isDarkMode = isDarkMode && !lightPaper,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    fontSize = note.fontSize.coerceIn(11, 18)
                                 )
+                            } else {
+                                val coloredCode by produceState<AnnotatedString?>(
+                                    initialValue = if (displayContent.length <= 2000) com.example.ui.util.CodeHighlight.highlight(displayContent, isDarkMode && !lightPaper) else null,
+                                    displayContent, lightPaper
+                                ) {
+                                    value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                        com.example.ui.util.CodeHighlight.highlight(displayContent, isDarkMode && !lightPaper)
+                                    }
+                                }
+                                if (coloredCode == null) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(8.dp)) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = CrimsonPrimary)
+                                        Text("Formatting code…", fontSize = 12.sp, color = Color.Gray)
+                                    }
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 2.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = coloredCode ?: AnnotatedString(displayContent),
+                                        fontSize = 13.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = if (lightPaper) Color(0xFF111111) else com.example.ui.util.CodeHighlight.baseColor(isDarkMode),
+                                        lineHeight = 19.sp
+                                    )
+                                }
                             }
                         } else {
                             // Heavy styling of big notes runs on a background thread with loading badge for huge content
@@ -1917,6 +1938,42 @@ private fun ReadRichBody(
                     i++
                 }
 
+                // Multi-page break marker: ---page--- or [page_break]
+                trimmedLine.equals("---page---", ignoreCase = true) || trimmedLine.equals("[page_break]", ignoreCase = true) -> {
+                    val pageNum = remember(i, lines) {
+                        lines.subList(0, i + 1).count {
+                            val t = it.trim()
+                            t.equals("---page---", ignoreCase = true) || t.equals("[page_break]", ignoreCase = true)
+                        } + 1
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        HorizontalDivider(modifier = Modifier.weight(1f), thickness = 1.dp, color = CrimsonPrimary.copy(alpha = 0.45f))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(CrimsonPrimary.copy(alpha = 0.14f))
+                                .border(1.dp, CrimsonPrimary.copy(alpha = 0.4f), RoundedCornerShape(50))
+                                .padding(horizontal = 12.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                text = "PAGE $pageNum",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = CrimsonPrimary,
+                                letterSpacing = 1.2.sp
+                            )
+                        }
+                        HorizontalDivider(modifier = Modifier.weight(1f), thickness = 1.dp, color = CrimsonPrimary.copy(alpha = 0.45f))
+                    }
+                    i++
+                }
+
                 // Horizontal Rule: --- or ***
                 trimmedLine == "---" || trimmedLine == "***" -> {
                     HorizontalDivider(
@@ -2071,10 +2128,13 @@ private fun ReadRichBody(
                         !lines[j].startsWith("> ") &&
                         lines[j].trim() != "---" &&
                         lines[j].trim() != "***" &&
+                        !lines[j].trim().equals("---page---", ignoreCase = true) &&
+                        !lines[j].trim().equals("[page_break]", ignoreCase = true) &&
                         !lines[j].trimStart().startsWith("- ") &&
                         !lines[j].trimStart().startsWith("* ") &&
                         !lines[j].trimStart().startsWith("• ") &&
-                        !(lines[j].trimStart().startsWith("|") && lines[j].trimEnd().endsWith("|"))
+                        !(lines[j].trimStart().startsWith("|") && lines[j].trimEnd().endsWith("|")) &&
+                        (j - i) < 45
                     ) j++
 
                     val from = starts[i]

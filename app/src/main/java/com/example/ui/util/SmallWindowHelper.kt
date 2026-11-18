@@ -2,91 +2,127 @@ package com.example.ui.util
 
 import android.app.Activity
 import android.app.ActivityOptions
+import android.app.PictureInPictureParams
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.Rect
 import android.os.Build
+import android.util.Rational
 import android.widget.Toast
 import com.example.MainActivity
 
 /**
- * Launches AU Notes in Native Android Multi-Window / Freeform Mode (Small Window)
- * relying cleanly on the OS Window Manager rather than SYSTEM_ALERT_WINDOW overlays.
- * Uses FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_MULTIPLE_TASK and WindowingMode=5 (Freeform)
- * so Vivo OriginOS, Samsung OneUI, Pixel, and AOSP provide native close/expand/resize handles.
+ * Native Android Small Window / Floating PiP & Multi-Window Freeform launcher.
+ *
+ * Uses Native Android Picture-in-Picture (PiP) + Multi-Window Freeform windowing
+ * (zero SYSTEM_ALERT_WINDOW overlay permission required) so tapping the Small Window
+ * button immediately shrinks the note/app into an OS-managed floating movable/resizable window
+ * with native system close/expand controls.
  */
 object SmallWindowHelper {
-    private const val WINDOWING_MODE_FREEFORM = 5
+    const val EXTRA_NOTE_ID = "extra_small_window_note_id"
+    const val EXTRA_OPEN_EDIT = "extra_small_window_open_edit"
+    const val EXTRA_SMALL_WINDOW_MODE = "extra_small_window_mode"
 
-    fun computeDefaultFreeformBounds(context: Context): Rect {
-        val dm = context.resources.displayMetrics
-        val w = dm.widthPixels.coerceAtLeast(720)
-        val h = dm.heightPixels.coerceAtLeast(1080)
-        val winW = (w * 0.72f).toInt().coerceIn(540, (w * 0.9f).toInt())
-        val winH = (h * 0.56f).toInt().coerceIn(640, (h * 0.85f).toInt())
-        val left = (w - winW) / 2
-        val top = (h - winH) / 4
-        return Rect(left, top, left + winW, top + winH)
+    /**
+     * Callback registered by [MainActivity] so launching Small Window prepares the
+     * target note in Read or Write mode right before entering native floating window mode.
+     */
+    var onPrepareSmallWindowNote: ((noteId: Long?, openEdit: Boolean) -> Unit)? = null
+
+    private tailrec fun Context.findActivity(): Activity? = when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 
-    fun buildFreeformIntent(context: Context, noteId: Long? = null, openEdit: Boolean = false): Intent {
-        return Intent(context, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
-            if (noteId != null && noteId > 0L) {
-                putExtra("OPEN_NOTE_ID", noteId)
-                putExtra("OPEN_NOTE_EDIT", openEdit)
-            } else if (openEdit) {
-                putExtra("OPEN_QUICK_NOTE", true)
+    fun launchAppSmallWindow(context: Context) {
+        launchNoteInSmallWindow(context = context, noteId = null, openEdit = false)
+    }
+
+    fun launchNoteInSmallWindow(
+        context: Context,
+        noteId: Long?,
+        openEdit: Boolean = false
+    ) {
+        if (noteId != null && noteId > 0L) {
+            onPrepareSmallWindowNote?.invoke(noteId, openEdit)
+        }
+
+        val activity = context.findActivity()
+
+        // Primary Path (Android 8.0+ / API 26+): Enter Native OS Picture-in-Picture Floating Window.
+        if (activity != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val builder = PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(3, 4))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    builder.setSeamlessResizeEnabled(true)
+                }
+                val entered = activity.enterPictureInPictureMode(builder.build())
+                if (entered) {
+                    return
+                }
+            } catch (_: Throwable) {
+                // Fallback to multi-window freeform intent below
             }
         }
-    }
 
-    fun buildFreeformActivityOptions(context: Context): ActivityOptions {
-        val options = ActivityOptions.makeBasic()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        // Secondary Path: Native Multi-Window Freeform / Adjacent Task Launch
+        try {
+            val dm = context.resources.displayMetrics
+            val screenW = dm.widthPixels.coerceAtLeast(480)
+            val screenH = dm.heightPixels.coerceAtLeast(800)
+
+            val winW = (screenW * 0.72f).toInt().coerceIn(320, screenW)
+            val winH = (screenH * 0.62f).toInt().coerceIn(420, screenH)
+            val left = ((screenW - winW) / 2).coerceAtLeast(16)
+            val top = ((screenH - winH) / 3).coerceAtLeast(32)
+            val bounds = Rect(left, top, left + winW, top + winH)
+
+            val intent = buildFreeformIntent(context, noteId = noteId, openEdit = openEdit)
+
+            val options = ActivityOptions.makeBasic()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                options.launchBounds = bounds
+            }
             try {
-                options.setLaunchBounds(computeDefaultFreeformBounds(context))
+                val method = ActivityOptions::class.java.getMethod(
+                    "setLaunchWindowingMode",
+                    Int::class.javaPrimitiveType
+                )
+                method.invoke(options, 5)
             } catch (_: Throwable) {}
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            try {
-                // Use public API when available on newer SDKs or reflective WindowConfiguration.WINDOWING_MODE_FREEFORM (5)
-                val m = ActivityOptions::class.java.getMethod("setLaunchWindowingMode", Int::class.javaPrimitiveType)
-                m.invoke(options, WINDOWING_MODE_FREEFORM)
-            } catch (_: Throwable) {}
-        }
-        return options
-    }
 
-    fun launchNoteInSmallWindow(context: Context, noteId: Long? = null, openEdit: Boolean = false): Boolean {
-        val intent = buildFreeformIntent(context, noteId, openEdit)
-        return try {
-            val opts = buildFreeformActivityOptions(context)
-            context.startActivity(intent, opts.toBundle())
-            true
-        } catch (_: SecurityException) {
-            launchMultiTaskFallback(context, intent)
-        } catch (_: Exception) {
-            launchMultiTaskFallback(context, intent)
-        }
-    }
-
-    fun launchAppSmallWindow(activity: Activity): Boolean {
-        return launchNoteInSmallWindow(activity, noteId = null, openEdit = false)
-    }
-
-    private fun launchMultiTaskFallback(context: Context, intent: Intent): Boolean {
-        return try {
-            context.startActivity(intent)
+            context.startActivity(intent, options.toBundle())
+        } catch (e: Exception) {
             Toast.makeText(
                 context,
-                "New window opened. Enable Freeform/Small Window in Recents if your launcher doesn't auto-float.",
-                Toast.LENGTH_LONG
+                "Could not open small window: ${e.localizedMessage ?: "enable Picture-in-Picture in Settings"}",
+                Toast.LENGTH_SHORT
             ).show()
-            true
-        } catch (_: Exception) {
-            Toast.makeText(context, "Could not open small window on this device.", Toast.LENGTH_SHORT).show()
-            false
+        }
+    }
+
+    fun buildFreeformIntent(
+        context: Context,
+        noteId: Long? = null,
+        openEdit: Boolean = false
+    ): Intent {
+        return Intent(context, MainActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                    Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT
+            )
+            if (noteId != null && noteId > 0L) {
+                putExtra(EXTRA_NOTE_ID, noteId)
+                putExtra("OPEN_NOTE_ID", noteId)
+            }
+            putExtra(EXTRA_OPEN_EDIT, openEdit)
+            putExtra("OPEN_NOTE_EDIT", openEdit)
+            putExtra(EXTRA_SMALL_WINDOW_MODE, true)
         }
     }
 }

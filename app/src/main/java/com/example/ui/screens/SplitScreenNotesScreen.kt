@@ -3,14 +3,17 @@ package com.example.ui.screens
 import android.content.res.Configuration
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -28,9 +31,13 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -46,7 +53,6 @@ import androidx.compose.ui.window.Dialog
 import com.example.data.model.NoteEntity
 import com.example.data.preferences.AppPreferences
 import com.example.data.repository.NoteRepository
-import com.example.ui.util.RichTextFormatter
 import com.example.ui.components.GlassCard
 import com.example.ui.components.NeuIconButton
 import com.example.ui.components.NoteBackground
@@ -54,9 +60,11 @@ import com.example.ui.components.isLightPageStyle
 import com.example.ui.components.loadNotePageStyle
 import com.example.ui.components.pagePaperColor
 import com.example.ui.theme.CrimsonPrimary
+import com.example.ui.util.RichTextFormatter
 import com.example.ui.util.SmallWindowHelper
 import com.example.ui.util.handleHardwareShortcuts
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private data class PaneHistoryEntry(
     val text: String,
@@ -145,6 +153,13 @@ private class PaneStateHolder(
     }
 }
 
+/**
+ * Pro-Level Split-Screen Notes Workspace (Point 12):
+ *  - Smooth draggable divider handle with live percentage indicator (e.g., 50% / 50%) & snap presets (35/65, 50/50, 65/35).
+ *  - Independent vs Synced Scroll toggle for side-by-side comparison.
+ *  - One-tap Swap Panes and Send Selection / Copy to Other Pane.
+ *  - Supports WebView-native HTML notes, CodeBoxCard virtualization, and independent Read/Write toolbars per pane.
+ */
 @Composable
 fun SplitScreenNotesScreen(
     allNotes: List<NoteEntity>,
@@ -173,9 +188,25 @@ fun SplitScreenNotesScreen(
 
     val topPane = remember { PaneStateHolder(resolvedPrimary, initialPrimaryEdit) }
     val bottomPane = remember { PaneStateHolder(resolvedSecondary, initialEditMode = false) }
+    val topScrollState = rememberScrollState()
+    val bottomScrollState = rememberScrollState()
+    var syncScroll by remember { mutableStateOf(false) }
     var activePaneIndex by remember { mutableStateOf(0) }
     var paneWeightRatio by remember { mutableStateOf(0.5f) }
+    var containerMainAxisPx by remember { mutableStateOf(1000f) }
     var notePickerTargetPane by remember { mutableStateOf<Int?>(null) }
+
+    // Optional synced scroll between panes when user enables "Sync" mode
+    LaunchedEffect(topScrollState.value, syncScroll) {
+        if (syncScroll && activePaneIndex == 0 && bottomScrollState.value != topScrollState.value) {
+            bottomScrollState.scrollTo(topScrollState.value)
+        }
+    }
+    LaunchedEffect(bottomScrollState.value, syncScroll) {
+        if (syncScroll && activePaneIndex == 1 && topScrollState.value != bottomScrollState.value) {
+            topScrollState.scrollTo(bottomScrollState.value)
+        }
+    }
 
     fun savePane(pane: PaneStateHolder, showToast: Boolean = true) {
         scope.launch {
@@ -218,6 +249,8 @@ fun SplitScreenNotesScreen(
     }
 
     val activePane = if (activePaneIndex == 0) topPane else bottomPane
+    val topPct = (paneWeightRatio * 100).roundToInt()
+    val bottomPct = 100 - topPct
 
     NoteBackground(isDarkMode = isDarkMode) {
         Column(
@@ -252,7 +285,7 @@ fun SplitScreenNotesScreen(
                     }
                 )
         ) {
-            // Top Split-Screen Workspace Bar
+            // Pro Split-Screen Workspace Bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -260,13 +293,13 @@ fun SplitScreenNotesScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                     Box(modifier = Modifier.testTag("split_back_button")) {
                         NeuIconButton(
                             icon = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
                             isDarkMode = isDarkMode,
-                            size = 36.dp,
+                            size = 34.dp,
                             iconSize = 18.dp,
                             tint = if (isDarkMode) Color.White else Color.Black,
                             onClick = {
@@ -278,40 +311,84 @@ fun SplitScreenNotesScreen(
                     }
                     Spacer(Modifier.width(8.dp))
                     Column {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "Split Workspace",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = if (isDarkMode) Color.White else Color(0xFF111111),
+                                maxLines = 1
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(CrimsonPrimary.copy(alpha = 0.16f))
+                                    .clickable { paneWeightRatio = 0.5f }
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "$topPct% • $bottomPct%",
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = CrimsonPrimary
+                                )
+                            }
+                        }
                         Text(
-                            text = "Split Screen Notes",
-                            fontSize = 15.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = if (isDarkMode) Color.White else Color(0xFF111111)
-                        )
-                        Text(
-                            text = if (isLandscape) "Side-by-Side Independent Panes" else "Dual Independent Panes",
-                            fontSize = 10.sp,
-                            color = CrimsonPrimary
+                            text = if (isLandscape) "Side-by-Side Pro Dual Panes • Drag Handle to Resize" else "Dual Independent Panes • Drag Divider to Resize",
+                            fontSize = 9.5.sp,
+                            color = Color.Gray,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    // Balance ratio toggle (40/60, 50/50, 60/40)
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // Synced vs Independent Scroll Toggle
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(
+                                if (syncScroll) CrimsonPrimary.copy(alpha = 0.22f)
+                                else if (isDarkMode) Color(0x1CFFFFFF) else Color(0x12000000)
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (syncScroll) CrimsonPrimary else Color.Transparent,
+                                shape = RoundedCornerShape(9.dp)
+                            )
+                            .clickable { syncScroll = !syncScroll }
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                            .testTag("split_sync_scroll_toggle")
+                    ) {
+                        Text(
+                            text = if (syncScroll) "Sync ON" else "Sync OFF",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (syncScroll) CrimsonPrimary else if (isDarkMode) Color.White else Color.Black
+                        )
+                    }
+
+                    // Snap ratio presets (35/65, 50/50, 65/35)
                     IconButton(
                         onClick = {
                             paneWeightRatio = when {
-                                paneWeightRatio < 0.45f -> 0.5f
-                                paneWeightRatio < 0.55f -> 0.62f
-                                else -> 0.38f
+                                paneWeightRatio < 0.44f -> 0.5f
+                                paneWeightRatio < 0.56f -> 0.65f
+                                else -> 0.35f
                             }
                         },
                         modifier = Modifier
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .size(32.dp)
+                            .clip(RoundedCornerShape(9.dp))
                             .background(if (isDarkMode) Color(0x1CFFFFFF) else Color(0x12000000))
                     ) {
                         Icon(
                             imageVector = Icons.Default.VerticalSplit,
-                            contentDescription = "Resize split ratio",
+                            contentDescription = "Snap split ratio",
                             tint = if (isDarkMode) Color.White else Color.Black,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(17.dp)
                         )
                     }
 
@@ -338,15 +415,15 @@ fun SplitScreenNotesScreen(
                             bottomPane.isDirty = aDirty
                         },
                         modifier = Modifier
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .size(32.dp)
+                            .clip(RoundedCornerShape(9.dp))
                             .background(if (isDarkMode) Color(0x1CFFFFFF) else Color(0x12000000))
                     ) {
                         Icon(
                             imageVector = Icons.Default.SwapVert,
                             contentDescription = "Swap panes",
                             tint = CrimsonPrimary,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(17.dp)
                         )
                     }
 
@@ -354,17 +431,17 @@ fun SplitScreenNotesScreen(
                     if (topPane.isDirty || bottomPane.isDirty) {
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(9.dp))
                                 .background(CrimsonPrimary)
                                 .clickable {
                                     if (topPane.isDirty) savePane(topPane, showToast = false)
                                     if (bottomPane.isDirty) savePane(bottomPane, showToast = false)
                                     Toast.makeText(context, "Both notes saved", Toast.LENGTH_SHORT).show()
                                 }
-                                .padding(horizontal = 10.dp, vertical = 7.dp)
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
                                 .testTag("split_save_all_button")
                         ) {
-                            Text("Save All", color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                            Text("Save All", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -372,18 +449,20 @@ fun SplitScreenNotesScreen(
 
             Spacer(Modifier.height(4.dp))
 
-            // Dual Panes: Side-by-Side Row in Landscape / Tablet, Top-Bottom Column in Portrait
+            // Dual Panes with Interactive Draggable Divider
             if (isLandscape) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        .weight(1f)
+                        .onSizeChanged { containerMainAxisPx = it.width.toFloat().coerceAtLeast(300f) },
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     SplitNotePaneCard(
                         paneIndex = 0,
                         paneLabel = "Pane 1",
                         holder = topPane,
+                        scrollState = topScrollState,
                         isActive = activePaneIndex == 0,
                         isDarkMode = isDarkMode,
                         preferences = preferences,
@@ -394,18 +473,44 @@ fun SplitScreenNotesScreen(
                         onSave = { savePane(topPane) },
                         onOpenPicker = { notePickerTargetPane = 0 },
                         onNewNote = { topPane.loadNote(null, editMode = true) },
-                        onOpenSmallWindow = {
-                            SmallWindowHelper.launchNoteInSmallWindow(
-                                context,
-                                topPane.noteId.takeIf { it > 0L },
-                                topPane.isEditing
-                            )
+                        onSendSelectionToOtherPane = { snippet ->
+                            bottomPane.pushUndo()
+                            val joined = if (bottomPane.content.text.isBlank()) snippet else bottomPane.content.text + "\n" + snippet
+                            bottomPane.content = TextFieldValue(joined, TextRange(joined.length))
+                            bottomPane.isDirty = true
+                            Toast.makeText(context, "Sent to Pane 2", Toast.LENGTH_SHORT).show()
                         }
                     )
+
+                    // Vertical Draggable Handle
+                    Box(
+                        modifier = Modifier
+                            .width(14.dp)
+                            .fillMaxHeight()
+                            .pointerInput(Unit) {
+                                detectDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    val delta = dragAmount.x / containerMainAxisPx
+                                    paneWeightRatio = (paneWeightRatio + delta).coerceIn(0.25f, 0.75f)
+                                }
+                            }
+                            .clickable { paneWeightRatio = 0.5f },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(4.dp)
+                                .height(48.dp)
+                                .clip(CircleShape)
+                                .background(CrimsonPrimary.copy(alpha = 0.65f))
+                        )
+                    }
+
                     SplitNotePaneCard(
                         paneIndex = 1,
                         paneLabel = "Pane 2",
                         holder = bottomPane,
+                        scrollState = bottomScrollState,
                         isActive = activePaneIndex == 1,
                         isDarkMode = isDarkMode,
                         preferences = preferences,
@@ -416,12 +521,12 @@ fun SplitScreenNotesScreen(
                         onSave = { savePane(bottomPane) },
                         onOpenPicker = { notePickerTargetPane = 1 },
                         onNewNote = { bottomPane.loadNote(null, editMode = true) },
-                        onOpenSmallWindow = {
-                            SmallWindowHelper.launchNoteInSmallWindow(
-                                context,
-                                bottomPane.noteId.takeIf { it > 0L },
-                                bottomPane.isEditing
-                            )
+                        onSendSelectionToOtherPane = { snippet ->
+                            topPane.pushUndo()
+                            val joined = if (topPane.content.text.isBlank()) snippet else topPane.content.text + "\n" + snippet
+                            topPane.content = TextFieldValue(joined, TextRange(joined.length))
+                            topPane.isDirty = true
+                            Toast.makeText(context, "Sent to Pane 1", Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
@@ -429,13 +534,15 @@ fun SplitScreenNotesScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .weight(1f)
+                        .onSizeChanged { containerMainAxisPx = it.height.toFloat().coerceAtLeast(400f) },
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     SplitNotePaneCard(
                         paneIndex = 0,
                         paneLabel = "Top Note",
                         holder = topPane,
+                        scrollState = topScrollState,
                         isActive = activePaneIndex == 0,
                         isDarkMode = isDarkMode,
                         preferences = preferences,
@@ -446,18 +553,44 @@ fun SplitScreenNotesScreen(
                         onSave = { savePane(topPane) },
                         onOpenPicker = { notePickerTargetPane = 0 },
                         onNewNote = { topPane.loadNote(null, editMode = true) },
-                        onOpenSmallWindow = {
-                            SmallWindowHelper.launchNoteInSmallWindow(
-                                context,
-                                topPane.noteId.takeIf { it > 0L },
-                                topPane.isEditing
-                            )
+                        onSendSelectionToOtherPane = { snippet ->
+                            bottomPane.pushUndo()
+                            val joined = if (bottomPane.content.text.isBlank()) snippet else bottomPane.content.text + "\n" + snippet
+                            bottomPane.content = TextFieldValue(joined, TextRange(joined.length))
+                            bottomPane.isDirty = true
+                            Toast.makeText(context, "Sent to Bottom Note", Toast.LENGTH_SHORT).show()
                         }
                     )
+
+                    // Horizontal Draggable Divider Pill
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(14.dp)
+                            .pointerInput(Unit) {
+                                detectDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    val delta = dragAmount.y / containerMainAxisPx
+                                    paneWeightRatio = (paneWeightRatio + delta).coerceIn(0.25f, 0.75f)
+                                }
+                            }
+                            .clickable { paneWeightRatio = 0.5f },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(52.dp)
+                                .height(4.dp)
+                                .clip(CircleShape)
+                                .background(CrimsonPrimary.copy(alpha = 0.65f))
+                        )
+                    }
+
                     SplitNotePaneCard(
                         paneIndex = 1,
                         paneLabel = "Bottom Note",
                         holder = bottomPane,
+                        scrollState = bottomScrollState,
                         isActive = activePaneIndex == 1,
                         isDarkMode = isDarkMode,
                         preferences = preferences,
@@ -468,12 +601,12 @@ fun SplitScreenNotesScreen(
                         onSave = { savePane(bottomPane) },
                         onOpenPicker = { notePickerTargetPane = 1 },
                         onNewNote = { bottomPane.loadNote(null, editMode = true) },
-                        onOpenSmallWindow = {
-                            SmallWindowHelper.launchNoteInSmallWindow(
-                                context,
-                                bottomPane.noteId.takeIf { it > 0L },
-                                bottomPane.isEditing
-                            )
+                        onSendSelectionToOtherPane = { snippet ->
+                            topPane.pushUndo()
+                            val joined = if (topPane.content.text.isBlank()) snippet else topPane.content.text + "\n" + snippet
+                            topPane.content = TextFieldValue(joined, TextRange(joined.length))
+                            topPane.isDirty = true
+                            Toast.makeText(context, "Sent to Top Note", Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
@@ -585,6 +718,7 @@ private fun SplitNotePaneCard(
     paneIndex: Int,
     paneLabel: String,
     holder: PaneStateHolder,
+    scrollState: ScrollState,
     isActive: Boolean,
     isDarkMode: Boolean,
     preferences: AppPreferences,
@@ -593,10 +727,10 @@ private fun SplitNotePaneCard(
     onSave: () -> Unit,
     onOpenPicker: () -> Unit,
     onNewNote: () -> Unit,
-    onOpenSmallWindow: () -> Unit
+    onSendSelectionToOtherPane: (String) -> Unit
 ) {
     val context = LocalContext.current
-    val paneScrollState = rememberScrollState()
+    val clipboard = LocalClipboardManager.current
     val (pageStyle, lineSpacing) = remember(holder.noteId) {
         loadNotePageStyle(context, holder.noteId, preferences)
     }
@@ -680,7 +814,7 @@ private fun SplitNotePaneCard(
                     }
                 }
 
-                // Independent Action Buttons (Pick Note | New | Read/Write | Small Window | Save)
+                // Independent Action Buttons (Pick Note | New | Copy/Send to Other Pane | Read/Write | Save)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -700,11 +834,22 @@ private fun SplitNotePaneCard(
                         testTag = "split_pane_${paneIndex}_new"
                     )
                     PaneMiniButton(
-                        icon = Icons.Default.OpenInNew,
-                        desc = "Open in Small Window",
-                        tint = Color(0xFFFBBF24),
-                        onClick = { onFocus(); onOpenSmallWindow() },
-                        testTag = "split_pane_${paneIndex}_small_window"
+                        icon = Icons.Default.ContentCopy,
+                        desc = "Copy / Send selection to other pane",
+                        tint = Color(0xFFA78BFA),
+                        onClick = {
+                            onFocus()
+                            val sel = holder.content.selection
+                            val snippet = if (!sel.collapsed && sel.min < sel.max) {
+                                holder.content.text.substring(sel.min.coerceAtLeast(0), sel.max.coerceAtMost(holder.content.text.length))
+                            } else {
+                                holder.content.text
+                            }
+                            if (snippet.isNotBlank()) {
+                                clipboard.setText(AnnotatedString(snippet))
+                                onSendSelectionToOtherPane(snippet)
+                            }
+                        }
                     )
                     Box(
                         modifier = Modifier
@@ -737,7 +882,9 @@ private fun SplitNotePaneCard(
                                 text = "Save",
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color.White
+                                color = Color.White,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
@@ -798,7 +945,7 @@ private fun SplitNotePaneCard(
                     .fillMaxWidth()
                     .weight(1f)
                     .background(bodyBg)
-                    .verticalScroll(paneScrollState)
+                    .verticalScroll(scrollState)
                     .padding(horizontal = 12.dp, vertical = 10.dp)
             ) {
                 val styledPreview = remember(holder.content.text, holder.spans, inkColor, holder.fontSize) {
@@ -866,29 +1013,42 @@ private fun SplitNotePaneCard(
                             .testTag("split_pane_${paneIndex}_editor")
                     )
                 } else {
-                    androidx.compose.foundation.text.selection.SelectionContainer {
-                        val contentText = holder.content.text.ifBlank { "(Empty note — switch to Write to type here)" }
-                        if (styledPreview != null && holder.content.text.isNotBlank()) {
-                            Text(
-                                text = styledPreview,
-                                fontSize = holder.fontSize.sp,
-                                color = inkColor,
-                                lineHeight = (holder.fontSize * lineSpacing).sp,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("split_pane_${paneIndex}_reader")
-                            )
-                        } else {
-                            Text(
-                                text = contentText,
-                                fontSize = holder.fontSize.sp,
-                                fontFamily = if (holder.activeCode) FontFamily.Monospace else FontFamily.Default,
-                                color = if (holder.content.text.isBlank()) Color.Gray else inkColor,
-                                lineHeight = (holder.fontSize * lineSpacing).sp,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("split_pane_${paneIndex}_reader")
-                            )
+                    val trimmedRaw = holder.content.text.trim()
+                    val isWebViewNote = trimmedRaw.startsWith("<!--au_webview_note-->", ignoreCase = true) ||
+                        trimmedRaw.startsWith("<!DOCTYPE html", ignoreCase = true) ||
+                        trimmedRaw.startsWith("<html", ignoreCase = true)
+
+                    if (isWebViewNote) {
+                        com.example.ui.components.DirectNoteWebView(
+                            title = holder.title,
+                            htmlCode = trimmedRaw.removePrefix("<!--au_webview_note-->").trim(),
+                            isDarkMode = isDarkMode
+                        )
+                    } else {
+                        androidx.compose.foundation.text.selection.SelectionContainer {
+                            val contentText = holder.content.text.ifBlank { "(Empty note — switch to Write to type here)" }
+                            if (styledPreview != null && holder.content.text.isNotBlank()) {
+                                Text(
+                                    text = styledPreview,
+                                    fontSize = holder.fontSize.sp,
+                                    color = inkColor,
+                                    lineHeight = (holder.fontSize * lineSpacing).sp,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("split_pane_${paneIndex}_reader")
+                                )
+                            } else {
+                                Text(
+                                    text = contentText,
+                                    fontSize = holder.fontSize.sp,
+                                    fontFamily = if (holder.activeCode) FontFamily.Monospace else FontFamily.Default,
+                                    color = if (holder.content.text.isBlank()) Color.Gray else inkColor,
+                                    lineHeight = (holder.fontSize * lineSpacing).sp,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("split_pane_${paneIndex}_reader")
+                                )
+                            }
                         }
                     }
                 }

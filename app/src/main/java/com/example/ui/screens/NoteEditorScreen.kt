@@ -59,6 +59,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -404,6 +407,11 @@ fun NoteEditorScreen(
     var toolbarHidden by remember { mutableStateOf(false) }
     var showTableFullscreen by remember { mutableStateOf(false) }
     var maximizedCodeFence by remember { mutableStateOf<CodeFence?>(null) }
+    val initialStylePair = remember(initialNote?.id) { loadNotePageStyle(context, initialNote?.id ?: 0L, preferences) }
+    var pageStyle by remember { mutableStateOf(initialStylePair.first) }
+    var lineSpacing by remember { mutableStateOf(initialStylePair.second) }
+    var showPageSheet by remember { mutableStateOf(false) }
+    var showDrawingModal by remember { mutableStateOf(false) }
 
 
     // Image Attachment picker
@@ -510,6 +518,13 @@ fun NoteEditorScreen(
         ) { savedId ->
             currentNoteId = savedId
             hasUnsavedChanges = false
+            com.example.ui.components.commitNotePageStyleAndSpacing(
+                context = context,
+                savedNoteId = savedId,
+                styleKey = pageStyle,
+                lineSpacing = lineSpacing,
+                preferences = preferences
+            )
             if (showToast) {
                 Toast.makeText(context, "Note Saved in $autoCat", Toast.LENGTH_SHORT).show()
             }
@@ -1045,12 +1060,6 @@ fun NoteEditorScreen(
         listType = if (currentListKind == "check") "none" else currentListKind
     }
 
-    // Page style (standard | ruled | legal | grid | dotted | word_white) + line spacing synced with Read Mode & PDF Export
-    val initialStylePair = remember(initialNote?.id) { loadNotePageStyle(context, initialNote?.id ?: 0L, preferences) }
-    var pageStyle by remember { mutableStateOf(initialStylePair.first) }
-    var lineSpacing by remember { mutableStateOf(initialStylePair.second) }
-    var showPageSheet by remember { mutableStateOf(false) }
-    var showDrawingModal by remember { mutableStateOf(false) }
     // light paper (legal pad / A4 white) always uses dark ink, in day and night mode
     val lightPaper = isLightPageStyle(pageStyle)
 
@@ -1160,7 +1169,10 @@ fun NoteEditorScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f, fill = false)
+                    ) {
                         NeuIconButton(
                             icon = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
@@ -1170,18 +1182,20 @@ fun NoteEditorScreen(
                             tint = if (isDarkMode) Color.White else Color.Black,
                             onClick = { performSave(showToast = false, thenNavigateBack = true) }
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = if (initialNote == null) "New Note" else "Edit Note",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             color = if (isDarkMode) Color.White else Color(0xFF111111)
                         )
                     }
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         // Hide / show the whole title bar (note content and saving are not affected)
                         NeuIconButton(
@@ -1209,21 +1223,6 @@ fun NoteEditorScreen(
                             )
                         }
 
-                        if (onOpenInSmallWindow != null) {
-                            NeuIconButton(
-                                icon = Icons.Default.OpenInNew,
-                                contentDescription = "Small Window",
-                                isDarkMode = isDarkMode,
-                                size = 32.dp,
-                                iconSize = 16.dp,
-                                tint = if (isDarkMode) Color.White else Color.Black,
-                                onClick = {
-                                    performSave(showToast = false, thenNavigateBack = false)
-                                    onOpenInSmallWindow(currentSnapshotForWindow())
-                                }
-                            )
-                        }
-
                         // Undo
                         NeuIconButton(
                             icon = Icons.AutoMirrored.Filled.Undo,
@@ -1246,8 +1245,11 @@ fun NoteEditorScreen(
                             onClick = { redoEdit() }
                         )
 
-                        // Save Button
+                        // Save Button — fixed horizontal pill width so Portrait mode never wraps "Save" vertically
                         GlassCard(
+                            modifier = Modifier
+                                .widthIn(min = 76.dp)
+                                .testTag("editor_save_button"),
                             shape = RoundedCornerShape(12.dp),
                             isDarkMode = isDarkMode,
                             onClick = { performSave(showToast = true, thenNavigateBack = true) }
@@ -1255,23 +1257,45 @@ fun NoteEditorScreen(
                             Row(
                                 modifier = Modifier
                                     .background(Brush.linearGradient(listOf(CrimsonPrimary, Color(0xFFFF5E7E))))
-                                    .padding(horizontal = 14.dp, vertical = 7.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(horizontal = 13.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
                             ) {
-                                Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Save", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "Save",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
                         }
                     }
                 }
 
-                // Pinned title bar — its own rectangle, outside the scrolling note body.
-                val wordCount = remember(contentValue.text) {
-                    contentValue.text.split(Regex("\\s+")).count { it.isNotBlank() }
-                }
-                val lineCount = remember(contentValue.text) {
-                    if (contentValue.text.isEmpty()) 0 else contentValue.text.split("\n").size
+                // Pinned title bar — fast O(N) non-allocating word & line count for 50KB+ notes
+                val (wordCount, lineCount) = remember(contentValue.text) {
+                    val txt = contentValue.text
+                    if (txt.isEmpty()) 0 to 0
+                    else {
+                        var words = 0
+                        var lines = 1
+                        var inWord = false
+                        for (i in 0 until txt.length) {
+                            val ch = txt[i]
+                            if (ch == '\n') lines++
+                            if (ch.isWhitespace()) {
+                                inWord = false
+                            } else if (!inWord) {
+                                inWord = true
+                                words++
+                            }
+                        }
+                        words to lines
+                    }
                 }
                 val systemSaveInFolders = listOf("All Notes", "APIs Keys", "Code", "Media", "Personal")
                 val saveInOptions = systemSaveInFolders + customFoldersList.filter { it !in systemSaveInFolders && it !in hiddenFoldersSet }
@@ -2991,6 +3015,15 @@ Row(
             onSpacing = { v ->
                 lineSpacing = v
                 saveNotePageStyle(context, currentNoteId, pageStyle, v, preferences)
+            },
+            onInsertPageBreak = {
+                val cur = contentValue
+                val pos = cur.selection.max.coerceIn(0, cur.text.length)
+                val insertStr = "\n---page---\n"
+                val newText = cur.text.substring(0, pos) + insertStr + cur.text.substring(pos)
+                pushUndo()
+                spans = RichTextFormatter.adjustSpansForEdit(spans, cur.text, newText)
+                contentValue = TextFieldValue(newText, TextRange((pos + insertStr.length).coerceAtMost(newText.length)))
             },
             onDismiss = { showPageSheet = false }
         )

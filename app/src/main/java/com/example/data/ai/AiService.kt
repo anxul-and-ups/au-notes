@@ -189,8 +189,14 @@ class AiService {
         }
     }
 
-    /** One streaming (SSE) call to Gemini: onDelta receives the full text so far, as it arrives. */
-    private fun streamOnce(model: String, apiKey: String, body: JSONObject, onDelta: (String) -> Unit): String {
+    /** One streaming (SSE) call to Gemini: onDelta receives the full text so far, and onThoughtDelta receives live reasoning thoughts. */
+    private fun streamOnce(
+        model: String,
+        apiKey: String,
+        body: JSONObject,
+        onDelta: (String) -> Unit,
+        onThoughtDelta: ((String) -> Unit)? = null
+    ): String {
         val cleanModel = model.removePrefix("models/").trim()
         if (cleanModel.isBlank()) throw ApiFailure("No active model selected. Open API Room and tap Model Detector.", false)
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$cleanModel:streamGenerateContent?alt=sse"
@@ -217,6 +223,7 @@ class AiService {
                 }
                 val source = resp.body?.source() ?: throw ApiFailure("Gemini returned an empty response.", true)
                 val acc = StringBuilder()
+                val thoughtAcc = StringBuilder()
                 var blockReason = ""
                 try {
                     while (!source.exhausted()) {
@@ -232,11 +239,19 @@ class AiService {
                         }
                         val parts = cand.optJSONObject("content")?.optJSONArray("parts") ?: continue
                         var added = false
+                        var thoughtAdded = false
                         for (i in 0 until parts.length()) {
                             val part = parts.getJSONObject(i)
-                            if (part.optBoolean("thought", false)) continue
+                            if (part.optBoolean("thought", false)) {
+                                if (part.has("text")) {
+                                    thoughtAcc.append(part.getString("text"))
+                                    thoughtAdded = true
+                                }
+                                continue
+                            }
                             if (part.has("text")) { acc.append(part.getString("text")); added = true }
                         }
+                        if (thoughtAdded) onThoughtDelta?.invoke(thoughtAcc.toString())
                         if (added) onDelta(acc.toString())
                     }
                 } catch (e: java.io.IOException) {
@@ -254,13 +269,19 @@ class AiService {
         throw ApiFailure("Gemini could not process this request.", false)
     }
 
-    private fun streamGemini(apiKey: String, model: String, body: JSONObject, onDelta: (String) -> Unit): String {
+    private fun streamGemini(
+        apiKey: String,
+        model: String,
+        body: JSONObject,
+        onDelta: (String) -> Unit,
+        onThoughtDelta: ((String) -> Unit)? = null
+    ): String {
         val key = apiKey.trim()
         if (key.isBlank()) throw ApiFailure("No API key set. Open Settings -> API Room and add your Gemini API key.", false)
         var attempt = 0
         while (true) {
             try {
-                return streamOnce(model, key, body, onDelta)
+                return streamOnce(model, key, body, onDelta, onThoughtDelta)
             } catch (f: ApiFailure) {
                 val cfg = body.optJSONObject("generationConfig")
                 if (cfg?.has("thinkingConfig") == true && f.userMessage.contains("thinking", ignoreCase = true)) {
@@ -702,7 +723,7 @@ class AiService {
                         "DeepSeek" -> "https://api.deepseek.com"
                         "OpenAI" -> "https://api.openai.com/v1"
                         "Groq" -> "https://api.groq.com/openai/v1"
-                        "OpenRouter" -> "https://api.openrouter.ai/api/v1"
+                        "OpenRouter" -> "https://openrouter.ai/api/v1"
                         "Kimi" -> "https://api.moonshot.cn/v1"
                         else -> {
                             var b = customBaseUrl.trim()
@@ -843,31 +864,33 @@ class AiService {
         prompt: String,
         imagesBase64: List<String> = emptyList(),
         enableWebSearch: Boolean = false,
-        onDelta: ((String) -> Unit)? = null
+        onDelta: ((String) -> Unit)? = null,
+        onThoughtDelta: ((String) -> Unit)? = null
     ): String = withContext(Dispatchers.IO) {
         try {
             val isToolResultTurn = prompt.trimStart().startsWith("[TOOL RESULT")
+            val isDirectOcr = !isToolResultTurn && com.example.ui.util.DocumentOcrHelper.isDirectOcrPrompt(prompt)
             val alreadyHasWebResults = prompt.contains("[LIVE WEB SEARCH RESULTS") || system.contains("[LIVE WEB SEARCH RESULTS")
             // Also extract any [web_sources_json:...] embedded inside a [TOOL RESULT] from web_search tool
             val toolWebSourcesMarker = if ((isToolResultTurn || alreadyHasWebResults) && prompt.contains("[web_sources_json:")) {
                 Regex("\\[web_sources_json:[^\\]]+\\]").find(prompt)?.value
             } else null
 
-            val liveWebOutcome = if (enableWebSearch && !isToolResultTurn && !alreadyHasWebResults && shouldUseWebSearch(prompt)) {
+            val liveWebOutcome = if (enableWebSearch && !isDirectOcr && !isToolResultTurn && !alreadyHasWebResults && shouldUseWebSearch(prompt)) {
                 runCatching { performWebSearch(prompt) }.getOrNull()
             } else null
 
-            val effectiveSystem = if (liveWebOutcome != null) {
-                "$system\n\n${liveWebOutcome.formattedContext}"
-            } else {
-                system
+            val effectiveSystem = when {
+                isDirectOcr -> com.example.ui.util.DocumentOcrHelper.VERBATIM_OCR_SYSTEM_PROMPT
+                liveWebOutcome != null -> "$system\n\n${liveWebOutcome.formattedContext}"
+                else -> system
             }
 
             if (provider == "Gemini") {
                 val latest = JSONObject().apply {
                     put("role", "user")
                     val parts = JSONArray().put(JSONObject().put("text", prompt))
-                    for (img in imagesBase64.take(10)) {
+                    for (img in imagesBase64.take(16)) {
                         parts.put(
                             JSONObject().put(
                                 "inline_data",
@@ -882,7 +905,7 @@ class AiService {
                 val baseBody = JSONObject().apply {
                     put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", effectiveSystem))))
                     put("contents", buildContents(history, latest))
-                    put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 65536).apply {
+                    put("generationConfig", JSONObject().put("temperature", if (isDirectOcr) 0.1 else 0.7).put("maxOutputTokens", 65536).apply {
                         // Greetings / tiny messages: skip "thinking" on 2.5-flash models so the reply starts at once
                         val trivial = !isToolResultTurn && imagesBase64.isEmpty() && prompt.trim().length <= 60
                         if (trivial && model.lowercase().contains("2.5-flash")) {
@@ -894,9 +917,26 @@ class AiService {
                 val rawText = (
                     try {
                         if (onDelta != null && liveWebOutcome == null) {
-                            streamGemini(apiKey, model, baseBody) { acc -> streamedChars = acc.length; onDelta(acc) }
+                            streamGemini(
+                                apiKey = apiKey,
+                                model = model,
+                                body = baseBody,
+                                onDelta = { acc -> streamedChars = acc.length; onDelta(acc) },
+                                onThoughtDelta = onThoughtDelta
+                            )
                         } else {
-                            generateWithThinkingFallback(apiKey, model, baseBody).let { joinText(it) }
+                            val parts = generateWithThinkingFallback(apiKey, model, baseBody)
+                            if (onThoughtDelta != null) {
+                                val thoughtSb = StringBuilder()
+                                for (i in 0 until parts.length()) {
+                                    val p = parts.getJSONObject(i)
+                                    if (p.optBoolean("thought", false) && p.has("text")) {
+                                        thoughtSb.append(p.getString("text"))
+                                    }
+                                }
+                                if (thoughtSb.isNotEmpty()) onThoughtDelta(thoughtSb.toString())
+                            }
+                            joinText(parts)
                         }
                     } catch (f: ApiFailure) {
                         // streaming failed before any text arrived: use the normal (non-streaming) path with all its fallbacks
@@ -917,7 +957,9 @@ class AiService {
                     activeModel,
                     effectiveSystem,
                     normalizeTurns(history),
-                    prompt
+                    prompt,
+                    onDelta = onDelta,
+                    onThoughtDelta = onThoughtDelta
                 )
                 var withSources = appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
                 if (toolWebSourcesMarker != null && !withSources.contains("[web_sources_json:") && !withSources.contains("<tool_call>")) {
@@ -938,7 +980,17 @@ class AiService {
                     }
                 }
                 val chosen = resolveDynamicModel(provider, apiKey, base, model)
-                val rawText = callOpenAiCompatible(base, apiKey, chosen, effectiveSystem, normalizeTurns(history), prompt, imagesBase64)
+                val rawText = callOpenAiCompatible(
+                    baseUrl = base,
+                    apiKey = apiKey,
+                    model = chosen,
+                    systemPrompt = effectiveSystem,
+                    history = normalizeTurns(history),
+                    userPrompt = prompt,
+                    imagesBase64 = imagesBase64,
+                    onDelta = onDelta,
+                    onThoughtDelta = onThoughtDelta
+                )
                 var withSources = appendSourcesIfMissing(rawText, liveWebOutcome?.hits.orEmpty())
                 if (toolWebSourcesMarker != null && !withSources.contains("[web_sources_json:") && !withSources.contains("<tool_call>")) {
                     withSources = withSources.trimEnd() + "\n\n" + toolWebSourcesMarker
@@ -987,26 +1039,41 @@ class AiService {
         history: List<ConversationTurn> = emptyList(),
         attachmentImagesBase64: List<String> = emptyList()
     ): String = withContext(Dispatchers.IO) {
-        val system = buildString {
-            append(baseSystemPrompt())
-            if (!noteContext.isNullOrBlank()) append("\n\n[Current Note Context]\n").append(noteContext)
+        val isDirectOcr = com.example.ui.util.DocumentOcrHelper.isDirectOcrPrompt(prompt)
+        val system = if (isDirectOcr) {
+            com.example.ui.util.DocumentOcrHelper.VERBATIM_OCR_SYSTEM_PROMPT
+        } else {
+            buildString {
+                append(baseSystemPrompt())
+                if (!noteContext.isNullOrBlank()) append("\n\n[Current Note Context]\n").append(noteContext)
+            }
         }
 
-        val latestText = buildString {
-            if (!attachmentContent.isNullOrBlank()) {
-                append("The user attached this document. Read it fully and use it to answer thoroughly.\n")
-                append("=== DOCUMENT START ===\n").append(attachmentContent).append("\n=== DOCUMENT END ===\n\n")
-            } else if (attachmentImagesBase64.isNotEmpty()) {
-                append("The user attached ${attachmentImagesBase64.size} image(s)/page(s). Look at them carefully (read any text in them) and use them to answer.\n\n")
+        val latestText = if (isDirectOcr) {
+            buildString {
+                if (!attachmentContent.isNullOrBlank()) {
+                    append(attachmentContent).append("\n\n")
+                }
+                append("Extract 100% of the visible text from the attached image(s)/document(s) verbatim with zero intro, zero 'Ok sir', and zero summary.")
             }
-            append("User message: ").append(prompt)
+        } else {
+            buildString {
+                if (!attachmentContent.isNullOrBlank()) {
+                    append("The user attached this document. Read it fully and use it to answer thoroughly.\n")
+                    append("=== DOCUMENT START ===\n").append(attachmentContent).append("\n=== DOCUMENT END ===\n\n")
+                } else if (attachmentImagesBase64.isNotEmpty()) {
+                    append("The user attached ${attachmentImagesBase64.size} image(s)/page(s). Look at them carefully (read any text in them) and use them to answer.\n\n")
+                }
+                append("User message: ").append(prompt)
+            }
         }
 
         val latest = JSONObject().apply {
             put("role", "user")
             val parts = JSONArray().put(JSONObject().put("text", latestText))
-            for (img in attachmentImagesBase64.take(12)) {
-                parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", "image/png").put("data", img)))
+            for (img in attachmentImagesBase64.take(16)) {
+                val mime = if (img.startsWith("/9j/")) "image/jpeg" else "image/png"
+                parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", mime).put("data", img)))
             }
             put("parts", parts)
         }
@@ -1014,7 +1081,7 @@ class AiService {
         val body = JSONObject().apply {
             put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             put("contents", buildContents(history, latest))
-            put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", 65536))
+            put("generationConfig", JSONObject().put("temperature", if (isDirectOcr) 0.1 else 0.7).put("maxOutputTokens", 65536))
         }
 
         try {
@@ -1054,6 +1121,25 @@ class AiService {
         }
     }
 
+    private fun stripAndExtractThinkTags(
+        raw: String,
+        onThoughtDelta: ((String) -> Unit)? = null
+    ): String {
+        val thinkRegex = Regex("<think>([\\s\\S]*?)</think>", RegexOption.IGNORE_CASE)
+        val thoughts = StringBuilder()
+        thinkRegex.findAll(raw).forEach { m ->
+            val t = m.groupValues[1].trim()
+            if (t.isNotEmpty()) {
+                if (thoughts.isNotEmpty()) thoughts.append("\n\n")
+                thoughts.append(t)
+            }
+        }
+        if (thoughts.isNotEmpty()) {
+            onThoughtDelta?.invoke(thoughts.toString())
+        }
+        return raw.replace(thinkRegex, "").trim()
+    }
+
     private fun callOpenAiCompatible(
         baseUrl: String,
         apiKey: String,
@@ -1061,7 +1147,9 @@ class AiService {
         systemPrompt: String,
         history: List<ConversationTurn>,
         userPrompt: String,
-        imagesBase64: List<String> = emptyList()
+        imagesBase64: List<String> = emptyList(),
+        onDelta: ((String) -> Unit)? = null,
+        onThoughtDelta: ((String) -> Unit)? = null
     ): String {
         val cleanBase = baseUrl.trimEnd('/')
             .removeSuffix("/chat/completions")
@@ -1094,7 +1182,7 @@ class AiService {
                 put("type", "text")
                 put("text", userPrompt)
             })
-            for (img in imagesBase64.take(8)) {
+            for (img in imagesBase64.take(16)) {
                 val mime = if (img.startsWith("/9j/")) "image/jpeg" else "image/png"
                 contentArr.put(JSONObject().apply {
                     put("type", "image_url")
@@ -1105,6 +1193,59 @@ class AiService {
                 put("role", "user")
                 put("content", contentArr)
             })
+        }
+
+        // Try real-time SSE streaming first if onDelta is provided
+        if (onDelta != null) {
+            try {
+                val streamReqBody = JSONObject().apply {
+                    put("model", model)
+                    put("messages", messages)
+                    put("temperature", 0.7)
+                    put("stream", true)
+                }
+                val streamReq = Request.Builder()
+                    .url(primaryEndpoint)
+                    .header("Authorization", "Bearer ${apiKey.trim()}")
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+                    .post(streamReqBody.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
+                client.newCall(streamReq).execute().use { resp ->
+                    val contentType = resp.header("Content-Type").orEmpty().lowercase()
+                    if (resp.isSuccessful && contentType.contains("event-stream")) {
+                        val source = resp.body?.source()
+                        if (source != null) {
+                            val acc = StringBuilder()
+                            val reasoningAcc = StringBuilder()
+                            while (!source.exhausted()) {
+                                val line = source.readUtf8Line() ?: break
+                                if (!line.startsWith("data:")) continue
+                                val data = line.removePrefix("data:").trim()
+                                if (data.isEmpty() || data == "[DONE]") continue
+                                val chunk = try { JSONObject(data) } catch (_: Exception) { continue }
+                                val deltaObj = chunk.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta") ?: continue
+                                val rChunk = deltaObj.optString("reasoning_content", deltaObj.optString("reasoning", ""))
+                                if (rChunk.isNotEmpty()) {
+                                    reasoningAcc.append(rChunk)
+                                    onThoughtDelta?.invoke(reasoningAcc.toString())
+                                }
+                                val cChunk = deltaObj.optString("content", "")
+                                if (cChunk.isNotEmpty()) {
+                                    acc.append(cChunk)
+                                    val liveClean = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
+                                    if (liveClean.isNotEmpty()) onDelta(liveClean)
+                                }
+                            }
+                            val finalStreamed = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
+                            if (finalStreamed.isNotEmpty()) return finalStreamed
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Fall back to standard JSON completion request below
+            }
         }
 
         fun executeChatRequest(url: String, maxTokens: Int?): Pair<Int, String> {
@@ -1128,27 +1269,30 @@ class AiService {
             }
         }
 
-        var (code, body) = executeChatRequest(primaryEndpoint, 16384)
+        var activeEndpoint = primaryEndpoint
+        var (code, body) = executeChatRequest(activeEndpoint, 16384)
         // If custom URL omitted /v1, retry with /v1/chat/completions
         if (code == 404 && !cleanBase.endsWith("/v1")) {
             val fallbackEndpoint = "$cleanBase/v1/chat/completions"
             val retry404 = executeChatRequest(fallbackEndpoint, 16384)
             if (retry404.first != 404) {
+                activeEndpoint = fallbackEndpoint
                 code = retry404.first
                 body = retry404.second
             }
         }
-        // If the provider rejected 16384 max_tokens with HTTP 400, retry with 8192 and then default
-        if (code == 400 && (body.contains("max_tokens", ignoreCase = true) || body.contains("token", ignoreCase = true))) {
-            val activeUrl = if (!cleanBase.endsWith("/v1") && code == 404) "$cleanBase/v1/chat/completions" else primaryEndpoint
-            val retry8k = executeChatRequest(activeUrl, 8192)
-            if (retry8k.first in 200..299) {
-                code = retry8k.first
-                body = retry8k.second
-            } else {
-                val retryDefault = executeChatRequest(activeUrl, null)
-                code = retryDefault.first
-                body = retryDefault.second
+        // Broad fallback on HTTP 400 / 422 (e.g., Groq, OpenRouter, or custom models rejecting max_tokens=16384)
+        if (code == 400 || code == 422) {
+            for (fallbackTokens in listOf(8192, 4096, null)) {
+                val retryRes = executeChatRequest(activeEndpoint, fallbackTokens)
+                if (retryRes.first in 200..299) {
+                    code = retryRes.first
+                    body = retryRes.second
+                    break
+                } else {
+                    code = retryRes.first
+                    body = retryRes.second
+                }
             }
         }
 
@@ -1166,7 +1310,18 @@ class AiService {
         val choices = json.optJSONArray("choices") ?: JSONArray()
         if (choices.length() > 0) {
             val msg = choices.getJSONObject(0).optJSONObject("message")
-            return msg?.optString("content") ?: ""
+            val reasoning = msg?.optString("reasoning_content").orEmpty().ifBlank {
+                msg?.optString("reasoning").orEmpty()
+            }
+            if (reasoning.isNotBlank()) {
+                onThoughtDelta?.invoke(reasoning)
+            }
+            val rawContent = msg?.optString("content") ?: ""
+            val cleaned = stripAndExtractThinkTags(rawContent, onThoughtDelta)
+            if (cleaned.isNotEmpty()) {
+                onDelta?.invoke(cleaned)
+            }
+            return cleaned
         }
         return ""
     }
@@ -1176,7 +1331,9 @@ class AiService {
         model: String,
         systemPrompt: String,
         history: List<ConversationTurn>,
-        userPrompt: String
+        userPrompt: String,
+        onDelta: ((String) -> Unit)? = null,
+        onThoughtDelta: ((String) -> Unit)? = null
     ): String {
         val messages = JSONArray()
         for (turn in history.takeLast(24)) {
@@ -1217,13 +1374,22 @@ class AiService {
             val json = JSONObject(body)
             val contentArr = json.optJSONArray("content") ?: JSONArray()
             val sb = StringBuilder()
+            val thoughtSb = StringBuilder()
             for (i in 0 until contentArr.length()) {
                 val c = contentArr.getJSONObject(i)
-                if (c.optString("type") == "text") {
-                    sb.append(c.optString("text"))
+                when (c.optString("type")) {
+                    "thinking" -> thoughtSb.append(c.optString("thinking"))
+                    "text" -> sb.append(c.optString("text"))
                 }
             }
-            return sb.toString().trim()
+            if (thoughtSb.isNotEmpty()) {
+                onThoughtDelta?.invoke(thoughtSb.toString())
+            }
+            val finalStr = stripAndExtractThinkTags(sb.toString().trim(), onThoughtDelta)
+            if (finalStr.isNotEmpty()) {
+                onDelta?.invoke(finalStr)
+            }
+            return finalStr
         }
     }
 

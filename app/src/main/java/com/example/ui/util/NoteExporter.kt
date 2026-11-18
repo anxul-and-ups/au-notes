@@ -675,12 +675,28 @@ object NoteExporter {
             for (line in lines) {
                 val lineStart = offset
                 val lineEnd = offset + line.length
-                val id = ImageMarkers.idOf(line)
-                if (id != null) {
+                val trimmedLine = line.trim()
+                if (trimmedLine.equals("---page---", ignoreCase = true) || trimmedLine.equals("[page_break]", ignoreCase = true)) {
                     flushText(lineStart)
-                    val att = allAtts.firstOrNull { it.id == id }
-                    if (att != null) { placedInline.add(id); drawImageAt(pager, att, bodyPaint, textW) }
+                    if (!pager.single) {
+                        pager.newPage()
+                    } else {
+                        pager.y += 28f
+                    }
                     segStart = (lineEnd + 1).coerceAtMost(body.length)
+                } else {
+                    val ids = ImageMarkers.idsIn(line)
+                    if (ids.isNotEmpty()) {
+                        flushText(lineStart)
+                        for (id in ids) {
+                            val att = allAtts.firstOrNull { it.id == id }
+                            if (att != null) {
+                                placedInline.add(id)
+                                drawImageAt(pager, att, bodyPaint, textW)
+                            }
+                        }
+                        segStart = (lineEnd + 1).coerceAtMost(body.length)
+                    }
                 }
                 offset = lineEnd + 1
             }
@@ -770,13 +786,13 @@ object NoteExporter {
             drawTable(pager, rows, cw)
         }
 
-        // Remaining attachments (legacy notes without inline position, or non-image files).
+        // Remaining attachments (notes with gallery attachments or without inline marker).
         allAtts.forEach { att ->
             if (att.id in placedInline) {
                 return@forEach
             }
             pager.y += 12f
-            if (att.mimeType.startsWith("image/")) {
+            if (AttachmentRenderer.isImageAttachment(att)) {
                 drawImageAt(pager, att, bodyPaint, cw)
             } else {
                 drawLayout(pager, makeLayout("Attachment: ${att.fileName}", bodyPaint, cw), MARGIN)

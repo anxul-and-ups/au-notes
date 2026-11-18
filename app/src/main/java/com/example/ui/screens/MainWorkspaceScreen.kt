@@ -467,6 +467,7 @@ fun MainWorkspaceScreen(
                                     Toast.makeText(context, if (chosen.isEmpty()) "Select at least one note" else "Locked notes can't be deleted from here", Toast.LENGTH_SHORT).show()
                                 } else {
                                     coroutineScope.launch {
+                                        com.example.ui.util.UiSoundManager.playDeleteSound(context)
                                         repository.moveToTrash(deletable.map { it.id })
                                         Toast.makeText(context, "Moved ${deletable.size} note(s) to Recycle Bin", Toast.LENGTH_SHORT).show()
                                     }
@@ -478,17 +479,6 @@ fun MainWorkspaceScreen(
                                 Icon(Icons.Default.Close, contentDescription = "Cancel selection", tint = if (isDarkMode) Color.White else Color.DarkGray)
                             }
                         } else {
-                            Box(modifier = Modifier.testTag("open_split_screen_button")) {
-                                NeuIconButton(
-                                    icon = Icons.Default.Splitscreen,
-                                    contentDescription = "Split Screen (Two Notes)",
-                                    isDarkMode = isDarkMode,
-                                    size = 34.dp,
-                                    iconSize = 17.dp,
-                                    tint = CrimsonPrimary,
-                                    onClick = onOpenSplitScreen
-                                )
-                            }
                             Box(modifier = Modifier.testTag("open_settings_button")) {
                                 NeuIconButton(
                                     painter = painterResource(R.drawable.ic_settings_gear),
@@ -700,7 +690,7 @@ fun MainWorkspaceScreen(
                                     interactionSource = chipInteraction,
                                     indication = null,
                                     onClick = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        com.example.ui.util.UiSoundManager.playFolderTap(context)
                                         openFolder(folder)
                                     }
                                 )
@@ -763,7 +753,7 @@ fun MainWorkspaceScreen(
                                 RoundedCornerShape(12.dp)
                             )
                             .clickable {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                com.example.ui.util.UiSoundManager.playFolderTap(context)
                                 showAddFolderDialog = true
                             }
                             .padding(horizontal = 11.dp, vertical = 7.dp)
@@ -997,6 +987,7 @@ fun MainWorkspaceScreen(
                         longPressedNote = null
                         val performToggle = {
                             coroutineScope.launch {
+                                com.example.ui.util.UiSoundManager.playSciFiLock(context, isUnlock = note.isLocked)
                                 repository.toggleLock(note.id, note.isLocked)
                                 Toast.makeText(context, if (note.isLocked) "Note Unlocked" else "Note Locked", Toast.LENGTH_SHORT).show()
                             }
@@ -1032,6 +1023,7 @@ fun MainWorkspaceScreen(
                         longPressedNote = null
                         guardDelete {
                             coroutineScope.launch {
+                                com.example.ui.util.UiSoundManager.playDeleteSound(context)
                                 repository.moveToTrash(note.id)
                                 Toast.makeText(context, "Moved '${note.title}' to Recycle Bin", Toast.LENGTH_SHORT).show()
                             }
@@ -1092,6 +1084,7 @@ fun MainWorkspaceScreen(
                     onClick = {
                         longPressedFolder = null
                         val performToggle = {
+                            com.example.ui.util.UiSoundManager.playSciFiLock(context, isUnlock = isLocked)
                             preferences.toggleFolderLock(folder)
                             unlockedFoldersThisSession = unlockedFoldersThisSession - folder
                             if (selectedFolder == folder) selectedFolder = "All Notes"
@@ -1126,6 +1119,7 @@ fun MainWorkspaceScreen(
                         isDarkMode = isDarkMode,
                         onClick = {
                             val doHide = {
+                                com.example.ui.util.UiSoundManager.playSciFiLock(context, isUnlock = false)
                                 preferences.hideFolder(folder)
                                 if (selectedFolder == folder) selectedFolder = "All Notes"
                                 longPressedFolder = null
@@ -1146,6 +1140,7 @@ fun MainWorkspaceScreen(
                         onClick = {
                             longPressedFolder = null
                             guardDelete {
+                                com.example.ui.util.UiSoundManager.playDeleteSound(context)
                                 preferences.deleteCustomFolder(folder)
                                 if (selectedFolder == folder) selectedFolder = "All Notes"
                                 Toast.makeText(context, "Folder moved to Recycle Bin", Toast.LENGTH_SHORT).show()

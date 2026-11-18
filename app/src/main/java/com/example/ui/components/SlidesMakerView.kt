@@ -57,6 +57,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
@@ -2617,7 +2618,8 @@ private fun EditorialGrowthCurveBlock(
 fun SlidesMakerCard(
     initialDeck: SlideDeckData,
     isDarkMode: Boolean,
-    onAddSlideDeckToNote: ((SlideDeckData) -> Unit)? = null
+    onAddSlideDeckToNote: ((SlideDeckData) -> Unit)? = null,
+    onSaveHtmlToNote: ((title: String, htmlContent: String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -2635,358 +2637,213 @@ fun SlidesMakerCard(
     var editingSlideIndex by remember { mutableStateOf<Int?>(null) }
     var exportingPdf by remember { mutableStateOf(false) }
     var savingImages by remember { mutableStateOf(false) }
+    var desktopMode by remember { mutableStateOf(true) }
 
-    val slidingHtml = remember(currentDeck) {
-        AgentVisualsParser.buildSlidingHtmlArtifact(currentDeck)
+    val slidingHtml = remember(currentDeck, desktopMode, isDarkMode) {
+        com.example.data.ai.ArtifactBuilder.harden(
+            AgentVisualsParser.buildSlidingHtmlArtifact(currentDeck),
+            isDarkMode = isDarkMode,
+            desktopMode = desktopMode
+        )
     }
-    var inlineWebView by remember { mutableStateOf<WebView?>(null) }
 
     val cardBg = if (isDarkMode) Color(0xFF17171B) else Color(0xFFFAF8F5)
     val borderCol = if (isDarkMode) Color(0xFF2C2C34) else Color(0xFFD6D3CB)
     val fg = if (isDarkMode) Color(0xFFF4F1EA) else Color(0xFF18181B)
 
-    Column(
+    // Clean, Modern Clickable File-Name Card in Chat (Point 10: no cluttering external buttons)
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(cardBg)
-            .border(1.dp, borderCol, RoundedCornerShape(16.dp))
-            .padding(12.dp)
+            .border(1.2.dp, borderCol, RoundedCornerShape(14.dp))
+            .clickable { showFullScreenViewer = true }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        // Sliding HTML Artifact Header Row (tappable to open Full-Screen Viewer!)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (isDarkMode) Color(0xFF202026) else Color(0xFFEFECE4))
-                .border(1.dp, borderCol, RoundedCornerShape(12.dp))
-                .clickable { showFullScreenViewer = true }
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(Color(0xFFEA580C).copy(alpha = 0.16f))
-                        .border(1.dp, Color(0xFFEA580C).copy(alpha = 0.4f), RoundedCornerShape(9.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Collections, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(18.dp))
-                }
-                Spacer(Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = deckTitle,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = fg,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "HTML Sliding Presentation • ${slidesState.size} Slides • Swipe Left/Right",
-                        fontSize = 11.sp,
-                        color = fg.copy(alpha = 0.62f)
-                    )
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                IconButton(
-                    onClick = { editingSlideIndex = pagerState.currentPage.coerceIn(0, (slidesState.size - 1).coerceAtLeast(0)) },
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(Icons.Default.Edit, contentDescription = "Edit slide", tint = fg.copy(alpha = 0.75f), modifier = Modifier.size(16.dp))
-                }
-                IconButton(
-                    onClick = { showFullScreenViewer = true },
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(Icons.Default.Fullscreen, contentDescription = "Open fullscreen", tint = Color(0xFFEA580C), modifier = Modifier.size(20.dp))
-                }
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        // Interactive HTML Sliding Artifact WebView (supports touch swipe, Prev/Next buttons, and dot indicators)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(325.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .border(2.5.dp, Color(0xFF18181B), RoundedCornerShape(14.dp))
-        ) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    WebView(ctx).apply {
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.loadWithOverviewMode = true
-                        settings.useWideViewPort = true
-                        settings.allowFileAccess = true
-                        settings.allowContentAccess = true
-                        settings.allowFileAccessFromFileURLs = true
-                        settings.allowUniversalAccessFromFileURLs = true
-                        settings.setSupportZoom(true)
-                        settings.builtInZoomControls = true
-                        settings.displayZoomControls = false
-                        webChromeClient = WebChromeClient()
-                        webViewClient = createSafeWebViewClient()
-                        tag = slidingHtml
-                        loadDataWithBaseURL("file:///android_asset/", slidingHtml, "text/html", "UTF-8", null)
-                        inlineWebView = this
-                    }
-                },
-                update = { wv ->
-                    inlineWebView = wv
-                    if (wv.tag != slidingHtml) {
-                        wv.tag = slidingHtml
-                        wv.loadDataWithBaseURL("file:///android_asset/", slidingHtml, "text/html", "UTF-8", null)
-                    }
-                },
-                onRelease = { wv ->
-                    if (inlineWebView === wv) inlineWebView = null
-                    runCatching {
-                        (wv.parent as? ViewGroup)?.removeView(wv)
-                        wv.stopLoading()
-                        wv.destroy()
-                    }
-                }
-            )
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        // Action Row 1: Export PDF | Save HTML Slide Deck | Save PNGs
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
             Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .height(40.dp)
+                    .size(40.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFF18181B))
-                    .border(1.dp, borderCol, RoundedCornerShape(10.dp))
-                    .clickable(enabled = !exportingPdf) {
-                        exportingPdf = true
-                        scope.launch(Dispatchers.IO) {
-                            val saved = try {
-                                AgentVisualsParser.exportSlidesToPdf(context, currentDeck)
-                            } catch (_: Exception) { null }
-                            withContext(Dispatchers.Main) {
-                                exportingPdf = false
-                                Toast.makeText(
-                                    context,
-                                    if (saved != null) "PDF Exported (${slidesState.size} slides) to ${saved.displayPath}"
-                                    else "Could not export Slides PDF",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
-                    },
+                    .background(Color(0xFFEA580C).copy(alpha = 0.16f))
+                    .border(1.dp, Color(0xFFEA580C).copy(alpha = 0.45f), RoundedCornerShape(10.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.PictureAsPdf, null, tint = Color(0xFFFAF8F3), modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text(
-                        text = if (exportingPdf) "Exporting..." else "Export PDF",
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFFAF8F3)
-                    )
-                }
+                Icon(Icons.Default.Collections, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(20.dp))
             }
-
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFFEA580C))
-                    .clickable {
-                        scope.launch(Dispatchers.IO) {
-                            val safeName = deckTitle.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "slides" } + ".html"
-                            val tmp = File(context.cacheDir, safeName)
-                            tmp.writeText(slidingHtml)
-                            val saved = NoteExporter.saveToDevice(context, tmp, safeName, "text/html")
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(
-                                    context,
-                                    if (saved != null) "Saved HTML Slides to ${saved.displayPath}"
-                                    else "Could not save HTML Slides",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Code, null, tint = Color.White, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text(
-                        text = "Save .html",
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .weight(0.95f)
-                    .height(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(fg.copy(alpha = 0.08f))
-                    .border(1.dp, borderCol, RoundedCornerShape(10.dp))
-                    .clickable(enabled = !savingImages) {
-                        savingImages = true
-                        scope.launch(Dispatchers.IO) {
-                            val count = AgentVisualsParser.saveAllSlidesToGallery(context, currentDeck)
-                            withContext(Dispatchers.Main) {
-                                savingImages = false
-                                Toast.makeText(
-                                    context,
-                                    if (count > 0) "$count slides saved to Gallery"
-                                    else "Could not save slides to Gallery",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Collections, null, tint = fg, modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = if (savingImages) "Saving..." else "Save PNGs",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = fg
-                    )
-                }
-            }
-        }
-
-        if (onAddSlideDeckToNote != null) {
-            Spacer(Modifier.height(8.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(38.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFFEA580C).copy(alpha = 0.14f))
-                    .border(1.dp, Color(0xFFEA580C).copy(alpha = 0.45f), RoundedCornerShape(10.dp))
-                    .clickable { onAddSlideDeckToNote(currentDeck) },
-                contentAlignment = Alignment.Center
-            ) {
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Add Sliding HTML Presentation to Note",
-                    fontSize = 12.sp,
+                    text = deckTitle.ifBlank { "Presentation Slides" },
+                    fontSize = 14.5.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFFEA580C)
+                    color = fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${slidesState.size} Slides • Tap to open Full-Screen Presentation",
+                    fontSize = 11.5.sp,
+                    color = fg.copy(alpha = 0.65f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
+        Spacer(Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFFEA580C).copy(alpha = 0.14f))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = "SLIDES",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color(0xFFEA580C)
+            )
+        }
     }
 
-    // FULL-SCREEN SLIDING HTML ARTIFACT VIEWER DIALOG
+    // FULL-SCREEN DESKTOP-MODE SLIDING HTML ARTIFACT VIEWER DIALOG
     if (showFullScreenViewer) {
         Dialog(
             onDismissRequest = { showFullScreenViewer = false },
             properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
         ) {
+            com.example.ui.components.ConfigureEdgeToEdgeDialog(isDarkMode = isDarkMode)
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
                     .navigationBarsPadding(),
-                color = Color(0xFFFAF8F5),
-                shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)
+                color = if (isDarkMode) Color(0xFF0F1015) else Color(0xFFFAF8F5)
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    Column(
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Color.White)
-                            .padding(top = 8.dp, bottom = 12.dp, start = 12.dp, end = 12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                            .background(if (isDarkMode) Color(0xFF171821) else Color.White)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Box(
+                        IconButton(onClick = { showFullScreenViewer = false }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = fg)
+                        }
+                        Column(
                             modifier = Modifier
-                                .width(40.dp)
-                                .height(4.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFD4D4D8))
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .weight(1f)
+                                .padding(horizontal = 6.dp)
                         ) {
-                            IconButton(onClick = { showFullScreenViewer = false }) {
-                                Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF18181B))
-                            }
                             Text(
                                 text = deckTitle,
-                                fontSize = 17.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFF18181B),
-                                textAlign = TextAlign.Center,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(horizontal = 8.dp)
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = fg,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (onAddSlideDeckToNote != null) {
-                                    TextButton(onClick = {
+                            Text(
+                                text = "${slidesState.size} Slides • Full-Screen Desktop Viewer",
+                                fontSize = 10.5.sp,
+                                color = fg.copy(alpha = 0.6f),
+                                maxLines = 1
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Inside-Viewer Save to Notes Icon Button (Point 11)
+                            IconButton(
+                                onClick = {
+                                    val webViewNoteHtml = "<!--au_webview_note-->\n" +
+                                        com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(
+                                            context,
+                                            AgentVisualsParser.buildSlidingHtmlArtifact(currentDeck)
+                                        )
+                                    if (onSaveHtmlToNote != null) {
+                                        onSaveHtmlToNote(deckTitle.ifBlank { "Presentation Slides" }, webViewNoteHtml)
+                                    } else if (onAddSlideDeckToNote != null) {
                                         onAddSlideDeckToNote(currentDeck)
-                                        Toast.makeText(context, "Added Slides to Note", Toast.LENGTH_SHORT).show()
-                                    }) {
-                                        Text("Add to Note", color = Color(0xFFEA580C), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
+                                    Toast.makeText(context, "Saved Presentation to Notes (WebView Ready)", Toast.LENGTH_SHORT).show()
                                 }
-                                IconButton(
-                                    onClick = {
-                                        scope.launch(Dispatchers.IO) {
-                                            val saved = runCatching {
-                                                AgentVisualsParser.exportSlidesToPdf(context, currentDeck)
-                                            }.getOrNull()
-                                            withContext(Dispatchers.Main) {
-                                                Toast.makeText(
-                                                    context,
-                                                    if (saved != null) "Exported PDF to ${saved.displayPath}" else "Could not export PDF",
-                                                    Toast.LENGTH_SHORT
-                                                ).show()
-                                            }
+                            ) {
+                                Icon(Icons.Default.BookmarkAdd, contentDescription = "Save to Notes", tint = Color(0xFFEA580C))
+                            }
+                            // Desktop / Mobile Fit Toggle
+                            IconButton(onClick = { desktopMode = !desktopMode }) {
+                                Icon(
+                                    if (desktopMode) Icons.Default.DesktopWindows else Icons.Default.PhoneAndroid,
+                                    contentDescription = "Toggle Desktop Mode",
+                                    tint = if (desktopMode) Color(0xFFEA580C) else fg.copy(alpha = 0.7f)
+                                )
+                            }
+                            // Edit current slide
+                            IconButton(
+                                onClick = {
+                                    editingSlideIndex = pagerState.currentPage.coerceIn(0, (slidesState.size - 1).coerceAtLeast(0))
+                                }
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = "Edit Slide", tint = fg)
+                            }
+                            // Export PDF
+                            IconButton(
+                                enabled = !exportingPdf,
+                                onClick = {
+                                    exportingPdf = true
+                                    scope.launch(Dispatchers.IO) {
+                                        val saved = runCatching {
+                                            AgentVisualsParser.exportSlidesToPdf(context, currentDeck)
+                                        }.getOrNull()
+                                        withContext(Dispatchers.Main) {
+                                            exportingPdf = false
+                                            Toast.makeText(
+                                                context,
+                                                if (saved != null) "Exported PDF to ${saved.displayPath}" else "Could not export PDF",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
                                         }
                                     }
-                                ) {
-                                    Icon(Icons.Default.PictureAsPdf, contentDescription = "Export PDF", tint = Color(0xFF18181B))
                                 }
+                            ) {
+                                Icon(Icons.Default.PictureAsPdf, contentDescription = "Export PDF", tint = fg)
+                            }
+                            // Download .html
+                            IconButton(
+                                onClick = {
+                                    scope.launch(Dispatchers.IO) {
+                                        val safeName = deckTitle.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "slides" } + ".html"
+                                        val tmp = File(context.cacheDir, safeName)
+                                        tmp.writeText(
+                                            com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(
+                                                context,
+                                                AgentVisualsParser.buildSlidingHtmlArtifact(currentDeck)
+                                            )
+                                        )
+                                        val saved = NoteExporter.saveToDevice(context, tmp, safeName, "text/html")
+                                        withContext(Dispatchers.Main) {
+                                            Toast.makeText(
+                                                context,
+                                                if (saved != null) "Saved HTML Slides to ${saved.displayPath}" else "Could not save HTML",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = "Save .html", tint = fg)
                             }
                         }
                     }
 
-                    HorizontalDivider(color = Color(0xFFE4E4E7), thickness = 1.dp)
+                    HorizontalDivider(color = borderCol, thickness = 1.dp)
 
+                    val latestSlidingHtml = slidingHtml
                     AndroidView(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -2999,7 +2856,7 @@ fun SlidesMakerCard(
                                 )
                                 settings.javaScriptEnabled = true
                                 settings.domStorageEnabled = true
-                                settings.loadWithOverviewMode = true
+                                settings.loadWithOverviewMode = desktopMode
                                 settings.useWideViewPort = true
                                 settings.allowFileAccess = true
                                 settings.allowContentAccess = true
@@ -3008,16 +2865,20 @@ fun SlidesMakerCard(
                                 settings.setSupportZoom(true)
                                 settings.builtInZoomControls = true
                                 settings.displayZoomControls = false
+                                addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
                                 webChromeClient = WebChromeClient()
                                 webViewClient = createSafeWebViewClient()
-                                tag = slidingHtml
-                                loadDataWithBaseURL("file:///android_asset/", slidingHtml, "text/html", "UTF-8", null)
+                                tag = "$desktopMode::$latestSlidingHtml"
+                                loadDataWithBaseURL("file:///android_asset/", latestSlidingHtml, "text/html", "UTF-8", null)
                             }
                         },
                         update = { wv ->
-                            if (wv.tag != slidingHtml) {
-                                wv.tag = slidingHtml
-                                wv.loadDataWithBaseURL("file:///android_asset/", slidingHtml, "text/html", "UTF-8", null)
+                            val currentHtml = slidingHtml
+                            val tagKey = "$desktopMode::$currentHtml"
+                            wv.settings.loadWithOverviewMode = desktopMode
+                            if (wv.tag != tagKey) {
+                                wv.tag = tagKey
+                                wv.loadDataWithBaseURL("file:///android_asset/", currentHtml, "text/html", "UTF-8", null)
                             }
                         },
                         onRelease = { wv ->
@@ -4158,13 +4019,15 @@ fun AgentDiagramCard(
 fun HtmlArtifactCard(
     title: String,
     htmlCode: String,
-    isDarkMode: Boolean
+    isDarkMode: Boolean,
+    onSaveToNote: ((title: String, htmlContent: String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val fileMode = htmlCode.startsWith("AUFILE:")
-    val filePath = htmlCode.removePrefix("AUFILE:")
-    var desktopMode by remember { mutableStateOf(false) }
+    val filePath = htmlCode.removePrefix("AUFILE:").trim()
+    var desktopMode by remember { mutableStateOf(true) }
+    var showFullScreen by remember { mutableStateOf(false) }
 
     val resolvedHtmlState = produceState(initialValue = "", htmlCode, isDarkMode, desktopMode) {
         value = withContext(Dispatchers.Default) {
@@ -4181,9 +4044,8 @@ fun HtmlArtifactCard(
             }
         }
     }
-    val resolvedHtml = resolvedHtmlState.value
 
-    val configureAndLoad: (WebView, Boolean) -> Unit = { wv, isDesktop ->
+    val configureAndLoad: (WebView, Boolean, String) -> Unit = { wv, isDesktop, currentHtml ->
         wv.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -4202,217 +4064,87 @@ fun HtmlArtifactCard(
                 null
             }
         }
-        val tagKey = "$isDesktop::$resolvedHtml"
-        if (wv.tag != tagKey) {
+        val tagKey = "$isDesktop::${currentHtml.hashCode()}::${currentHtml.length}"
+        if (wv.tag != tagKey && (currentHtml.isNotBlank() || fileMode)) {
             wv.tag = tagKey
-            if (resolvedHtml.isNotBlank()) {
+            if (currentHtml.isNotBlank()) {
                 val baseUrl = if (fileMode) {
                     val parent = File(filePath).parentFile
                     if (parent != null) "file://${parent.absolutePath}/" else "file:///android_asset/"
                 } else {
                     "file:///android_asset/"
                 }
-                wv.loadDataWithBaseURL(baseUrl, resolvedHtml, "text/html", "UTF-8", null)
+                wv.loadDataWithBaseURL(baseUrl, currentHtml, "text/html", "UTF-8", null)
             } else if (fileMode) {
                 wv.loadUrl("file://$filePath")
             }
         }
     }
-    var showFullScreen by remember { mutableStateOf(false) }
 
     val cardBg = if (isDarkMode) Color(0xFF17171B) else Color(0xFFFAF8F5)
     val borderCol = if (isDarkMode) Color(0xFF2C2C34) else Color(0xFFD6D3CB)
     val fg = if (isDarkMode) Color(0xFFF4F1EA) else Color(0xFF18181B)
 
-    Column(
+    // Clean, Modern Clickable File-Name Card in Chat (Point 10: no cluttering external buttons)
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(cardBg)
-            .border(1.dp, borderCol, RoundedCornerShape(16.dp))
-            .padding(12.dp)
+            .border(1.2.dp, borderCol, RoundedCornerShape(14.dp))
+            .clickable { showFullScreen = true }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        // Claude Artifact Header Row
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (isDarkMode) Color(0xFF202026) else Color(0xFFEFECE4))
-                .border(1.dp, borderCol, RoundedCornerShape(12.dp))
-                .clickable { showFullScreen = true }
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(Color(0xFFEA580C).copy(alpha = 0.16f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Code, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(18.dp))
-                }
-                Spacer(Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = fg, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        if (desktopMode) "Desktop 1280px View • Pinch to zoom • Fullscreen"
-                        else "Interactive HTML Artifact • Tap Desktop or Fullscreen",
-                        fontSize = 11.sp,
-                        color = fg.copy(alpha = 0.62f)
-                    )
-                }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFFEA580C).copy(alpha = 0.16f))
+                    .border(1.dp, Color(0xFFEA580C).copy(alpha = 0.45f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Code, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(20.dp))
             }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                IconButton(onClick = { desktopMode = !desktopMode }, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        if (desktopMode) Icons.Default.DesktopWindows else Icons.Default.PhoneAndroid,
-                        contentDescription = if (desktopMode) "Desktop mode active" else "Switch to desktop mode",
-                        tint = if (desktopMode) Color(0xFFEA580C) else fg.copy(alpha = 0.72f),
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color(0xFFEA580C), modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title.ifBlank { "index.html" },
+                    fontSize = 14.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = if (resolvedHtmlState.value.isNotEmpty() || fileMode) {
+                        "Interactive HTML Artifact • Tap to open Full-Screen Desktop View"
+                    } else {
+                        "Preparing Interactive Artifact..."
+                    },
+                    fontSize = 11.5.sp,
+                    color = fg.copy(alpha = 0.65f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
-
-        Spacer(Modifier.height(8.dp))
-
-        // Live Inline Preview (taller 320.dp + pinch-zoom + Desktop toggle)
+        Spacer(Modifier.width(8.dp))
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(320.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .border(1.5.dp, borderCol, RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFFEA580C).copy(alpha = 0.14f))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
         ) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    WebView(ctx).apply {
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                        addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
-                        setOnTouchListener { v, event ->
-                            when (event.actionMasked) {
-                                android.view.MotionEvent.ACTION_DOWN -> v.parent?.requestDisallowInterceptTouchEvent(true)
-                                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.parent?.requestDisallowInterceptTouchEvent(false)
-                            }
-                            false
-                        }
-                        webChromeClient = WebChromeClient()
-                        webViewClient = createSafeWebViewClient()
-                        configureAndLoad(this, desktopMode)
-                    }
-                },
-                update = { wv ->
-                    configureAndLoad(wv, desktopMode)
-                },
-                onRelease = { wv ->
-                    runCatching {
-                        (wv.parent as? ViewGroup)?.removeView(wv)
-                        wv.stopLoading()
-                        wv.destroy()
-                    }
-                }
+            Text(
+                text = "HTML",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color(0xFFEA580C)
             )
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(38.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(Color(0xFFEA580C))
-                    .clickable { showFullScreen = true },
-                contentAlignment = Alignment.Center
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.OpenInNew, null, tint = Color.White, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text("Open Interactive", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                }
-            }
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(38.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(fg.copy(alpha = 0.08f))
-                    .clickable {
-                        scope.launch(Dispatchers.IO) {
-                            val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "artifact" } + ".html"
-                            val tmp = File(context.cacheDir, safeName)
-                            val exportContent = if (fileMode) {
-                                com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath), context)
-                            } else {
-                                com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(context, htmlCode)
-                            }
-                            tmp.writeText(exportContent)
-                            val saved = NoteExporter.saveToDevice(context, tmp, safeName, "text/html")
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(
-                                    context,
-                                    if (saved != null) "Saved $safeName to ${saved.displayPath}" else "Could not save HTML",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Download, null, tint = fg, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text("Download .html", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = fg)
-                }
-            }
-            Box(
-                modifier = Modifier
-                    .weight(0.7f)
-                    .height(38.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(fg.copy(alpha = 0.08f))
-                    .clickable {
-                        scope.launch(Dispatchers.IO) {
-                            val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "artifact" } + ".html"
-                            val tmp = File(context.cacheDir, safeName)
-                            val exportContent = if (fileMode) {
-                                com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath), context)
-                            } else {
-                                com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(context, htmlCode)
-                            }
-                            tmp.writeText(exportContent)
-                            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", tmp)
-                            withContext(Dispatchers.Main) {
-                                val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                    type = "text/html"
-                                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                                context.startActivity(android.content.Intent.createChooser(send, "Share artifact"))
-                            }
-                        }
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Share, null, tint = fg, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text("Share", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = fg)
-                }
-            }
         }
     }
 
@@ -4421,48 +4153,77 @@ fun HtmlArtifactCard(
             onDismissRequest = { showFullScreen = false },
             properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
         ) {
+            com.example.ui.components.ConfigureEdgeToEdgeDialog(isDarkMode = isDarkMode)
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
                     .navigationBarsPadding(),
-                color = Color(0xFFFAF8F5)
+                color = if (isDarkMode) Color(0xFF0F1015) else Color(0xFFFAF8F5)
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Color.White)
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                            .background(if (isDarkMode) Color(0xFF171821) else Color.White)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         IconButton(onClick = { showFullScreen = false }) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF18181B))
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = fg)
                         }
-                        Text(
-                            text = title,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFF18181B),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
+                            Text(
+                                text = title.ifBlank { "index.html" },
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = fg,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = if (desktopMode) "Full-Screen Desktop View (1024px)" else "Full-Screen Responsive View",
+                                fontSize = 10.5.sp,
+                                color = fg.copy(alpha = 0.6f),
+                                maxLines = 1
+                            )
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Inside-Viewer Save to Notes Icon Button (Point 11)
+                            if (onSaveToNote != null) {
+                                IconButton(
+                                    onClick = {
+                                        scope.launch(Dispatchers.IO) {
+                                            val exportContent = if (fileMode) {
+                                                com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath), context)
+                                            } else {
+                                                com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(context, htmlCode)
+                                            }
+                                            val webViewNoteContent = "<!--au_webview_note-->\n$exportContent"
+                                            withContext(Dispatchers.Main) {
+                                                onSaveToNote(title.ifBlank { "HTML Artifact" }, webViewNoteContent)
+                                                Toast.makeText(context, "Saved to Notes (WebView Ready)", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Icon(Icons.Default.BookmarkAdd, contentDescription = "Save to Notes", tint = Color(0xFFEA580C))
+                                }
+                            }
                             TextButton(onClick = { desktopMode = !desktopMode }) {
                                 Icon(
                                     if (desktopMode) Icons.Default.DesktopWindows else Icons.Default.PhoneAndroid,
                                     contentDescription = null,
-                                    tint = if (desktopMode) Color(0xFFEA580C) else Color(0xFF52525B),
-                                    modifier = Modifier.size(18.dp)
+                                    tint = if (desktopMode) Color(0xFFEA580C) else fg.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(17.dp)
                                 )
                                 Spacer(Modifier.width(4.dp))
                                 Text(
-                                    if (desktopMode) "Desktop" else "Mobile",
-                                    fontSize = 12.sp,
+                                    if (desktopMode) "Desktop" else "Fit",
+                                    fontSize = 11.5.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (desktopMode) Color(0xFFEA580C) else Color(0xFF18181B)
+                                    color = if (desktopMode) Color(0xFFEA580C) else fg
                                 )
                             }
                             IconButton(
@@ -4487,11 +4248,37 @@ fun HtmlArtifactCard(
                                     }
                                 }
                             ) {
-                                Icon(Icons.Default.Download, contentDescription = "Save HTML", tint = Color(0xFF18181B))
+                                Icon(Icons.Default.Download, contentDescription = "Save HTML", tint = fg)
+                            }
+                            IconButton(
+                                onClick = {
+                                    scope.launch(Dispatchers.IO) {
+                                        val safeName = title.replace(Regex("[^\\p{L}\\p{N}_-]"), "_").take(36).ifBlank { "artifact" } + ".html"
+                                        val tmp = File(context.cacheDir, safeName)
+                                        val exportContent = if (fileMode) {
+                                            com.example.data.ai.ArtifactBuilder.inlineForExport(File(filePath), context)
+                                        } else {
+                                            com.example.data.ai.ArtifactBuilder.inlineOfflineScriptsForExport(context, htmlCode)
+                                        }
+                                        tmp.writeText(exportContent)
+                                        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", tmp)
+                                        withContext(Dispatchers.Main) {
+                                            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                type = "text/html"
+                                                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            }
+                                            context.startActivity(android.content.Intent.createChooser(send, "Share artifact"))
+                                        }
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = "Share HTML", tint = fg)
                             }
                         }
                     }
-                    HorizontalDivider(color = Color(0xFFE4E4E7))
+                    HorizontalDivider(color = borderCol)
+                    val currentHtml = resolvedHtmlState.value
                     AndroidView(
                         modifier = Modifier.fillMaxWidth().weight(1f),
                         factory = { ctx ->
@@ -4503,11 +4290,226 @@ fun HtmlArtifactCard(
                                 addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
                                 webChromeClient = WebChromeClient()
                                 webViewClient = createSafeWebViewClient()
-                                configureAndLoad(this, desktopMode)
+                                configureAndLoad(this, desktopMode, currentHtml)
                             }
                         },
                         update = { wv ->
-                            configureAndLoad(wv, desktopMode)
+                            configureAndLoad(wv, desktopMode, resolvedHtmlState.value)
+                        },
+                        onRelease = { wv ->
+                            runCatching {
+                                (wv.parent as? ViewGroup)?.removeView(wv)
+                                wv.stopLoading()
+                                wv.destroy()
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Point 11: WebView-Native Rendering in Read Mode & Split-Screen Mode for notes saved from the
+ * Full-Screen HTML / Presentation Artifact Viewer.
+ */
+@Composable
+fun DirectNoteWebView(
+    title: String,
+    htmlCode: String,
+    isDarkMode: Boolean
+) {
+    val context = LocalContext.current
+    val fileMode = htmlCode.trim().startsWith("AUFILE:")
+    val filePath = htmlCode.trim().removePrefix("AUFILE:").trim()
+    var desktopMode by remember { mutableStateOf(true) }
+    var showFullScreen by remember { mutableStateOf(false) }
+
+    val resolvedHtmlState = produceState(initialValue = "", htmlCode, isDarkMode, desktopMode) {
+        value = withContext(Dispatchers.Default) {
+            if (fileMode) {
+                runCatching {
+                    val f = File(filePath)
+                    if (f.exists()) {
+                        val inlined = com.example.data.ai.ArtifactBuilder.inlineForExport(f, context)
+                        com.example.data.ai.ArtifactBuilder.harden(inlined, isDarkMode, desktopMode)
+                    } else ""
+                }.getOrDefault("")
+            } else {
+                com.example.data.ai.ArtifactBuilder.harden(htmlCode, isDarkMode, desktopMode)
+            }
+        }
+    }
+
+    val configureWebView: (WebView, Boolean, String) -> Unit = { wv, isDesktop, currentHtml ->
+        wv.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            allowFileAccess = true
+            allowContentAccess = true
+            allowFileAccessFromFileURLs = true
+            allowUniversalAccessFromFileURLs = true
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+            useWideViewPort = true
+            loadWithOverviewMode = isDesktop
+        }
+        val tagKey = "$isDesktop::${currentHtml.hashCode()}::${currentHtml.length}"
+        if (wv.tag != tagKey && (currentHtml.isNotBlank() || fileMode)) {
+            wv.tag = tagKey
+            if (currentHtml.isNotBlank()) {
+                wv.loadDataWithBaseURL("file:///android_asset/", currentHtml, "text/html", "UTF-8", null)
+            } else if (fileMode) {
+                wv.loadUrl("file://$filePath")
+            }
+        }
+    }
+
+    val borderCol = if (isDarkMode) Color(0xFF2C2C34) else Color(0xFFD6D3CB)
+    val fg = if (isDarkMode) Color(0xFFF4F1EA) else Color(0xFF18181B)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .border(1.dp, borderCol, RoundedCornerShape(14.dp))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(if (isDarkMode) Color(0xFF1C1E26) else Color(0xFFEFECE4))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.DesktopWindows, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = title.ifBlank { "Interactive WebView Note" },
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { desktopMode = !desktopMode }) {
+                    Text(
+                        if (desktopMode) "Desktop 1024px" else "Mobile Fit",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFEA580C)
+                    )
+                }
+                IconButton(onClick = { showFullScreen = true }, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color(0xFFEA580C), modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+
+        val currentHtml = resolvedHtmlState.value
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(560.dp)
+        ) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
+                        setOnTouchListener { v, event ->
+                            when (event.actionMasked) {
+                                android.view.MotionEvent.ACTION_DOWN -> v.parent?.requestDisallowInterceptTouchEvent(true)
+                                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.parent?.requestDisallowInterceptTouchEvent(false)
+                            }
+                            false
+                        }
+                        webChromeClient = WebChromeClient()
+                        webViewClient = createSafeWebViewClient()
+                        configureWebView(this, desktopMode, currentHtml)
+                    }
+                },
+                update = { wv ->
+                    configureWebView(wv, desktopMode, resolvedHtmlState.value)
+                },
+                onRelease = { wv ->
+                    runCatching {
+                        (wv.parent as? ViewGroup)?.removeView(wv)
+                        wv.stopLoading()
+                        wv.destroy()
+                    }
+                }
+            )
+        }
+    }
+
+    if (showFullScreen) {
+        Dialog(
+            onDismissRequest = { showFullScreen = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+        ) {
+            com.example.ui.components.ConfigureEdgeToEdgeDialog(isDarkMode = isDarkMode)
+            Surface(
+                modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+                color = if (isDarkMode) Color(0xFF0F1015) else Color(0xFFFAF8F5)
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (isDarkMode) Color(0xFF171821) else Color.White)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        IconButton(onClick = { showFullScreen = false }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = fg)
+                        }
+                        Text(
+                            text = title.ifBlank { "Interactive Note" },
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = fg,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        TextButton(onClick = { desktopMode = !desktopMode }) {
+                            Text(
+                                if (desktopMode) "Desktop" else "Mobile Fit",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFEA580C)
+                            )
+                        }
+                    }
+                    HorizontalDivider(color = borderCol)
+                    val fullHtml = resolvedHtmlState.value
+                    AndroidView(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
+                                webChromeClient = WebChromeClient()
+                                webViewClient = createSafeWebViewClient()
+                                configureWebView(this, desktopMode, fullHtml)
+                            }
+                        },
+                        update = { wv ->
+                            configureWebView(wv, desktopMode, resolvedHtmlState.value)
                         },
                         onRelease = { wv ->
                             runCatching {

@@ -1,227 +1,347 @@
 package com.example.ui.components
 
 import android.content.Context
-import android.graphics.Canvas
-import android.graphics.Paint
+import android.graphics.Canvas as ACanvas
 import android.graphics.Color as AColor
-import androidx.compose.foundation.Canvas as ComposeCanvas
+import android.graphics.DashPathEffect
+import android.graphics.Paint as APaint
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoStories
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.example.data.preferences.AppPreferences
 import com.example.ui.theme.CrimsonPrimary
 
-data class PageStyleOption(val id: String, val label: String, val hint: String)
-
-val PAGE_STYLE_OPTIONS = listOf(
-    PageStyleOption("standard", "Plain", "Clean note canvas"),
-    PageStyleOption("ruled", "Ruled notebook", "College ruled lines & margin"),
-    PageStyleOption("legal", "Yellow legal pad", "Warm paper & double margin"),
-    PageStyleOption("grid", "Grid", "Square graph paper"),
-    PageStyleOption("dotted", "Dotted", "Bullet-journal dot grid"),
-    PageStyleOption("word_white", "A4 page", "White Word-style page")
+data class PageStyleSpec(
+    val key: String,
+    val label: String,
+    val subtitle: String,
+    val paperTintLight: Color,
+    val paperTintDark: Color
 )
 
-fun pageStyleDisplayName(style: String): String =
-    PAGE_STYLE_OPTIONS.firstOrNull { it.id == style }?.label ?: "Standard Canvas"
+val PAGE_STYLES: List<PageStyleSpec> = listOf(
+    PageStyleSpec("standard", "Plain", "Clean unruled canvas", Color(0xFFFFFFFF), Color(0xFF141821)),
+    PageStyleSpec("ruled", "Ruled", "Horizontal lines + red margin", Color(0xFFFFFEFA), Color(0xFF161B26)),
+    PageStyleSpec("legal", "Legal Pad", "Warm yellow pad + double margin", Color(0xFFFFF3AE), Color(0xFFFFF3AE)),
+    PageStyleSpec("grid", "Grid", "5mm engineering graph squares", Color(0xFFFDFEFF), Color(0xFF151B24)),
+    PageStyleSpec("dotted", "Dotted", "Bullet-journal dot matrix", Color(0xFFFEFEFE), Color(0xFF151A22)),
+    PageStyleSpec("cornell", "Cornell", "Cue column + notes + summary", Color(0xFFFFFEFA), Color(0xFF161B26)),
+    PageStyleSpec("word_white", "A4 Page", "Print-proportioned A4 sheet", Color.White, Color.White)
+)
 
-fun isLightPageStyle(style: String): Boolean = style == "word_white" || style == "legal"
+private const val PREF_NAME = "au_page_styles"
 
-fun pagePaperColor(style: String, dark: Boolean): Color? = when (style) {
-    "ruled", "grid", "dotted" -> if (dark) Color(0xFF1C1C23) else Color(0xFFFFFDF6)
-    "legal" -> Color(0xFFFFF3AE)
-    "word_white" -> Color.White
-    else -> null
+private fun normalizeStyleKey(raw: String?): String = when (raw?.trim()?.lowercase()) {
+    "yellow_legal", "legal" -> "legal"
+    "ruled" -> "ruled"
+    "grid" -> "grid"
+    "dotted" -> "dotted"
+    "cornell" -> "cornell"
+    "word_white", "a4" -> "word_white"
+    else -> "standard"
 }
 
-fun pageLineColor(style: String, dark: Boolean): Color = when (style) {
-    "legal" -> Color(0xFFC9A22E).copy(alpha = 0.55f)
-    "grid", "dotted" -> if (dark) Color(0x33FFFFFF) else Color(0x4460A5FA)
-    else -> if (dark) Color(0x30FFFFFF) else Color(0x5560A5FA)
+fun pageStyleDisplayName(style: String): String {
+    val norm = normalizeStyleKey(style)
+    return PAGE_STYLES.firstOrNull { it.key == norm }?.label ?: "Plain"
 }
 
-fun loadNotePageStyle(context: Context?, noteId: Long, preferences: AppPreferences? = null): Pair<String, Float> {
-    if (context == null || noteId <= 0L) return "standard" to 1.5f
-    val sp = context.getSharedPreferences("au_page_styles", Context.MODE_PRIVATE)
-    val storedStyle = sp.getString("note_$noteId", null)
-    val style = storedStyle ?: preferences?.getNotePageStyle(noteId) ?: "standard"
-    val ls = sp.getFloat("note_${noteId}_ls", 1.5f).coerceIn(1.1f, 2.2f)
-    return style to ls
+/**
+ * Loads `(pageStyle, lineSpacing)` for a note.
+ * Preserves draft selections made when `noteId == 0L` before the note gets its Room ID.
+ */
+fun loadNotePageStyle(
+    context: Context?,
+    noteId: Long,
+    preferences: AppPreferences? = null
+): Pair<String, Float> {
+    if (context == null) return "standard" to 1.35f
+    val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    val prefStyle = if (noteId > 0L) preferences?.getNotePageStyle(noteId)?.takeIf { it != "standard" } else null
+    val fallbackStyle = prefStyle ?: "standard"
+    val rawStyle = if (noteId > 0L) {
+        sp.getString("style_$noteId", null) ?: fallbackStyle
+    } else {
+        sp.getString("style_draft_0", null) ?: "standard"
+    }
+    val spacing = if (noteId > 0L) {
+        sp.getFloat("spacing_$noteId", 1.35f)
+    } else {
+        sp.getFloat("spacing_draft_0", 1.35f)
+    }
+    return normalizeStyleKey(rawStyle) to spacing.coerceIn(1.0f, 2.4f)
 }
 
-fun saveNotePageStyle(context: Context, noteId: Long, style: String, lineSpacing: Float, preferences: AppPreferences? = null) {
-    if (noteId <= 0L) return
-    val sp = context.getSharedPreferences("au_page_styles", Context.MODE_PRIVATE)
-    sp.edit()
-        .putString("note_$noteId", style)
-        .putFloat("note_${noteId}_ls", lineSpacing.coerceIn(1.1f, 2.2f))
-        .apply()
-    preferences?.setNotePageStyle(noteId, style)
+fun saveNotePageStyle(
+    context: Context,
+    noteId: Long,
+    style: String,
+    lineSpacing: Float = 1.35f,
+    preferences: AppPreferences? = null
+) {
+    val cleanStyle = normalizeStyleKey(style)
+    val cleanSpacing = lineSpacing.coerceIn(1.0f, 2.4f)
+    val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    if (noteId <= 0L) {
+        sp.edit()
+            .putString("style_draft_0", cleanStyle)
+            .putFloat("spacing_draft_0", cleanSpacing)
+            .apply()
+    } else {
+        sp.edit()
+            .putString("style_$noteId", cleanStyle)
+            .putFloat("spacing_$noteId", cleanSpacing)
+            .remove("style_draft_0")
+            .remove("spacing_draft_0")
+            .apply()
+        preferences?.setNotePageStyle(noteId, cleanStyle)
+    }
 }
 
+fun saveNoteLineSpacing(context: Context, noteId: Long, spacing: Float) {
+    val sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    val clamped = spacing.coerceIn(1.0f, 2.4f)
+    if (noteId <= 0L) {
+        sp.edit().putFloat("spacing_draft_0", clamped).apply()
+    } else {
+        sp.edit()
+            .putFloat("spacing_$noteId", clamped)
+            .remove("spacing_draft_0")
+            .apply()
+    }
+}
+
+/**
+ * Persists the active `styleKey` and `lineSpacing` under `savedNoteId` immediately after
+ * a new or edited note is saved to Room DB, so Read Mode and PDF Export always see it.
+ */
+fun commitNotePageStyleAndSpacing(
+    context: Context,
+    savedNoteId: Long,
+    styleKey: String,
+    lineSpacing: Float,
+    preferences: AppPreferences? = null
+) {
+    if (savedNoteId <= 0L) return
+    saveNotePageStyle(context, savedNoteId, styleKey, lineSpacing, preferences)
+}
+
+fun pagePaperColor(style: String, isDarkMode: Boolean): Color? {
+    val norm = normalizeStyleKey(style)
+    if (norm == "standard") return null
+    val spec = PAGE_STYLES.firstOrNull { it.key == norm } ?: return null
+    return if (isDarkMode) spec.paperTintDark else spec.paperTintLight
+}
+
+fun isLightPageStyle(style: String): Boolean {
+    val norm = normalizeStyleKey(style)
+    return norm == "legal" || norm == "word_white" || norm == "a4"
+}
+
+fun pageLineColor(style: String, isDarkMode: Boolean): Color {
+    val norm = normalizeStyleKey(style)
+    val lightPaper = isLightPageStyle(norm) || !isDarkMode
+    return when (norm) {
+        "legal" -> Color(0xFF3B82F6).copy(alpha = 0.55f)
+        "dotted" -> if (lightPaper) Color(0xFF475569).copy(alpha = 0.48f) else Color(0xFF94A3B8).copy(alpha = 0.50f)
+        else -> if (lightPaper) Color(0xFF3B82F6).copy(alpha = 0.36f) else Color(0xFF60A5FA).copy(alpha = 0.38f)
+    }
+}
+
+/**
+ * Primary rule-drawing helper used by both `NoteEditorScreen` and `ReadNoteScreen`.
+ */
 fun DrawScope.drawPageRules(
     style: String,
     ys: List<Float>,
     step: Float,
-    x0: Float,
-    x1: Float,
+    left: Float,
+    right: Float,
     top: Float,
     bottom: Float,
     color: Color,
     stroke: Float
 ) {
-    when (style) {
-        "ruled", "legal" -> ys.forEach { y ->
-            drawLine(color, Offset(x0, y), Offset(x1, y), stroke)
+    val norm = normalizeStyleKey(style)
+    if (norm == "standard") return
+    val safeStep = step.coerceAtLeast(16.dp.toPx())
+    val maxBottom = maxOf(bottom, size.height, 520.dp.toPx())
+
+    when (norm) {
+        "ruled", "legal", "a4" -> {
+            for (y in ys) {
+                if (y <= maxBottom) {
+                    drawLine(color, Offset(left, y), Offset(right, y), strokeWidth = stroke)
+                }
+            }
         }
         "grid" -> {
-            ys.forEach { y -> drawLine(color, Offset(x0, y), Offset(x1, y), stroke) }
-            var x = x0.coerceAtLeast(0f)
-            while (x <= x1) {
-                drawLine(color, Offset(x, top), Offset(x, bottom), stroke)
-                x += step
+            for (y in ys) {
+                if (y <= maxBottom) {
+                    drawLine(color, Offset(left, y), Offset(right, y), strokeWidth = stroke)
+                }
+            }
+            var x = left + safeStep
+            while (x < right) {
+                drawLine(color, Offset(x, top), Offset(x, maxBottom), strokeWidth = stroke)
+                x += safeStep
             }
         }
-        "dotted" -> ys.forEach { y ->
-            var x = 0f
-            while (x < x1) {
-                drawCircle(color.copy(alpha = (color.alpha * 2.2f).coerceAtMost(0.9f)), stroke * 1.2f, Offset(x, y))
-                x += step
+        "dotted" -> {
+            val dotRadius = (stroke * 1.45f).coerceAtLeast(1.6f)
+            for (y in ys) {
+                if (y <= maxBottom) {
+                    var x = left + safeStep * 0.5f
+                    while (x < right) {
+                        drawCircle(color = color, radius = dotRadius, center = Offset(x, y))
+                        x += safeStep
+                    }
+                }
             }
+        }
+        "cornell" -> {
+            val cueX = left + (right - left) * 0.28f
+            val summaryY = (maxBottom - 90.dp.toPx()).coerceAtLeast(top + safeStep * 3)
+            for (y in ys) {
+                if (y < summaryY) {
+                    drawLine(color, Offset(cueX, y), Offset(right, y), strokeWidth = stroke)
+                }
+            }
+            val marginCol = Color(0xFFEF4444).copy(alpha = 0.55f)
+            drawLine(marginCol, Offset(cueX, top), Offset(cueX, summaryY), strokeWidth = stroke * 1.4f)
+            drawLine(marginCol, Offset(left, summaryY), Offset(right, summaryY), strokeWidth = stroke * 1.4f)
         }
     }
 }
 
 /**
- * Draws the note's configured page style background (lines, grid, dots, yellow legal pad, red margins)
- * onto an Android PDF Canvas page so exported PDFs preserve the user's notebook page layout.
+ * Draws the notebook paper tint, horizontal lines, grids, dots, and margin lines onto a PDF Canvas
+ * so exported PDFs match Write Mode & Read Mode 100%.
  */
 fun drawPdfPagePaper(
-    canvas: Canvas,
+    canvas: ACanvas,
     style: String,
     pageW: Float,
     pageH: Float,
-    lineStep: Float = 20f
+    lineStep: Float
 ) {
-    val bgColor = when (style) {
-        "legal" -> AColor.rgb(0xFF, 0xF3, 0xAE)
-        "ruled", "grid", "dotted" -> AColor.rgb(0xFF, 0xFD, 0xF6)
+    val norm = normalizeStyleKey(style)
+    val bgColor = when (norm) {
+        "legal" -> AColor.rgb(255, 248, 197)
+        "ruled", "cornell" -> AColor.rgb(255, 254, 250)
         else -> AColor.WHITE
     }
     canvas.drawColor(bgColor)
-    if (style == "standard" || style == "word_white") return
+    if (norm == "standard") return
 
-    val step = lineStep.coerceIn(14f, 36f)
-    val rulePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        strokeWidth = 0.85f
-        color = when (style) {
-            "legal" -> AColor.argb(140, 0xC9, 0xA2, 0x2E)
-            else -> AColor.argb(95, 0x60, 0xA5, 0xFA)
-        }
+    val step = lineStep.coerceIn(16f, 38f)
+    val rulePaint = APaint(APaint.ANTI_ALIAS_FLAG).apply {
+        color = if (norm == "legal") AColor.argb(135, 59, 130, 246) else AColor.argb(95, 59, 130, 246)
+        strokeWidth = 0.9f
+        this.style = APaint.Style.STROKE
+    }
+    val marginPaint = APaint(APaint.ANTI_ALIAS_FLAG).apply {
+        color = AColor.argb(150, 239, 68, 68)
+        strokeWidth = 1.15f
+        this.style = APaint.Style.STROKE
     }
 
-    when (style) {
+    when (norm) {
         "ruled", "legal" -> {
             var y = 64f
             while (y < pageH - 36f) {
                 canvas.drawLine(24f, y, pageW - 24f, y, rulePaint)
                 y += step
             }
-            val marginPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                strokeWidth = 1.2f
-                color = AColor.argb(if (style == "legal") 190 else 120, 0xEF, 0x44, 0x44)
-            }
-            val mx = 52f
-            canvas.drawLine(mx, 0f, mx, pageH, marginPaint)
-            if (style == "legal") {
-                canvas.drawLine(mx + 3.5f, 0f, mx + 3.5f, pageH, marginPaint)
+            val mx = 48f
+            canvas.drawLine(mx, 24f, mx, pageH - 24f, marginPaint)
+            if (norm == "legal") {
+                canvas.drawLine(mx + 3.5f, 24f, mx + 3.5f, pageH - 24f, marginPaint)
             }
         }
         "grid" -> {
-            var y = 40f
-            while (y < pageH - 28f) {
+            val gridStep = step.coerceAtLeast(18f)
+            var y = 36f
+            while (y < pageH - 24f) {
                 canvas.drawLine(24f, y, pageW - 24f, y, rulePaint)
-                y += step
+                y += gridStep
             }
             var x = 24f
             while (x < pageW - 24f) {
-                canvas.drawLine(x, 40f, x, pageH - 28f, rulePaint)
-                x += step
+                canvas.drawLine(x, 24f, x, pageH - 24f, rulePaint)
+                x += gridStep
             }
         }
         "dotted" -> {
-            val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = AColor.argb(145, 0x60, 0xA5, 0xFA)
+            val dotPaint = APaint(APaint.ANTI_ALIAS_FLAG).apply {
+                color = AColor.argb(130, 71, 85, 105)
+                this.style = APaint.Style.FILL
             }
-            var y = 48f
-            while (y < pageH - 32f) {
+            val dotStep = step.coerceAtLeast(18f)
+            var y = 36f
+            while (y < pageH - 24f) {
                 var x = 32f
-                while (x < pageW - 32f) {
+                while (x < pageW - 24f) {
                     canvas.drawCircle(x, y, 1.35f, dotPaint)
-                    x += step
+                    x += dotStep
                 }
+                y += dotStep
+            }
+        }
+        "cornell" -> {
+            val cueX = pageW * 0.28f
+            val summaryY = pageH - 120f
+            var y = 64f
+            while (y < summaryY) {
+                canvas.drawLine(cueX, y, pageW - 24f, y, rulePaint)
                 y += step
             }
+            canvas.drawLine(cueX, 36f, cueX, summaryY, marginPaint)
+            canvas.drawLine(24f, summaryY, pageW - 24f, summaryY, marginPaint)
+        }
+        "a4" -> {
+            val framePaint = APaint(APaint.ANTI_ALIAS_FLAG).apply {
+                color = AColor.argb(110, 148, 163, 184)
+                strokeWidth = 1f
+                this.style = APaint.Style.STROKE
+                pathEffect = DashPathEffect(floatArrayOf(6f, 4f), 0f)
+            }
+            canvas.drawRect(22f, 22f, pageW - 22f, pageH - 22f, framePaint)
         }
     }
 }
 
-@Composable
-fun PageThumb(style: String, dark: Boolean) {
-    val paper = pagePaperColor(style, dark) ?: if (dark) Color(0xFF101015) else Color(0xFFF1F1F4)
-    val line = pageLineColor(style, dark)
-    val ink = if (style == "word_white" || style == "legal") Color(0xFF111111) else if (dark) Color.White else Color(0xFF111111)
-    ComposeCanvas(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(84.dp)
-            .clip(RoundedCornerShape(10.dp))
-    ) {
-        drawRect(paper)
-        val step = 13.dp.toPx()
-        val ys = ArrayList<Float>()
-        var y = 20.dp.toPx()
-        while (y < size.height) { ys.add(y); y += step }
-        drawPageRules(style, ys, step, 0f, size.width, 0f, size.height, line, 1.dp.toPx())
-        if (style == "ruled" || style == "legal") {
-            val mx = 16.dp.toPx()
-            drawLine(Color(0xFFEF4444).copy(alpha = 0.6f), Offset(mx, 0f), Offset(mx, size.height), 1.dp.toPx())
-        }
-        val startX = if (style == "ruled" || style == "legal") 22.dp.toPx() else 10.dp.toPx()
-        val widths = listOf(0.82f, 0.64f, 0.74f)
-        widths.forEachIndexed { i, wf ->
-            val yy = if (ys.size > i) ys[i] - 5.dp.toPx() else 20.dp.toPx() + i * step - 5.dp.toPx()
-            drawRoundRect(
-                ink.copy(alpha = 0.55f),
-                topLeft = Offset(startX, yy),
-                size = Size((size.width - startX - 10.dp.toPx()) * wf, 3.dp.toPx()),
-                cornerRadius = CornerRadius(2f, 2f)
-            )
-        }
-    }
-}
-
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PageStyleDialog(
     current: String,
@@ -229,85 +349,133 @@ fun PageStyleDialog(
     isDarkMode: Boolean,
     onPick: (String) -> Unit,
     onSpacing: (Float) -> Unit,
+    onInsertPageBreak: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
-    val sheetBg = if (isDarkMode) Color(0xFF1B1B21) else Color.White
-    val fg = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B)
-    val border = if (isDarkMode) Color(0xFF34343E) else Color(0xFFE4E4E7)
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth(0.94f)
-                .clip(RoundedCornerShape(22.dp))
-                .background(sheetBg)
-                .border(1.dp, border, RoundedCornerShape(22.dp))
-                .padding(16.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AutoStories, null, tint = CrimsonPrimary, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.width(8.dp))
-                Column {
-                    Text("Page style", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = fg)
-                    Text("Pick the paper your note is written on", fontSize = 12.sp, color = fg.copy(alpha = 0.6f))
-                }
+    val normCurrent = normalizeStyleKey(current)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = if (isDarkMode) Color(0xFF181C26) else Color.White,
+        title = {
+            Column {
+                Text(
+                    "Page Style & Multi-Page Setup",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    color = if (isDarkMode) Color.White else Color(0xFF111827)
+                )
+                Text(
+                    "Renders identically in Write Mode, Read Mode & PDF Export",
+                    fontSize = 11.5.sp,
+                    color = Color.Gray
+                )
             }
-            Spacer(Modifier.height(12.dp))
-            PAGE_STYLE_OPTIONS.chunked(2).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    row.forEach { opt ->
-                        val selected = opt.id == current
-                        Column(
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    PAGE_STYLES.forEach { spec ->
+                        val selected = normCurrent == spec.key
+                        Row(
                             modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(14.dp))
-                                .border(if (selected) 2.dp else 1.dp, if (selected) CrimsonPrimary else border, RoundedCornerShape(14.dp))
-                                .clickable { onPick(opt.id) }
-                                .padding(6.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (selected) CrimsonPrimary.copy(alpha = 0.16f)
+                                    else if (isDarkMode) Color(0xFF222734) else Color(0xFFF3F4F6)
+                                )
+                                .border(
+                                    width = if (selected) 1.5.dp else 1.dp,
+                                    color = if (selected) CrimsonPrimary else Color.Gray.copy(alpha = 0.25f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .clickable { onPick(spec.key) }
+                                .padding(horizontal = 11.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            PageThumb(opt.id, isDarkMode)
-                            Spacer(Modifier.height(6.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(opt.label, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (selected) CrimsonPrimary else fg, modifier = Modifier.weight(1f))
-                                if (selected) Icon(Icons.Default.Check, null, tint = CrimsonPrimary, modifier = Modifier.size(15.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clip(CircleShape)
+                                    .background(spec.paperTintLight)
+                                    .border(1.dp, Color.Gray.copy(alpha = 0.4f), CircleShape)
+                            )
+                            Spacer(Modifier.width(7.dp))
+                            Column {
+                                Text(
+                                    spec.label,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                                    color = if (selected) CrimsonPrimary else if (isDarkMode) Color.White else Color(0xFF111827)
+                                )
+                                Text(spec.subtitle, fontSize = 9.5.sp, color = Color.Gray)
                             }
-                            Text(opt.hint, fontSize = 10.5.sp, color = fg.copy(alpha = 0.55f), maxLines = 1)
                         }
                     }
-                    if (row.size == 1) Spacer(Modifier.weight(1f))
                 }
-                Spacer(Modifier.height(10.dp))
-            }
-            Text("Line spacing", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = fg.copy(alpha = 0.75f))
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                listOf("Compact" to 1.3f, "Normal" to 1.5f, "Wide" to 1.85f).forEach { (label, v) ->
-                    val on = kotlin.math.abs(lineSpacing - v) < 0.05f
+
+                Spacer(Modifier.height(14.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Line Spacing",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isDarkMode) Color.White else Color(0xFF111827)
+                    )
+                    Text(
+                        "${String.format("%.2f", lineSpacing)}×",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = CrimsonPrimary
+                    )
+                }
+                Slider(
+                    value = lineSpacing,
+                    onValueChange = { onSpacing(it.coerceIn(1.0f, 2.2f)) },
+                    valueRange = 1.0f..2.2f,
+                    steps = 11,
+                    colors = SliderDefaults.colors(
+                        thumbColor = CrimsonPrimary,
+                        activeTrackColor = CrimsonPrimary
+                    )
+                )
+
+                if (onInsertPageBreak != null) {
+                    Spacer(Modifier.height(8.dp))
                     Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .height(36.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (on) CrimsonPrimary.copy(alpha = 0.16f) else fg.copy(alpha = 0.06f))
-                            .border(1.dp, if (on) CrimsonPrimary else Color.Transparent, RoundedCornerShape(10.dp))
-                            .clickable { onSpacing(v) },
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(CrimsonPrimary.copy(alpha = 0.14f))
+                            .border(1.dp, CrimsonPrimary.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                            .clickable {
+                                onInsertPageBreak()
+                                onDismiss()
+                            }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (on) CrimsonPrimary else fg)
+                        Text(
+                            text = "+ Insert New Page Break (---page---)",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = CrimsonPrimary
+                        )
                     }
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(CrimsonPrimary)
-                    .clickable { onDismiss() },
-                contentAlignment = Alignment.Center
-            ) {
-                Text("Done", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done", color = CrimsonPrimary, fontWeight = FontWeight.Bold)
             }
         }
-    }
+    )
 }

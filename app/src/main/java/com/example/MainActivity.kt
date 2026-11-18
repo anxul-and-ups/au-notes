@@ -153,9 +153,20 @@ class MainActivity : FragmentActivity() {
         com.example.ui.util.SmallWindowHelper.launchAppSmallWindow(this)
     }
 
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: android.content.res.Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isInMultiWindowState.value = isInPictureInPictureMode ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInMultiWindowMode)
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+    }
+
     override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: android.content.res.Configuration) {
         super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
-        isInMultiWindowState.value = isInMultiWindowMode
+        isInMultiWindowState.value = isInMultiWindowMode ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
     }
 
@@ -169,7 +180,7 @@ class MainActivity : FragmentActivity() {
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            isInMultiWindowState.value = isInMultiWindowMode
+            isInMultiWindowState.value = isInMultiWindowMode || isInPictureInPictureMode
         }
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
     }
@@ -184,12 +195,16 @@ class MainActivity : FragmentActivity() {
             incomingQuickNoteState.value = true
             intent.removeExtra("OPEN_QUICK_NOTE")
         }
-        val noteId = intent.getLongExtra("OPEN_NOTE_ID", -1L)
+        val noteId = intent.getLongExtra("OPEN_NOTE_ID", -1L).takeIf { it > 0L }
+            ?: intent.getLongExtra(com.example.ui.util.SmallWindowHelper.EXTRA_NOTE_ID, -1L)
         if (noteId > 0L) {
-            incomingOpenNoteEditState.value = intent.getBooleanExtra("OPEN_NOTE_EDIT", false)
+            incomingOpenNoteEditState.value = intent.getBooleanExtra("OPEN_NOTE_EDIT", false) ||
+                intent.getBooleanExtra(com.example.ui.util.SmallWindowHelper.EXTRA_OPEN_EDIT, false)
             incomingOpenNoteIdState.value = noteId
             intent.removeExtra("OPEN_NOTE_ID")
             intent.removeExtra("OPEN_NOTE_EDIT")
+            intent.removeExtra(com.example.ui.util.SmallWindowHelper.EXTRA_NOTE_ID)
+            intent.removeExtra(com.example.ui.util.SmallWindowHelper.EXTRA_OPEN_EDIT)
         }
     }
 
@@ -229,6 +244,13 @@ class MainActivity : FragmentActivity() {
             window.isStatusBarContrastEnforced = false
         }
         com.example.ui.util.SirenAudioPlayer.init(applicationContext)
+        com.example.ui.util.UiSoundManager.ensureInitialized(applicationContext)
+        com.example.ui.util.SmallWindowHelper.onPrepareSmallWindowNote = { noteId, openEdit ->
+            if (noteId != null && noteId > 0L) {
+                incomingOpenNoteEditState.value = openEdit
+                incomingOpenNoteIdState.value = noteId
+            }
+        }
 
         if (savedInstanceState == null) {
             extractSharedUri(intent)?.let { uri ->
@@ -238,12 +260,16 @@ class MainActivity : FragmentActivity() {
                 incomingQuickNoteState.value = true
                 intent.removeExtra("OPEN_QUICK_NOTE")
             }
-            val noteId = intent?.getLongExtra("OPEN_NOTE_ID", -1L) ?: -1L
+            val noteId = (intent?.getLongExtra("OPEN_NOTE_ID", -1L)?.takeIf { it > 0L }
+                ?: intent?.getLongExtra(com.example.ui.util.SmallWindowHelper.EXTRA_NOTE_ID, -1L)) ?: -1L
             if (noteId > 0L) {
-                incomingOpenNoteEditState.value = intent?.getBooleanExtra("OPEN_NOTE_EDIT", false) ?: false
+                incomingOpenNoteEditState.value = (intent?.getBooleanExtra("OPEN_NOTE_EDIT", false) == true) ||
+                    (intent?.getBooleanExtra(com.example.ui.util.SmallWindowHelper.EXTRA_OPEN_EDIT, false) == true)
                 incomingOpenNoteIdState.value = noteId
                 intent?.removeExtra("OPEN_NOTE_ID")
                 intent?.removeExtra("OPEN_NOTE_EDIT")
+                intent?.removeExtra(com.example.ui.util.SmallWindowHelper.EXTRA_NOTE_ID)
+                intent?.removeExtra(com.example.ui.util.SmallWindowHelper.EXTRA_OPEN_EDIT)
             }
         }
 

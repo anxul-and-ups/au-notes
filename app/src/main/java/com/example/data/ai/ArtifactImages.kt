@@ -494,7 +494,7 @@ object ArtifactBuilder {
 
         if (desktopMode) {
             val viewportMetaRegex = Regex("<meta[^>]+name\\s*=\\s*[\"']viewport[\"'][^>]*>", RegexOption.IGNORE_CASE)
-            val desktopViewport = "<meta name=\"viewport\" content=\"width=1280, initial-scale=0.35, minimum-scale=0.15, maximum-scale=5.0, user-scalable=yes\">"
+            val desktopViewport = "<meta name=\"viewport\" content=\"width=1280, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes\">"
             h = if (viewportMetaRegex.containsMatchIn(h)) {
                 viewportMetaRegex.replaceFirst(h, desktopViewport)
             } else {
@@ -507,16 +507,17 @@ object ArtifactBuilder {
         val extra = StringBuilder("<!--au-viz-->")
         if (!Regex("name\\s*=\\s*[\"']viewport[\"']", RegexOption.IGNORE_CASE).containsMatchIn(h)) {
             if (desktopMode) {
-                extra.append("<meta name=\"viewport\" content=\"width=1280, initial-scale=0.35, minimum-scale=0.15, maximum-scale=5.0, user-scalable=yes\">")
+                extra.append("<meta name=\"viewport\" content=\"width=1280, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes\">")
             } else {
-                extra.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">")
+                extra.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover\">")
             }
         }
         extra.append(
             """
             <style>
+              html,body{min-height:100vh;width:100%;margin:0;box-sizing:border-box;overflow-x:auto}
               :where(img,video,svg){max-width:100%}
-              :where(img){height:auto;max-height:380px;object-fit:contain;border-radius:12px;display:block;margin:10px auto}
+              :where(img){height:auto;max-height:420px;object-fit:contain;border-radius:12px;display:block;margin:10px auto}
               :where(body){overflow-wrap:anywhere;box-sizing:border-box}
               .au-viz-card{width:100%;margin:16px 0;border-radius:16px;padding:14px;box-sizing:border-box;background:${if (isDarkMode) "#18181F" else "#FFFFFF"};border:1px solid ${if (isDarkMode) "rgba(255,255,255,0.12)" else "rgba(15,23,42,0.12)"};box-shadow:0 8px 24px rgba(0,0,0,0.06);font-family:system-ui,-apple-system,sans-serif;}
               .au-viz-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${if (isDarkMode) "rgba(255,255,255,0.08)" else "rgba(15,23,42,0.08)"};}
@@ -524,7 +525,7 @@ object ArtifactBuilder {
               .au-viz-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
               .au-viz-btn{appearance:none;border:1px solid ${if (isDarkMode) "rgba(255,255,255,0.16)" else "rgba(15,23,42,0.15)"};background:${if (isDarkMode) "#23232E" else "#F8FAFC"};color:${if (isDarkMode) "#F4F4F6" else "#0F172A"};font-size:11px;font-weight:600;padding:5px 10px;border-radius:8px;cursor:pointer;transition:all 0.15s ease;}
               .au-viz-btn:active{transform:scale(0.96);background:#EA580C;color:#FFFFFF;border-color:#EA580C;}
-              .au-apex-mount,.au-mermaid-mount{width:100%;min-height:220px;overflow-x:auto;}
+              .au-apex-mount,.au-mermaid-mount{width:100%;min-height:240px;overflow-x:auto;}
               .au-viz-error{padding:22px 16px;border-radius:12px;border:1px dashed rgba(239,68,68,0.45);background:rgba(239,68,68,0.08);color:#EF4444;text-align:center;font-weight:700;font-size:13px;}
             </style>
             """.trimIndent()

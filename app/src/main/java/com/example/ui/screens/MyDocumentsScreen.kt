@@ -150,7 +150,36 @@ fun MyDocumentsScreen(
     var menuFor by remember { mutableStateOf<File?>(null) }
     var showNotePicker by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
+    var ocrRunningFile by remember { mutableStateOf<File?>(null) }
+    var ocrStatusText by remember { mutableStateOf("Extracting text...") }
+    var ocrResult by remember { mutableStateOf<Pair<File, String>?>(null) }
+    val clipboard = LocalClipboardManager.current
+    val userPreferences = remember { com.example.data.preferences.AppPreferences(context) }
     val allNotes by repository.allActiveNotes.collectAsState(initial = emptyList())
+
+    fun runDocumentOcr(target: File) {
+        if (ocrRunningFile != null) return
+        ocrRunningFile = target
+        ocrStatusText = "Scanning ${target.name}..."
+        scope.launch {
+            val res = com.example.ui.util.DocumentOcrHelper.extractTextFromDocument(
+                context = context,
+                file = target,
+                preferences = userPreferences,
+                onProgress = { msg -> ocrStatusText = msg }
+            )
+            ocrRunningFile = null
+            res.onSuccess { extracted ->
+                ocrResult = target to extracted
+            }.onFailure { err ->
+                Toast.makeText(
+                    context,
+                    err.message ?: "Could not extract text from ${target.name}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
 
     fun refresh() { files = MyDocuments.list(context) }
 
@@ -320,12 +349,23 @@ fun MyDocumentsScreen(
 
     // Long-press / ⋮ menu
     menuFor?.let { f ->
+        val fKind = MyDocuments.kindOf(f)
+        val supportsOcr = fKind == MyDocuments.Kind.IMAGE || fKind == MyDocuments.Kind.PDF || fKind == MyDocuments.Kind.TEXT
         AlertDialog(
             onDismissRequest = { menuFor = null },
             title = { Text(f.name, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) },
             text = { Text("${MyDocuments.humanSize(f.length())} • Stored safely in My Documents", fontSize = 12.sp) },
             confirmButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (supportsOcr) {
+                        TextButton(onClick = {
+                            val target = f
+                            menuFor = null
+                            runDocumentOcr(target)
+                        }) {
+                            Text("OCR Text", color = CrimsonPrimary, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
                     TextButton(onClick = {
                         renameInput = f.nameWithoutExtension
                         renamingFile = f
@@ -343,6 +383,98 @@ fun MyDocumentsScreen(
                         Toast.makeText(context, "Removed from My Documents", Toast.LENGTH_SHORT).show()
                     }) { Text("Remove", color = Color(0xFFEF4444)) }
                     TextButton(onClick = { menuFor = null }) { Text("Close") }
+                }
+            }
+        )
+    }
+
+    // OCR Progress Dialog
+    ocrRunningFile?.let { runningFile ->
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("OCR Text Extraction", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+            text = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), color = CrimsonPrimary, strokeWidth = 2.5.dp)
+                    Column {
+                        Text(runningFile.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(ocrStatusText, fontSize = 12.sp, color = sub)
+                    }
+                }
+            },
+            confirmButton = {}
+        )
+    }
+
+    // OCR Extracted Text Result Dialog (Copy Text or Save as Note)
+    ocrResult?.let { (sourceFile, initialText) ->
+        var editableOcrText by remember(sourceFile, initialText) { mutableStateOf(initialText) }
+        AlertDialog(
+            onDismissRequest = { ocrResult = null },
+            title = {
+                Column {
+                    Text("Extracted Text (OCR)", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text(sourceFile.name, fontSize = 11.5.sp, color = sub, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            },
+            text = {
+                OutlinedTextField(
+                    value = editableOcrText,
+                    onValueChange = { editableOcrText = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 220.dp, max = 380.dp),
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.5.sp
+                    )
+                )
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(editableOcrText))
+                            Toast.makeText(context, "Copied extracted text to clipboard", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp), tint = CrimsonPrimary)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Copy", color = CrimsonPrimary, fontWeight = FontWeight.Bold)
+                    }
+                    TextButton(
+                        onClick = {
+                            val textToSave = editableOcrText.trim()
+                            if (textToSave.isNotEmpty()) {
+                                scope.launch {
+                                    val now = System.currentTimeMillis()
+                                    repository.saveNote(
+                                        NoteEntity(
+                                            title = "OCR: ${sourceFile.nameWithoutExtension}",
+                                            content = textToSave,
+                                            folder = "Notes",
+                                            createdAt = now,
+                                            updatedAt = now
+                                        )
+                                    )
+                                    ocrResult = null
+                                    Toast.makeText(context, "Saved extracted text to Notes!", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    ) {
+                        Icon(Icons.Default.StickyNote2, contentDescription = null, modifier = Modifier.size(16.dp), tint = CrimsonPrimary)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Save as Note", color = CrimsonPrimary, fontWeight = FontWeight.ExtraBold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { ocrResult = null }) {
+                    Text("Close")
                 }
             }
         )
@@ -519,7 +651,8 @@ fun MyDocumentsScreen(
             file = f,
             isDarkMode = isDarkMode,
             onClose = { viewing = null },
-            onShare = { shareDocument(context, f) }
+            onShare = { shareDocument(context, f) },
+            onRunOcr = { runDocumentOcr(f) }
         )
     }
 }
@@ -756,11 +889,13 @@ private fun DocumentViewer(
     file: File,
     isDarkMode: Boolean,
     onClose: () -> Unit,
-    onShare: () -> Unit
+    onShare: () -> Unit,
+    onRunOcr: () -> Unit = {}
 ) {
     val kind = remember(file) { MyDocuments.kindOf(file) }
     val isMarkdown = remember(file) { file.extension.lowercase() in setOf("md", "markdown") }
     val isTextOrCode = remember(file) { kind == MyDocuments.Kind.TEXT }
+    val isImageOrPdf = remember(file) { kind == MyDocuments.Kind.IMAGE || kind == MyDocuments.Kind.PDF }
     val bg = if (isDarkMode) Color(0xFF0B0C10) else Color(0xFFF1F3F8)
     val headerBg = if (isDarkMode) Color(0xFF161922) else Color(0xFFE9EDF4)
     val borderColor = if (isDarkMode) Color(0xFF2C3240) else Color(0xFFCBD5E1)
@@ -888,6 +1023,25 @@ private fun DocumentViewer(
                                 modifier = Modifier.size(26.dp)
                             ) {
                                 Icon(Icons.Default.ZoomIn, "Zoom in", tint = fg, modifier = Modifier.size(15.dp))
+                            }
+                        }
+
+                        if (isImageOrPdf) {
+                            Spacer(Modifier.width(4.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(CrimsonPrimary)
+                                    .clickable { onRunOcr() }
+                                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "OCR",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color.White
+                                )
                             }
                         }
 

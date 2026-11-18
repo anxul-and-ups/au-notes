@@ -1,0 +1,76 @@
+au notes master bugs
+==================
+====================================================================
+PHASE 1 INSTRUCTION: STRICT AUDIT & ROOT CAUSE ANALYSIS ONLY
+====================================================================
+IMPORTANT: Abhi codebase mein KOI BHI file edit, delete, ya code change mat karna. Pehle `au-notes` ki poori repository ko deeply inspect karke neeche diye gaye sabhi 16 points ka exact root cause, affected file names, aur architectural plan mujhe report karo. Jab main saari audit list review karke "GO AHEAD" bolunga, tabhi fixes aur features implement karna.
+
+STRICT IMPLEMENTATION RULE (FOR PHASE 2):
+- Koi bhi feature ya UI button "unwired", dummy, ya aadha-adhura chhodna strictly mana hai. Har button, icon, state, aur tool end-to-end connected aur tested hona chahiye.
+
+====================================================================
+COMPLETE BUG AUDIT & FEATURE SPECIFICATION LIST
+====================================================================
+
+### A. AI Agent Intelligence, Multi-Provider & Live Streaming
+1. **Live Real-Time Progress & Thinking Visibility:**
+   - Chat mein user ko har cheez ka LIVE response dikhna chahiye—agent abhi kya soch raha hai, kaunsa tool call kar raha hai, kitna code/lines generate kar chuka hai, aur kya progress chal rahi hai—taaki user ko screen stuck na lage aur patience bana rahe.
+2. **Shallow Outputs, Weak Coding & Broken Graphs:**
+   - API key par jo model set hai (Gemini, DeepSeek, etc.), woh apni full coding aur reasoning capability use kyu nahi kar raha? Kitna bhi detailed HTML artifact, slide deck, ya deep explanation maango, agent bahut short mein lapet deta hai aur graphs/SVGs sahi nahi banata.
+   - Check karo ki kahan `maxOutputTokens` cap laga hai, system prompt mein brevity restriction hai, ya raw SVG coordinates likhne ki wajah se graphs toot rahe hain (readymade icon packs/charting libraries aur full-depth system prompting ka plan do).
+3. **Custom Providers & Multi-Model Reliability:**
+   - App mein sirf Gemini 2.5/3.5 Flash aur Flash-Lite hi theek se chal rahe hain; baaki custom providers ke responses bahut late aate hain ya fail ho jaate hain. Timeout, streaming parser, aur provider routing check karo.
+4. **Note Editing & Slide Deck Tool Failures:**
+   - Bahut baar models note-editing tools ko sahi se invoke nahi kar paate aur slide decks generate karne mein fail ho jaate hain. Tool schema definitions, function calling loop, aur error handling inspect karo.
+5. **Context Understanding & Document-to-Slides Pipeline:**
+   - Agent abhi bhi conversation context sahi se nahi samajhta. Ise is level par banana hai ki agar user koi PDF, book chapter, ya bada context de, toh agent bina truncation ke uska direct rich HTML ya interactive slide deck bana sake.
+6. **Direct OCR / Text Extraction Behavior in Chat:**
+   - Jab user chat mein koi image ya file share karke bole ki "iska text de", toh agent extra explanation ya gyaan diye bina sirf clean extracted text output kare.
+
+### B. Chat State Isolation & Performance (Zero Lag / Zero Crash)
+7. **Cross-Chat State & Activity Bar Leaking:**
+   - Jab ek chat mein agent koi task kar raha hota hai aur user doosri chat par switch karta hai, toh wahi task aur "working/thinking" activity bar doosri chats mein bhi show hone lagti hai. ViewModel/StateFlow ko strictly `chatId` ke hisaab se isolate karo.
+8. **HTML / Slides Auto-Render Bug in Active Chat:**
+   - Jab chat mein HTML ya slides banke aate hain, toh woh turant load/render nahi hote—pehle kisi doosri chat mein switch karke wapas aana padta hai tab load hote hain. UI recomposition / state emission trigger check karo.
+9. **50KB+ Code Crash & App-Wide Lag Fix:**
+   - Sirf 50KB ka bada code load karne par app crash/freeze ho jata hai, aur purani chats, bade code notes, HTML Viewer, ya My Documents kholne par device stuck hone lagta hai.
+   - Main thread par heavy string/syntax parsing, synchronous DB reads, ya unoptimized WebView rendering kyu ho rahi hai? Async chunked loading, background parsing, aur smooth loading animations ke saath ise completely lag-free aur crash-free banao.
+
+### C. Artifacts, Full-Screen WebView & Save Behavior
+10. **Clean Artifact Card & Full-Screen Desktop-Mode Viewer:**
+    - Chat mein artifact ke bahar jo extra buttons hain ("Save Artifact", "Open Interactive", etc.), un sabko remove karo.
+    - Sirf clean **file ka naam** (ek compact pill/card mein) dikhna chahiye, aur us par tap karte hi woh seedha **Full-Screen Desktop View** mein open ho (abhi screen ki sides khali reh jaati hain—viewport scaling/desktop width fix karo).
+11. **Inside-Viewer Save to Notes (WebView-Native Rendering):**
+    - Open kiye gaye full-screen artifact ke andar ek clean **Save icon** hona chahiye.
+    - Us par tap karne par note aise-waise plain text ki tarah save na ho, balki **Notes ke andar full-screen WebView format** mein save ho taaki kholne par lage ki seedha WebView mein open kiya gaya hai.
+
+### D. UI Cleanup, Split Screen & Native Window
+12. **Split-Screen Icon Cleanup & Pro-Level Upgrade:**
+    - Read Mode mein jo split-screen icon ke saath ek aur extra broken/non-working icon dikh raha hai, use remove karo.
+    - Main Screen se bhi split-screen icon hatao—split-screen option **sirf Read Mode aur Write Mode** ke andar rehna chahiye.
+    - Split-screen mode ko **Pro-level** banao (smooth resizing/divider, synchronized ya independent scroll, proper state handling).
+13. **Portrait View Save Button Layout Bug:**
+    - Portrait mode mein Save button lamba sa fail (stretch) jata hai—iske layout constraints fix karo.
+14. **Agent Chat Input Box "Notes" Attachment Button:**
+    - Agent chat screen ke input rectangle ke andar jo "Notes" ka option hai, usmein se "Notes" likha hua text hata kar **sirf icon** rehne do, aur is broken feature ko poori tarah wire karo taaki user seedha koi bhi note attach karke us par baat kar sake.
+    - Saath hi input box aur note editor mein bade text paste aur note save truncation ka bug bhi check karo.
+15. **Native Small Window (PiP / Floating Window) Fix:**
+    - Native small window feature work nahi kar raha hai—iska manifest/activity/window state root cause check karo.
+
+### E. PDF Export, Pages & My Documents OCR
+16. **PDF Image Rendering & Write Mode Pages Bug:**
+    - PDF export karne par images render nahi ho rahi hain, aur jo naye pages add kiye gaye hain woh bhi export/render nahi ho rahe.
+    - Write Mode ke andar jo **Pages** ka option hai woh bhi render nahi ho raha—is poore pagination aur PDF export pipeline ko check karo.
+17. **My Documents Built-in OCR Tool:**
+    - "My Documents" section ke andar ek built-in **OCR option** add karna hai jisse kisi bhi document/image ka text extract (OCR) karke seedha **Note mein save** ya **Direct Copy** kiya ja sake.
+
+### F. Tactile UI Sound Effects & Haptics
+18. **Custom Sound System (Replacing Default Folder Vibration):**
+    - Folders wagairah change karne par jo default vibration hoti hai use band karo, aur uski jagah ek smooth **tap / typographic mechanical sound** lagao.
+    - **Lock** action par ek **sci-fi type sound** lagao.
+    - **Delete** action par ek distinct **delete sound** lagao.
+    - SoundPool / low-latency audio architecture propose karo jo mute/silent mode respect kare.
+
+====================================================================
+OUTPUT FORMAT EXPECTED FROM YOU NOW:
+Har point (1 se 18 tak) ke liye , current code mein kya galti/limitation hai (Root Cause), aur fix strategy likho. Koi code edit mat karna.

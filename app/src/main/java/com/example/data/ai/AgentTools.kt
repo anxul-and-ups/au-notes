@@ -113,9 +113,10 @@ object AgentTools {
             id = "edit_note",
             group = "Notes",
             label = "Edit a note",
-            description = "Replace or append content to an existing note by its note_id.",
+            description = "Replace or append content to an existing note by its note_id OR by its title/name (or defaults to the attached/open note).",
             params = listOf(
-                AgentTool.Param("note_id", "INTEGER", "Numeric id of the note to edit", required = true),
+                AgentTool.Param("note_id", "INTEGER", "Numeric id of the note to edit (optional if title is provided or a note is attached/open)", required = false),
+                AgentTool.Param("title", "STRING", "Title or name of the note to edit (optional if note_id is provided)", required = false),
                 AgentTool.Param("new_content", "STRING", "The new or appended content for the note", required = true),
                 AgentTool.Param("mode", "STRING", "replace | append (default replace)", required = false)
             )
@@ -123,10 +124,11 @@ object AgentTools {
         AgentTool(
             id = "edit_current_note",
             group = "Notes",
-            label = "Edit currently open note",
-            description = "Update the content of the note currently open on the screen behind the chat.",
+            label = "Edit currently open or attached note",
+            description = "Update the content of the note currently open on the screen behind the chat (or the note attached in chat).",
             params = listOf(
-                AgentTool.Param("new_content", "STRING", "Complete updated content for the open note", required = true)
+                AgentTool.Param("new_content", "STRING", "Complete updated content for the open/attached note", required = true),
+                AgentTool.Param("title", "STRING", "Optional title of the note if multiple notes are referenced", required = false)
             )
         ),
         AgentTool(
@@ -178,10 +180,10 @@ object AgentTools {
             id = "create_html_page",
             group = "Creative & Media",
             label = "Create interactive HTML/SVG page",
-            description = "Create a complete, responsive, standalone HTML5 page (NOT for slide decks: use create_html_slides for slides) (with embedded CSS, warm typography styling, SVG diagrams, or interactive JS) and display an interactive HTML Artifact card in chat with full-screen preview and download.",
+            description = "Create a complete, responsive, standalone HTML5 page (NOT for slide decks: use create_html_slides for slides) (with embedded CSS, warm typography styling, interactive JS, and embedded ```json:apex charts or ```mermaid diagrams) and display an interactive HTML Artifact card in chat with full-screen desktop preview and download.",
             params = listOf(
                 AgentTool.Param("title", "STRING", "Title of the HTML artifact or web page", required = true),
-                AgentTool.Param("html_code", "STRING", "Complete standalone <!DOCTYPE html><html>...</html> source code. For real photos use <img data-q=\"specific 3-8 word search query\" alt=\"...\"> (never remote URLs); the app finds and downloads the images before showing the page. Draw charts/icons/diagrams as inline SVG.", required = true)
+                AgentTool.Param("html_code", "STRING", "Complete standalone <!DOCTYPE html><html>...</html> source code. For real photos use <img data-q=\"specific 3-8 word search query\" alt=\"...\"> (never remote URLs); the app finds and downloads the images before showing the page. For charts and diagrams inside HTML, embed ```json:apex or ```mermaid blocks so the offline ApexCharts & Mermaid engines render them cleanly.", required = true)
             )
         ),
         AgentTool(
@@ -193,7 +195,7 @@ object AgentTools {
                 AgentTool.Param("title", "STRING", "Deck title", required = true),
                 AgentTool.Param(
                     "slides_json", "STRING",
-                    "Inline JSON ARRAY of slides: write it directly as an array inside args (NOT as a quoted, escaped string); escape any double quote used inside text. Each slide: {\"layout\":\"title|content|image_right|image_left|image_full|stats|timeline|bars|table|two_column|quote|closing\", \"section\":\"small label\", \"title\":\"max 8 words, *word* highlights\", \"subtitle\":\"\", \"text\":\"short paragraph\", \"bullets\":[\"full-information bullet\" or {\"head\":\"Term\",\"text\":\"explanation\"}], \"image_query\":\"3-8 specific words\" OR \"image_file\":\"inbox file name/number\", \"caption\":\"\", \"stats\":[{\"value\":\"80%\",\"label\":\"...\"}], \"items\":[{\"label\":\"1947\",\"text\":\"...\"}], \"bars\":[{\"label\":\"A\",\"value\":80}], \"unit\":\"%\", \"header\":[\"Col1\",\"Col2\"], \"rows\":[[\"a\",\"b\"]], \"left\":{\"title\":\"\",\"bullets\":[]}, \"right\":{\"title\":\"\",\"bullets\":[]}, \"quote\":\"\", \"author\":\"\"}",
+                    "JSON array of slide objects (accepted either as a JSON string '[{\"layout\":...}]' or as an inline JSON array). Each slide: {\"layout\":\"title|content|image_right|image_left|image_full|stats|timeline|bars|table|two_column|quote|closing\", \"section\":\"small label\", \"title\":\"max 8 words, *word* highlights\", \"subtitle\":\"\", \"text\":\"short paragraph\", \"bullets\":[\"full-information bullet\" or {\"head\":\"Term\",\"text\":\"explanation\"}], \"image_query\":\"3-8 specific words\" OR \"image_file\":\"inbox file name/number\", \"caption\":\"\", \"stats\":[{\"value\":\"80%\",\"label\":\"...\"}], \"items\":[{\"label\":\"1947\",\"text\":\"...\"}], \"bars\":[{\"label\":\"A\",\"value\":80}], \"unit\":\"%\", \"header\":[\"Col1\",\"Col2\"], \"rows\":[[\"a\",\"b\"]], \"left\":{\"title\":\"\",\"bullets\":[]}, \"right\":{\"title\":\"\",\"bullets\":[]}, \"quote\":\"\", \"author\":\"\"}",
                     required = true
                 ),
                 AgentTool.Param("theme", "STRING", "paper | olive | blue | red | dark (default paper)", required = false),
@@ -208,7 +210,7 @@ object AgentTools {
             params = listOf(
                 AgentTool.Param("title", "STRING", "Presentation deck title (e.g. 'Indian Army — Typography Slides')", required = true),
                 AgentTool.Param("accent_color", "STRING", "Single strong hex accent color for the deck (#EA580C orange, #3F6212 olive, #CA8A04 gold, #15803D green, #DC2626 red, #1D4ED8 blue)", required = false),
-                AgentTool.Param("slides_json", "STRING", "Inline JSON ARRAY of slide objects (or a full deck JSON object) written directly inside args, not as a quoted string", required = true)
+                AgentTool.Param("slides_json", "STRING", "JSON array of slide objects (accepted either as a JSON string or inline JSON array)", required = true)
             )
         ),
         AgentTool(
@@ -641,11 +643,14 @@ object AgentTools {
             1. UNIFIED SESSION (Chat + Voice):
                - Chat mode and Voice mode are ONE single continuous conversation.
                - You have full awareness of all previous messages in this chat session, open notes, and any uploaded files/images.
-            2. DOCUMENT & IMAGE UPLOADS:
-               - When a document (PDF, DOCX, TXT, MD, etc.) is attached—even if the user didn't type a specific question—immediately provide a complete, structured analysis: (a) Document Overview, (b) Detailed Summary, and (c) Key Points / Actionable Takeaways.
+            2. DOCUMENT & IMAGE UPLOADS & DIRECT OCR MODE:
+               - DIRECT OCR / VERBATIM TEXT EXTRACTION RULE (CRITICAL):
+                 • Whenever the user attaches an image or PDF and asks to extract/read/copy its text (e.g., "ocr", "extract text", "read text", "image ka text nikal", "text copy kar", "as it is text", "likha hua text do"), output **100% pure verbatim extracted text ONLY**.
+                 • Do NOT start with "Ok sir", "Sure", or any greeting. Do NOT summarize, explain, or add headings that aren't in the source image/PDF.
+               - Otherwise, when a document (PDF, DOCX, TXT, MD, etc.) is attached and the user asks for an analysis or doesn't specify a task, provide a complete, structured analysis: (a) Document Overview, (b) Detailed Summary, and (c) Key Points / Actionable Takeaways.
                - When the user attaches an image and asks to insert it into a note, call `insert_image_to_note`.
                - When the user wants a REAL photo/picture in a note and did NOT attach one, call `add_image_to_note` with a specific 3-8 word `query`; the app downloads it and inserts it.
-               - IMAGES IN HTML ARTIFACTS (`create_html_page`): NEVER write remote image URLs (src="http..."). For every photo or real-world picture write `<img data-q="specific 3-8 word search query" alt="short description">`. The app finds, DOWNLOADS and embeds the images BEFORE the artifact is shown. Max 6 images, placed next to the text they illustrate, with CSS so a missing image never breaks the layout. Charts, graphs, icons and diagrams must be inline SVG, never images.
+               - IMAGES & CHARTS IN HTML ARTIFACTS (`create_html_page`): NEVER write remote image URLs (src="http..."). For every photo or real-world picture write `<img data-q="specific 3-8 word search query" alt="short description">`. The app finds, DOWNLOADS and embeds the images BEFORE the artifact is shown. Max 6 images, placed next to the text they illustrate, with CSS so a missing image never breaks the layout. For charts and diagrams inside HTML artifacts, embed ` ```json:apex ` and ` ```mermaid ` blocks so the offline ApexCharts and Mermaid engines render them with interactive export toolbars!
                - If the tool result says some images were skipped, tell the user which ones and offer to retry with a different query.
             3. ADAPTIVE PROMPT WRITING:
                - Small/simple need -> output a **short, crisp prompt (2–3 lines only)** without fluff.
@@ -690,17 +695,23 @@ object AgentTools {
     }
 
     private val toolTagRegex = Regex("<tool_call>\\s*(\\{[\\s\\S]*?\\})\\s*</tool_call>")
+    private val thinkTagRegex = Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE)
+
+    private fun stripThinkBlocks(raw: String): String =
+        raw.replace(thinkTagRegex, "").trim()
 
     /** Strict parse first; if the JSON is broken (big nested slide JSON often is) try to salvage name + title + every complete slide. */
-    fun parse(reply: String): ParsedToolCall? =
-        parseStrict(reply) ?: if (looksLikeToolCall(reply)) salvage(reply) else null
+    fun parse(reply: String): ParsedToolCall? {
+        val clean = stripThinkBlocks(reply)
+        return parseStrict(clean) ?: if (looksLikeToolCall(clean)) salvage(clean) else null
+    }
 
     /** True when the reply is an attempt at a tool call, even if its JSON is broken. */
     fun looksLikeToolCall(reply: String): Boolean {
-        val t = reply.trim()
+        val t = stripThinkBlocks(reply)
         if (t.contains("<tool_call>")) return true
         val body = t.removePrefix("```json").removePrefix("```JSON").removePrefix("```").trim()
-        return body.startsWith("{") && body.contains("\"args\"") &&
+        return body.startsWith("{") && (body.contains("\"args\"") || body.contains("\"arguments\"")) &&
             Regex("\"name\"\\s*:\\s*\"[A-Za-z0-9_]+\"").containsMatchIn(body)
     }
 

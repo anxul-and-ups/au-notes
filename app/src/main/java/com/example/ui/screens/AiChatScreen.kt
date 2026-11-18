@@ -70,6 +70,7 @@ import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.NoteAdd
@@ -531,6 +532,18 @@ fun AiChatScreen(
     val sessionAttachmentUriMap = remember { mutableStateMapOf<String, Uri?>() }
     val artifactBlocksBySession = remember { mutableStateMapOf<String, MutableList<String>>() }
 
+    // Per-session composer attachment & upload timeline states (Point 7: never leak across chat switches)
+    val composerFileNameBySession = remember { mutableStateMapOf<String, String?>() }
+    val composerContentBySession = remember { mutableStateMapOf<String, String?>() }
+    val composerImageUriBySession = remember { mutableStateMapOf<String, Uri?>() }
+    val composerPdfImagesBySession = remember { mutableStateMapOf<String, List<String>?>() }
+    val uploadingBySession = remember { mutableStateMapOf<String, Boolean>() }
+    val uploadProgressBySession = remember { mutableStateMapOf<String, Float>() }
+    val uploadHeadlineBySession = remember { mutableStateMapOf<String, String>() }
+    val uploadDetailBySession = remember { mutableStateMapOf<String, String>() }
+    val uploadStepsBySession = remember { mutableStateMapOf<String, SnapshotStateList<AgentStep>>() }
+    val uploadJobsBySession = remember { mutableStateMapOf<String, kotlinx.coroutines.Job?>() }
+
     fun messagesFor(sid: String): SnapshotStateList<ChatMessage> =
         messagesBySession.getOrPut(sid) { mutableStateListOf(defaultWelcomeMsg) }
     fun stepsFor(sid: String): SnapshotStateList<AgentStep> =
@@ -539,11 +552,13 @@ fun AiChatScreen(
         attachedNotesBySession.getOrPut(sid) { mutableStateListOf() }
     fun artifactBlocksFor(sid: String): MutableList<String> =
         artifactBlocksBySession.getOrPut(sid) { mutableListOf() }
+    fun uploadStepsFor(sid: String): SnapshotStateList<AgentStep> =
+        uploadStepsBySession.getOrPut(sid) { mutableStateListOf() }
 
-    val messages = remember(currentSessionId) { messagesFor(currentSessionId) }
-    val agentSteps = remember(currentSessionId) { stepsFor(currentSessionId) }
-    val attachedNotes = remember(currentSessionId) { attachedNotesFor(currentSessionId) }
-    val isLoading by remember(currentSessionId) { derivedStateOf { loadingBySession[currentSessionId] == true } }
+    val messages = messagesFor(currentSessionId)
+    val agentSteps = stepsFor(currentSessionId)
+    val attachedNotes = attachedNotesFor(currentSessionId)
+    val isLoading = loadingBySession[currentSessionId] == true
 
     LaunchedEffect(isOpen, artifactsVersion) {
         if (isOpen) {
@@ -565,11 +580,22 @@ fun AiChatScreen(
         }
     }
 
-    // Attachment state (per active composer)
-    var attachedFileName by remember { mutableStateOf<String?>(null) }
-    var attachedContent by remember { mutableStateOf<String?>(null) }
-    var attachedImageUri by remember { mutableStateOf<Uri?>(null) }
-    var attachedPdfImages by remember { mutableStateOf<List<String>?>(null) }
+    fun <V> sessionProp(
+        map: androidx.compose.runtime.snapshots.SnapshotStateMap<String, V>,
+        defaultVal: V
+    ) = object : kotlin.properties.ReadWriteProperty<Any?, V> {
+        override fun getValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>): V =
+            map[currentSessionId] ?: defaultVal
+        override fun setValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>, value: V) {
+            if (value == null) map.remove(currentSessionId) else map[currentSessionId] = value
+        }
+    }
+
+    // Active session's composer attachment & upload state delegates
+    var attachedFileName: String? by sessionProp(composerFileNameBySession, null)
+    var attachedContent: String? by sessionProp(composerContentBySession, null)
+    var attachedImageUri: Uri? by sessionProp(composerImageUriBySession, null)
+    var attachedPdfImages: List<String>? by sessionProp(composerPdfImagesBySession, null)
 
     // Work Mode toggle, Search Mode toggle
     var isWorkMode by remember { mutableStateOf(true) }
@@ -578,20 +604,20 @@ fun AiChatScreen(
     var isDetectingSidebarModels by remember { mutableStateOf(false) }
     var sidebarApiError by remember { mutableStateOf<String?>(null) }
 
-    // Upload timeline state for PDF / document / image attachments
-    var isUploadingAttachment by remember { mutableStateOf(false) }
-    var uploadProgressFraction by remember { mutableStateOf(0f) }
-    var uploadStatusHeadline by remember { mutableStateOf("") }
-    var uploadRemainingDetail by remember { mutableStateOf("") }
-    val uploadTimelineSteps = remember { mutableStateListOf<AgentStep>() }
-    var uploadJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    // Upload timeline state scoped to currentSessionId
+    var isUploadingAttachment: Boolean by sessionProp(uploadingBySession, false)
+    var uploadProgressFraction: Float by sessionProp(uploadProgressBySession, 0f)
+    var uploadStatusHeadline: String by sessionProp(uploadHeadlineBySession, "")
+    var uploadRemainingDetail: String by sessionProp(uploadDetailBySession, "")
+    val uploadTimelineSteps = uploadStepsFor(currentSessionId)
+    var uploadJob: kotlinx.coroutines.Job? by sessionProp(uploadJobsBySession, null)
 
     // The last document/image sent in this chat stays available for follow-up questions & Voice mode (Rule A & C1)
-    var sessionAttachmentName by remember { mutableStateOf<String?>(null) }
-    var sessionAttachmentText by remember { mutableStateOf<String?>(null) }
-    var sessionAttachmentImages by remember { mutableStateOf<List<String>?>(null) }
-    var sessionAttachmentUri by remember { mutableStateOf<Uri?>(null) }
-    var sessionAttachedNotes by remember { mutableStateOf<List<NoteEntity>>(emptyList()) }
+    var sessionAttachmentName: String? by sessionProp(sessionAttachmentNameMap, null)
+    var sessionAttachmentText: String? by sessionProp(sessionAttachmentTextMap, null)
+    var sessionAttachmentImages: List<String>? by sessionProp(sessionAttachmentImagesMap, null)
+    var sessionAttachmentUri: Uri? by sessionProp(sessionAttachmentUriMap, null)
+    var sessionAttachedNotes: List<NoteEntity> by sessionProp(sessionAttachedNotesMap, emptyList())
     var showNoteAttachDialog by remember { mutableStateOf(false) }
     var noteAttachSearchQuery by remember { mutableStateOf("") }
     val allNotesForPicker by repository.allActiveNotes.collectAsState(initial = emptyList())
@@ -604,8 +630,10 @@ fun AiChatScreen(
     val listState = rememberLazyListState()
 
     fun attachUriToChat(uri: Uri, autoSendIfDoc: Boolean = false) {
-        uploadJob?.cancel()
-        uploadJob = coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        val uploadSid = currentSessionId
+        val targetUploadSteps = uploadStepsFor(uploadSid)
+        uploadJobsBySession[uploadSid]?.cancel()
+        uploadJobsBySession[uploadSid] = coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 runCatching {
                     context.contentResolver.takePersistableUriPermission(
@@ -628,36 +656,45 @@ fun AiChatScreen(
                 val inboxCopy = runCatching { com.example.data.ai.ChatInbox.add(context, uri, fileName) }.getOrNull()
 
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    isUploadingAttachment = true
-                    uploadProgressFraction = 0.08f
-                    uploadStatusHeadline = "Uploading $fileName • 8%"
-                    uploadRemainingDetail = "0 KB uploaded • $totalKb KB remaining"
-                    uploadTimelineSteps.clear()
-                    uploadTimelineSteps.add(AgentStep("Selected $fileName ($totalKb KB)", 1))
-                    uploadTimelineSteps.add(AgentStep("Preparing file stream…", 0))
-                    attachedFileName = fileName
-                    attachedContent = null
-                    attachedPdfImages = null
-                    attachedImageUri = null
+                    uploadingBySession[uploadSid] = true
+                    uploadProgressBySession[uploadSid] = 0.08f
+                    uploadHeadlineBySession[uploadSid] = "Uploading $fileName • 8%"
+                    uploadDetailBySession[uploadSid] = "0 KB uploaded • $totalKb KB remaining"
+                    targetUploadSteps.clear()
+                    targetUploadSteps.add(AgentStep("Selected $fileName ($totalKb KB)", 1))
+                    targetUploadSteps.add(AgentStep("Preparing file stream…", 0))
+                    composerFileNameBySession[uploadSid] = fileName
+                    composerContentBySession[uploadSid] = null
+                    composerPdfImagesBySession[uploadSid] = null
+                    composerImageUriBySession[uploadSid] = null
                 }
 
                 if (mimeType == "application/pdf" || fileName.endsWith(".pdf", ignoreCase = true)) {
+                    val extractedPdfText = runCatching {
+                        if (inboxCopy != null && inboxCopy.exists()) {
+                            com.example.ui.util.DocumentOcrHelper.extractEmbeddedPdfText(inboxCopy)
+                        } else {
+                            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                            if (bytes != null) com.example.ui.util.DocumentOcrHelper.extractEmbeddedPdfTextFromBytes(bytes) else ""
+                        }
+                    }.getOrDefault("")
+
                     val images = renderPdfPagesToBase64(context, uri, maxPages = 40) { currentPage, totalPages ->
                         val frac = 0.15f + (0.80f * (currentPage.toFloat() / totalPages.toFloat().coerceAtLeast(1f)))
                         val pct = (frac * 100).toInt().coerceIn(15, 95)
                         val remainingPages = (totalPages - currentPage).coerceAtLeast(0)
                         coroutineScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                            uploadProgressFraction = frac
-                            uploadStatusHeadline = "Uploading PDF ($pct%) • Page $currentPage of $totalPages"
-                            uploadRemainingDetail = "$currentPage uploaded • $remainingPages page${if (remainingPages == 1) "" else "s"} remaining"
-                            val runningIdx = uploadTimelineSteps.indexOfLast { it.state == 0 }
+                            uploadProgressBySession[uploadSid] = frac
+                            uploadHeadlineBySession[uploadSid] = "Uploading PDF ($pct%) • Page $currentPage of $totalPages"
+                            uploadDetailBySession[uploadSid] = "$currentPage uploaded • $remainingPages page${if (remainingPages == 1) "" else "s"} remaining"
+                            val runningIdx = targetUploadSteps.indexOfLast { it.state == 0 }
                             if (runningIdx >= 0) {
-                                uploadTimelineSteps[runningIdx] = AgentStep(
+                                targetUploadSteps[runningIdx] = AgentStep(
                                     "Page $currentPage of $totalPages uploaded ($remainingPages remaining)",
                                     if (currentPage == totalPages) 1 else 0
                                 )
                             } else {
-                                uploadTimelineSteps.add(
+                                targetUploadSteps.add(
                                     AgentStep(
                                         "Page $currentPage of $totalPages uploaded ($remainingPages remaining)",
                                         if (currentPage == totalPages) 1 else 0
@@ -668,90 +705,91 @@ fun AiChatScreen(
                     }
 
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        if (images.isEmpty()) {
-                            isUploadingAttachment = false
-                            uploadProgressFraction = 0f
-                            uploadStatusHeadline = "Could not read PDF"
-                            uploadRemainingDetail = "File may be password-protected or corrupted"
-                            uploadTimelineSteps.clear()
-                            attachedFileName = null
+                        if (images.isEmpty() && extractedPdfText.isBlank()) {
+                            uploadingBySession[uploadSid] = false
+                            uploadProgressBySession[uploadSid] = 0f
+                            uploadHeadlineBySession[uploadSid] = "Could not read PDF"
+                            uploadDetailBySession[uploadSid] = "File may be password-protected or corrupted"
+                            targetUploadSteps.clear()
+                            composerFileNameBySession[uploadSid] = null
                             Toast.makeText(context, "Could not read that PDF — it may be corrupted or password-protected", Toast.LENGTH_SHORT).show()
                         } else {
-                            attachedPdfImages = images
-                            sessionAttachmentName = fileName
-                            sessionAttachmentImages = images
-                            sessionAttachmentText = null
-                            uploadProgressFraction = 1f
-                            uploadStatusHeadline = "Upload Complete (100%) • ${images.size} page${if (images.size == 1) "" else "s"} ready"
-                            uploadRemainingDetail = "${images.size} of ${images.size} pages uploaded • 0 remaining"
-                            for (i in uploadTimelineSteps.indices) {
-                                if (uploadTimelineSteps[i].state == 0) {
-                                    uploadTimelineSteps[i] = uploadTimelineSteps[i].copy(state = 1)
+                            composerPdfImagesBySession[uploadSid] = images
+                            composerContentBySession[uploadSid] = extractedPdfText.takeIf { it.isNotBlank() }
+                            sessionAttachmentNameMap[uploadSid] = fileName
+                            sessionAttachmentImagesMap[uploadSid] = images
+                            sessionAttachmentTextMap[uploadSid] = extractedPdfText.takeIf { it.isNotBlank() }
+                            uploadProgressBySession[uploadSid] = 1f
+                            uploadHeadlineBySession[uploadSid] = "Upload Complete (100%) • ${images.size} page${if (images.size == 1) "" else "s"} ready"
+                            uploadDetailBySession[uploadSid] = "${images.size} of ${images.size} pages uploaded • 0 remaining"
+                            for (i in targetUploadSteps.indices) {
+                                if (targetUploadSteps[i].state == 0) {
+                                    targetUploadSteps[i] = targetUploadSteps[i].copy(state = 1)
                                 }
                             }
-                            uploadTimelineSteps.add(AgentStep("100% uploaded — Tap Send or type a question", 1))
-                            isUploadingAttachment = false
+                            targetUploadSteps.add(AgentStep("100% uploaded — Tap Send or type a question", 1))
+                            uploadingBySession[uploadSid] = false
                         }
                     }
                 } else if (mimeType.startsWith("image/") || Regex("\\.(jpg|jpeg|png|webp|bmp)$", RegexOption.IGNORE_CASE).containsMatchIn(fileName)) {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        uploadProgressFraction = 0.45f
-                        uploadStatusHeadline = "Uploading Image (45%)"
-                        uploadRemainingDetail = "${totalKb / 2} KB uploaded • ${totalKb - (totalKb / 2)} KB remaining"
+                        uploadProgressBySession[uploadSid] = 0.45f
+                        uploadHeadlineBySession[uploadSid] = "Uploading Image (45%)"
+                        uploadDetailBySession[uploadSid] = "${totalKb / 2} KB uploaded • ${totalKb - (totalKb / 2)} KB remaining"
                     }
                     val encoded = encodeImageToBase64(context, uri, maxDimension = 1280)
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         if (encoded == null) {
-                            isUploadingAttachment = false
-                            uploadTimelineSteps.clear()
-                            attachedFileName = null
-                            attachedImageUri = null
+                            uploadingBySession[uploadSid] = false
+                            targetUploadSteps.clear()
+                            composerFileNameBySession[uploadSid] = null
+                            composerImageUriBySession[uploadSid] = null
                             Toast.makeText(context, "Could not read that image", Toast.LENGTH_SHORT).show()
                         } else {
-                            attachedImageUri = uri
-                            attachedPdfImages = listOf(encoded)
-                            sessionAttachmentName = fileName
-                            sessionAttachmentImages = listOf(encoded)
-                            sessionAttachmentUri = uri
-                            uploadProgressFraction = 1f
-                            uploadStatusHeadline = "Image Uploaded (100%)"
-                            uploadRemainingDetail = "$totalKb KB uploaded • 0 KB remaining"
-                            for (i in uploadTimelineSteps.indices) {
-                                if (uploadTimelineSteps[i].state == 0) {
-                                    uploadTimelineSteps[i] = uploadTimelineSteps[i].copy(state = 1)
+                            composerImageUriBySession[uploadSid] = uri
+                            composerPdfImagesBySession[uploadSid] = listOf(encoded)
+                            sessionAttachmentNameMap[uploadSid] = fileName
+                            sessionAttachmentImagesMap[uploadSid] = listOf(encoded)
+                            sessionAttachmentUriMap[uploadSid] = uri
+                            uploadProgressBySession[uploadSid] = 1f
+                            uploadHeadlineBySession[uploadSid] = "Image Uploaded (100%)"
+                            uploadDetailBySession[uploadSid] = "$totalKb KB uploaded • 0 KB remaining"
+                            for (i in targetUploadSteps.indices) {
+                                if (targetUploadSteps[i].state == 0) {
+                                    targetUploadSteps[i] = targetUploadSteps[i].copy(state = 1)
                                 }
                             }
-                            uploadTimelineSteps.add(AgentStep("Image encoded & ready (100%)", 1))
-                            isUploadingAttachment = false
+                            targetUploadSteps.add(AgentStep("Image encoded & ready (100%)", 1))
+                            uploadingBySession[uploadSid] = false
                         }
                     }
                 } else if (mimeType.contains("wordprocessingml", ignoreCase = true) || fileName.endsWith(".docx", ignoreCase = true)) {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        uploadProgressFraction = 0.5f
-                        uploadStatusHeadline = "Extracting DOCX (50%)"
-                        uploadRemainingDetail = "${totalKb / 2} KB processed • ${totalKb - (totalKb / 2)} KB remaining"
+                        uploadProgressBySession[uploadSid] = 0.5f
+                        uploadHeadlineBySession[uploadSid] = "Extracting DOCX (50%)"
+                        uploadDetailBySession[uploadSid] = "${totalKb / 2} KB processed • ${totalKb - (totalKb / 2)} KB remaining"
                     }
                     val docxText = extractDocxText(context, uri)
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         if (docxText.isBlank()) {
-                            isUploadingAttachment = false
-                            uploadTimelineSteps.clear()
-                            attachedFileName = null
+                            uploadingBySession[uploadSid] = false
+                            targetUploadSteps.clear()
+                            composerFileNameBySession[uploadSid] = null
                             Toast.makeText(context, "Could not extract text from $fileName", Toast.LENGTH_SHORT).show()
                         } else {
-                            attachedContent = docxText
-                            sessionAttachmentName = fileName
-                            sessionAttachmentText = attachedContent
-                            uploadProgressFraction = 1f
-                            uploadStatusHeadline = "Document Uploaded (100%)"
-                            uploadRemainingDetail = "$totalKb KB uploaded • 0 KB remaining"
-                            for (i in uploadTimelineSteps.indices) {
-                                if (uploadTimelineSteps[i].state == 0) {
-                                    uploadTimelineSteps[i] = uploadTimelineSteps[i].copy(state = 1)
+                            composerContentBySession[uploadSid] = docxText
+                            sessionAttachmentNameMap[uploadSid] = fileName
+                            sessionAttachmentTextMap[uploadSid] = docxText
+                            uploadProgressBySession[uploadSid] = 1f
+                            uploadHeadlineBySession[uploadSid] = "Document Uploaded (100%)"
+                            uploadDetailBySession[uploadSid] = "$totalKb KB uploaded • 0 KB remaining"
+                            for (i in targetUploadSteps.indices) {
+                                if (targetUploadSteps[i].state == 0) {
+                                    targetUploadSteps[i] = targetUploadSteps[i].copy(state = 1)
                                 }
                             }
-                            uploadTimelineSteps.add(AgentStep("Extracted ${attachedContent?.length ?: 0} chars — Ready (100%)", 1))
-                            isUploadingAttachment = false
+                            targetUploadSteps.add(AgentStep("Extracted ${docxText.length} chars — Ready (100%)", 1))
+                            uploadingBySession[uploadSid] = false
                         }
                     }
                 } else if (
@@ -760,48 +798,48 @@ fun AiChatScreen(
                 ) {
                     val info = "Binary file \"$fileName\" ($totalKb KB, ${mimeType.ifBlank { "unknown type" }})."
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        attachedContent = info
-                        sessionAttachmentName = fileName
-                        sessionAttachmentText = attachedContent
-                        uploadProgressFraction = 1f
-                        uploadStatusHeadline = "File Added (100%)"
-                        uploadRemainingDetail = "$totalKb KB • 0 KB remaining"
-                        for (i in uploadTimelineSteps.indices) {
-                            if (uploadTimelineSteps[i].state == 0) {
-                                uploadTimelineSteps[i] = uploadTimelineSteps[i].copy(state = 1)
+                        composerContentBySession[uploadSid] = info
+                        sessionAttachmentNameMap[uploadSid] = fileName
+                        sessionAttachmentTextMap[uploadSid] = info
+                        uploadProgressBySession[uploadSid] = 1f
+                        uploadHeadlineBySession[uploadSid] = "File Added (100%)"
+                        uploadDetailBySession[uploadSid] = "$totalKb KB • 0 KB remaining"
+                        for (i in targetUploadSteps.indices) {
+                            if (targetUploadSteps[i].state == 0) {
+                                targetUploadSteps[i] = targetUploadSteps[i].copy(state = 1)
                             }
                         }
-                        uploadTimelineSteps.add(AgentStep("$fileName added to chat — Ready (100%)", 1))
-                        isUploadingAttachment = false
+                        targetUploadSteps.add(AgentStep("$fileName added to chat — Ready (100%)", 1))
+                        uploadingBySession[uploadSid] = false
                     }
                 } else {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        uploadProgressFraction = 0.5f
-                        uploadStatusHeadline = "Reading Document (50%)"
-                        uploadRemainingDetail = "${totalKb / 2} KB uploaded • ${totalKb - (totalKb / 2)} KB remaining"
+                        uploadProgressBySession[uploadSid] = 0.5f
+                        uploadHeadlineBySession[uploadSid] = "Reading Document (50%)"
+                        uploadDetailBySession[uploadSid] = "${totalKb / 2} KB uploaded • ${totalKb - (totalKb / 2)} KB remaining"
                     }
                     val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        attachedContent = text
-                        sessionAttachmentName = fileName
-                        sessionAttachmentText = attachedContent
-                        uploadProgressFraction = 1f
-                        uploadStatusHeadline = "Document Uploaded (100%)"
-                        uploadRemainingDetail = "$totalKb KB uploaded • 0 KB remaining"
-                        for (i in uploadTimelineSteps.indices) {
-                            if (uploadTimelineSteps[i].state == 0) {
-                                uploadTimelineSteps[i] = uploadTimelineSteps[i].copy(state = 1)
+                        composerContentBySession[uploadSid] = text
+                        sessionAttachmentNameMap[uploadSid] = fileName
+                        sessionAttachmentTextMap[uploadSid] = text
+                        uploadProgressBySession[uploadSid] = 1f
+                        uploadHeadlineBySession[uploadSid] = "Document Uploaded (100%)"
+                        uploadDetailBySession[uploadSid] = "$totalKb KB uploaded • 0 KB remaining"
+                        for (i in targetUploadSteps.indices) {
+                            if (targetUploadSteps[i].state == 0) {
+                                targetUploadSteps[i] = targetUploadSteps[i].copy(state = 1)
                             }
                         }
-                        uploadTimelineSteps.add(AgentStep("Loaded ${attachedContent?.length ?: 0} chars — Ready (100%)", 1))
-                        isUploadingAttachment = false
+                        targetUploadSteps.add(AgentStep("Loaded ${text.length} chars — Ready (100%)", 1))
+                        uploadingBySession[uploadSid] = false
                     }
                 }
             } catch (e: Throwable) {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    isUploadingAttachment = false
-                    uploadTimelineSteps.clear()
-                    attachedFileName = null
+                    uploadingBySession[uploadSid] = false
+                    targetUploadSteps.clear()
+                    composerFileNameBySession[uploadSid] = null
                     Toast.makeText(context, "Could not read attachment: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -1353,7 +1391,8 @@ fun AiChatScreen(
             "list_folders" -> ToolOutcome((systemFolders + preferences.customFolders.value).joinToString(", "))
             "create_note" -> {
                 val title = args.optString("title", "Untitled Note").trim().ifBlank { "Untitled Note" }
-                val content = sequenceOf(
+                val fallbackAttached = (composerContentBySession[targetSessionId] ?: sessionAttachmentTextMap[targetSessionId]).orEmpty()
+                val rawArgContent = sequenceOf(
                     args.optString("content", ""),
                     args.optString("body", ""),
                     args.optString("text", ""),
@@ -1361,6 +1400,7 @@ fun AiChatScreen(
                     args.optString("code", ""),
                     args.optString("new_content", "")
                 ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                val content = if (rawArgContent.isBlank() && fallbackAttached.isNotBlank()) fallbackAttached else rawArgContent
                 if (content.isBlank()) {
                     ToolOutcome("NOT DONE: 'content' was empty. Call create_note again and pass the FULL note body/code inside the 'content' parameter.")
                 } else {
@@ -1376,8 +1416,34 @@ fun AiChatScreen(
                 }
             }
             "edit_note" -> {
-                val target = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
-                val newContent = sequenceOf(
+                val reqId = args.optLong("note_id", args.optLong("id", -1L))
+                val reqTitle = args.optString("title", "").trim()
+                var target = if (reqId > 0) repository.getNoteByIdOnce(reqId) else null
+                if (target == null || !agentVisible(target)) {
+                    val allVisible = try { repository.allActiveNotes.first().filter { agentVisible(it) } } catch (_: Exception) { emptyList() }
+                    if (reqTitle.isNotBlank()) {
+                        target = allVisible.firstOrNull { it.title.equals(reqTitle, ignoreCase = true) }
+                            ?: allVisible.firstOrNull { it.title.contains(reqTitle, ignoreCase = true) }
+                    }
+                    if (target == null) {
+                        val attachedInSession = attachedNotesFor(targetSessionId).firstOrNull()
+                            ?: sessionAttachedNotesMap[targetSessionId]?.firstOrNull()
+                        if (attachedInSession != null) {
+                            target = repository.getNoteByIdOnce(attachedInSession.id) ?: attachedInSession
+                        }
+                    }
+                    if (target == null && currentNoteId != null && currentNoteId > 0) {
+                        target = repository.getNoteByIdOnce(currentNoteId)
+                    }
+                    if (target == null && !currentNoteTitle.isNullOrBlank()) {
+                        target = allVisible.firstOrNull { it.title.equals(currentNoteTitle.trim(), ignoreCase = true) }
+                    }
+                    if (target == null && sessionNotes.isNotEmpty()) {
+                        target = repository.getNoteByIdOnce(sessionNotes.first().first)
+                    }
+                }
+                val fallbackAttached = (composerContentBySession[targetSessionId] ?: sessionAttachmentTextMap[targetSessionId]).orEmpty()
+                val rawNewContent = sequenceOf(
                     args.optString("new_content", ""),
                     args.optString("content", ""),
                     args.optString("body", ""),
@@ -1385,9 +1451,10 @@ fun AiChatScreen(
                     args.optString("markdown", ""),
                     args.optString("code", "")
                 ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                val newContent = if (rawNewContent.isBlank() && fallbackAttached.isNotBlank()) fallbackAttached else rawNewContent
                 val append = args.optString("mode", "replace").equals("append", true)
                 when {
-                    target == null || !agentVisible(target) -> ToolOutcome("Note not found or not accessible. Use search_notes to get a valid id.")
+                    target == null || !agentVisible(target) -> ToolOutcome("Note not found or not accessible. Pass a valid note_id or title, or use search_notes first.")
                     newContent.isBlank() -> ToolOutcome("NOT DONE: new_content was empty. Call edit_note again with the full content inside 'new_content'.")
                     else -> {
                         val rich = NoteAgentFormatter.convertToRichNote(newContent, defaultTitle = target.title)
@@ -1412,26 +1479,93 @@ fun AiChatScreen(
                         }
                         repository.saveNote(updated)
                         trackNote(updated)
-                        if (currentNoteTitle.equals(target.title, ignoreCase = true)) {
+                        onUpdateCurrentNoteEntity?.invoke(updated)
+                        if (currentNoteId == updated.id || currentNoteTitle.equals(target.title, ignoreCase = true)) {
                             val spans = RichTextFormatter.deserializeSpans(updated.styleSpansJson)
                             if (onApplyAgentNoteToEditor != null) onApplyAgentNoteToEditor.invoke(updated.content, updated.tableData, spans)
                             else onModifyCurrentNote?.invoke(updated.content)
                         }
-                        ToolOutcome("Note \"${target.title}\" updated (${if (append) "appended" else "replaced"}).", noteResults = listOf(updated))
+                        ToolOutcome("Note \"${target.title}\" updated (${if (append) "appended" else "replaced"}, ${updated.content.length} chars).", noteResults = listOf(updated))
                     }
                 }
             }
             "edit_current_note" -> {
-                val newContent = args.optString("new_content", "")
-                if (newContent.isBlank()) ToolOutcome("new_content was empty — ask the user what to change.")
-                else if (onApplyAgentNoteToEditor != null) {
-                    val rich = NoteAgentFormatter.convertToRichNote(newContent, defaultTitle = currentNoteTitle ?: "Note")
-                    onApplyAgentNoteToEditor.invoke(rich.content, rich.tableData, RichTextFormatter.deserializeSpans(rich.styleSpansJson))
-                    ToolOutcome("The open note was updated in the editor.")
-                } else if (onModifyCurrentNote != null) {
-                    onModifyCurrentNote.invoke(newContent)
-                    ToolOutcome("The open note was updated in the editor.")
-                } else ToolOutcome("No note is open right now.")
+                val newContent = sequenceOf(
+                    args.optString("new_content", ""),
+                    args.optString("content", ""),
+                    args.optString("body", ""),
+                    args.optString("text", ""),
+                    args.optString("markdown", ""),
+                    args.optString("code", ""),
+                    (composerContentBySession[targetSessionId] ?: sessionAttachmentTextMap[targetSessionId]).orEmpty()
+                ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                val append = args.optString("mode", "replace").equals("append", true)
+                if (newContent.isBlank()) {
+                    ToolOutcome("new_content was empty — ask the user what to change.")
+                } else {
+                    val reqId = args.optLong("note_id", args.optLong("id", -1L))
+                    val reqTitle = args.optString("title", "").trim()
+                    val allVisible = try { repository.allActiveNotes.first().filter { agentVisible(it) } } catch (_: Exception) { emptyList() }
+                    var target: NoteEntity? = if (reqId > 0) repository.getNoteByIdOnce(reqId) else null
+                    if (target == null && currentNoteId != null && currentNoteId > 0) {
+                        target = repository.getNoteByIdOnce(currentNoteId)
+                    }
+                    if (target == null && reqTitle.isNotBlank()) {
+                        target = allVisible.firstOrNull { it.title.equals(reqTitle, ignoreCase = true) }
+                            ?: allVisible.firstOrNull { it.title.contains(reqTitle, ignoreCase = true) }
+                    }
+                    if (target == null && !currentNoteTitle.isNullOrBlank()) {
+                        target = allVisible.firstOrNull { it.title.equals(currentNoteTitle.trim(), ignoreCase = true) }
+                    }
+                    if (target == null) {
+                        val attachedInSession = attachedNotesFor(targetSessionId).firstOrNull()
+                            ?: sessionAttachedNotesMap[targetSessionId]?.firstOrNull()
+                        if (attachedInSession != null) {
+                            target = repository.getNoteByIdOnce(attachedInSession.id) ?: attachedInSession
+                        }
+                    }
+                    if (target == null && sessionNotes.isNotEmpty()) {
+                        target = repository.getNoteByIdOnce(sessionNotes.first().first)
+                    }
+                    val rich = NoteAgentFormatter.convertToRichNote(newContent, defaultTitle = target?.title ?: currentNoteTitle ?: "Note")
+                    var savedList: List<NoteEntity>? = null
+                    if (target != null && agentVisible(target)) {
+                        val updated = if (append) {
+                            val shift = target.content.length + 2
+                            val oldSpans = RichTextFormatter.deserializeSpans(target.styleSpansJson)
+                            val newSpans = RichTextFormatter.deserializeSpans(rich.styleSpansJson)
+                                .map { it.copy(start = it.start + shift, end = it.end + shift) }
+                            target.copy(
+                                content = target.content + "\n\n" + rich.content,
+                                styleSpansJson = RichTextFormatter.serializeSpans(oldSpans + newSpans),
+                                tableData = target.tableData.ifBlank { rich.tableData },
+                                updatedAt = System.currentTimeMillis()
+                            )
+                        } else {
+                            target.copy(
+                                content = rich.content,
+                                tableData = rich.tableData,
+                                styleSpansJson = rich.styleSpansJson,
+                                updatedAt = System.currentTimeMillis()
+                            )
+                        }
+                        repository.saveNote(updated)
+                        trackNote(updated)
+                        onUpdateCurrentNoteEntity?.invoke(updated)
+                        savedList = listOf(updated)
+                    }
+                    if (onApplyAgentNoteToEditor != null) {
+                        onApplyAgentNoteToEditor.invoke(rich.content, rich.tableData, RichTextFormatter.deserializeSpans(rich.styleSpansJson))
+                        ToolOutcome("The open note was updated and saved (${rich.content.length} chars).", noteResults = savedList)
+                    } else if (onModifyCurrentNote != null) {
+                        onModifyCurrentNote.invoke(rich.content)
+                        ToolOutcome("The open note was updated and saved (${rich.content.length} chars).", noteResults = savedList)
+                    } else if (savedList != null) {
+                        ToolOutcome("Note \"${savedList.first().title}\" was updated and saved (${rich.content.length} chars).", noteResults = savedList)
+                    } else {
+                        ToolOutcome("No note is open right now.")
+                    }
+                }
             }
             "move_note_to_folder" -> {
                 val note = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
@@ -2543,9 +2677,15 @@ fun AiChatScreen(
                     if (!currentNoteContent.isNullOrBlank()) append("Content:\n$currentNoteContent\n")
                 }.ifBlank { null }
 
-                val enabled = AgentTools.ALL.filter {
-                    it.id !in disabledTools &&
-                        (it.id != "edit_current_note" || onModifyCurrentNote != null || onApplyAgentNoteToEditor != null)
+                val isDirectOcrTurn = (docImages != null || !docText.isNullOrBlank()) &&
+                    com.example.ui.util.DocumentOcrHelper.isDirectOcrPrompt(userMsg)
+                val enabled = if (isDirectOcrTurn) {
+                    emptyList()
+                } else {
+                    AgentTools.ALL.filter {
+                        it.id !in disabledTools &&
+                            (it.id != "edit_current_note" || onModifyCurrentNote != null || onApplyAgentNoteToEditor != null)
+                    }
                 }
                 val notesIndex = try {
                     repository.allActiveNotes.first().filter { agentVisible(it) }.take(50)
@@ -2554,27 +2694,31 @@ fun AiChatScreen(
                 val sessionText = sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" }
                 val memoryFacts = if (preferences.memoryEnabled.value) preferences.agentMemory.value else emptyList()
                 val effectiveWorkMode = isWorkMode || voiceManager.isVoiceModeActive
-                val system = AgentTools.buildSystemPrompt(
-                    userName = userName,
-                    enabled = enabled,
-                    openNoteContext = openNoteContext,
-                    notesIndex = notesIndex,
-                    sessionNotes = sessionText,
-                    memory = memoryFacts,
-                    spoken = voiceManager.isVoiceModeActive,
-                    workMode = effectiveWorkMode,
-                    searchModeEnabled = searchModeEnabled,
-                    attachmentContext = if (!docText.isNullOrBlank()) null else buildAttachmentContextString(),
-                    recentChatTranscript = null,
-                    includeDesign = Regex(
-                        "slide|ppt|presentation|deck|chart|graph|diagram|svg|html|artifact|web ?page|pdf|poster|infographic|mockup|visual|timeline|design|table|apex|mermaid",
-                        RegexOption.IGNORE_CASE
-                    ).containsMatchIn(userMsg + " " + turns.takeLast(6).joinToString(" ") { it.content.take(300) })
-                )
+                val system = if (isDirectOcrTurn) {
+                    com.example.ui.util.DocumentOcrHelper.VERBATIM_OCR_SYSTEM_PROMPT
+                } else {
+                    AgentTools.buildSystemPrompt(
+                        userName = userName,
+                        enabled = enabled,
+                        openNoteContext = openNoteContext,
+                        notesIndex = notesIndex,
+                        sessionNotes = sessionText,
+                        memory = memoryFacts,
+                        spoken = voiceManager.isVoiceModeActive,
+                        workMode = effectiveWorkMode,
+                        searchModeEnabled = searchModeEnabled,
+                        attachmentContext = if (!docText.isNullOrBlank()) null else buildAttachmentContextString(),
+                        recentChatTranscript = null,
+                        includeDesign = Regex(
+                            "slide|ppt|presentation|deck|chart|graph|diagram|svg|html|artifact|web ?page|pdf|poster|infographic|mockup|visual|timeline|design|table|apex|mermaid",
+                            RegexOption.IGNORE_CASE
+                        ).containsMatchIn(userMsg + " " + turns.takeLast(6).joinToString(" ") { it.content.take(300) })
+                    )
+                }
 
                 var preFetchedSearchContext = ""
                 val hasLocalAttachmentTask = currentPickedNotes.isNotEmpty() || !currentAttachmentText.isNullOrBlank() || !currentPdfImages.isNullOrEmpty() || currentImgUri != null
-                val shouldPreSearch = searchModeEnabled && (!hasLocalAttachmentTask || userMsg.contains("search", ignoreCase = true)) && aiService.shouldUseWebSearch(userMsg)
+                val shouldPreSearch = !isDirectOcrTurn && searchModeEnabled && (!hasLocalAttachmentTask || userMsg.contains("search", ignoreCase = true)) && aiService.shouldUseWebSearch(userMsg)
                 if (shouldPreSearch) {
                     stepRunning("Searching the live web", targetSessionId)
                     val searchOutcome = aiService.performWebSearch(userMsg)
@@ -2607,13 +2751,14 @@ fun AiChatScreen(
                         }
                     }
                     if (!docText.isNullOrBlank()) {
-                        append("The user attached this document (${resolvedDocName ?: "document"}). Read it fully and honor any user instructions on which sections/points to include or skip.\n=== DOCUMENT START ===\n")
+                        append("The user attached this document (${resolvedDocName ?: "document"}). Read 100% of its full text below and honor every user instruction on which sections/points to include or skip.\n=== DOCUMENT START ===\n")
                         append(docText).append("\n=== DOCUMENT END ===\n\n")
-                    } else if (!docImages.isNullOrEmpty()) {
+                    }
+                    if (!docImages.isNullOrEmpty()) {
                         append("The user attached ${docImages.size} image(s)/page(s) (${resolvedDocName ?: "visual attachment"}). Read every page/image carefully and honor any user instructions on which points to include or skip.\n\n")
                     }
                     val inboxNow = runCatching { com.example.data.ai.ChatInbox.list(context) }.getOrDefault(emptyList())
-                    if (inboxNow.isNotEmpty()) {
+                    if (inboxNow.isNotEmpty() && !isDirectOcrTurn) {
                         append("Files currently in the chat inbox (numbered in upload order; use their names or numbers with image_file in create_html_slides):\n")
                         append(com.example.data.ai.ChatInbox.describe(inboxNow)).append("\n\n")
                     }
@@ -2649,7 +2794,7 @@ fun AiChatScreen(
                         prompt = prompt,
                         imagesBase64 = images,
                         enableWebSearch = (steps == 0 && searchModeEnabled && preFetchedSearchContext.isBlank() && shouldPreSearch),
-                        onDelta = if (activeProvider == "Gemini") { acc ->
+                        onDelta = { acc ->
                             val vis = visibleStreamText(acc)
                             if (vis.isNotBlank()) {
                                 streamedAny = true
@@ -2658,7 +2803,40 @@ fun AiChatScreen(
                                     if (i != -1) targetMessages[i] = targetMessages[i].copy(text = vis)
                                 }
                             }
-                        } else null
+                            mainHandler.post {
+                                val runIdx = targetSteps.indexOfLast { it.state == 0 }
+                                if (runIdx >= 0) {
+                                    val liveLabel = when {
+                                        acc.contains("create_html_page", true) || acc.contains("```html", true) ->
+                                            "Writing interactive HTML code • ${acc.length} chars"
+                                        acc.contains("create_html_slides", true) || acc.contains("create_slide_deck", true) || acc.contains("```slides", true) ->
+                                            "Designing presentation slides • ${acc.length} chars"
+                                        acc.contains("create_note", true) || acc.contains("edit_note", true) || acc.contains("edit_current_note", true) ->
+                                            "Writing note content • ${acc.length} chars"
+                                        acc.contains("add_chart", true) || acc.contains("```json:apex", true) || acc.contains("```mermaid", true) ->
+                                            "Building chart / diagram • ${acc.length} chars"
+                                        vis.isNotBlank() ->
+                                            "Streaming response • ${vis.length} chars"
+                                        else -> targetSteps[runIdx].label
+                                    }
+                                    if (targetSteps[runIdx].label != liveLabel) {
+                                        targetSteps[runIdx] = targetSteps[runIdx].copy(label = liveLabel)
+                                    }
+                                }
+                            }
+                        },
+                        onThoughtDelta = { thoughtAcc ->
+                            val cleanThought = thoughtAcc.replace(Regex("\\s+"), " ").trim().takeLast(96)
+                            if (cleanThought.isNotBlank()) {
+                                mainHandler.post {
+                                    val runIdx = targetSteps.indexOfLast { it.state == 0 }
+                                    val label = "Thinking: $cleanThought"
+                                    if (runIdx >= 0) {
+                                        targetSteps[runIdx] = targetSteps[runIdx].copy(label = label)
+                                    }
+                                }
+                            }
+                        }
                     )
                     val isReplyError = reply.startsWith("Error:") || reply.startsWith("⚠️")
                     stepFinish(!isReplyError, targetSessionId)
@@ -2671,7 +2849,7 @@ fun AiChatScreen(
                             prompt = "[TOOL CALL ERROR]\nYour last <tool_call> contained invalid JSON, so nothing was created. " +
                                 "Send the SAME tool call again with VALID JSON: write the slides/items directly as an inline JSON array inside args " +
                                 "(not as a quoted string), escape every double quote used inside text as \\\", no trailing commas, no comments. " +
-                                "Keep each bullet short. Output ONLY the <tool_call>...</tool_call>, nothing else."
+                                "Output ONLY the <tool_call>...</tool_call>, nothing else."
                             images = emptyList()
                             continue
                         } else {
@@ -2780,26 +2958,12 @@ fun AiChatScreen(
     }
 
     fun startNewChat() {
-        // Never cancel jobs in previous sessions; they keep running strictly isolated to their own sessionId
-        uploadJob?.cancel()
-        isUploadingAttachment = false
-        uploadTimelineSteps.clear()
-        uploadProgressFraction = 0f
-        uploadStatusHeadline = ""
-        uploadRemainingDetail = ""
+        // Never cancel jobs or uploads in previous sessions; they keep running strictly isolated to their own sessionId
         if (messagesFor(currentSessionId).size > 1) {
             saveSessionFor(currentSessionId)
         }
-        sessionAttachmentName = null
-        sessionAttachmentText = null
-        sessionAttachmentImages = null
-        sessionAttachmentUri = null
-        sessionAttachedNotes = emptyList()
-        attachedFileName = null
-        attachedContent = null
-        attachedPdfImages = null
-        attachedImageUri = null
-        currentSessionId = java.util.UUID.randomUUID().toString()
+        val newSid = java.util.UUID.randomUUID().toString()
+        currentSessionId = newSid
         isAgentSidebarOpen = false
         Toast.makeText(context, "New chat started (previous runs independently)", Toast.LENGTH_SHORT).show()
     }
@@ -3069,7 +3233,7 @@ fun AiChatScreen(
                     }
 
                     // Requirement 6: Balanced Full-Height Initial State with Sketch Icon, Serif Greeting, Mode Info & Starter Cards
-                    if (messages.size <= 1) {
+                    if (messages.size <= 1 && !isLoading && agentSteps.isEmpty()) {
                         val hour = remember { Calendar.getInstance().get(Calendar.HOUR_OF_DAY) }
                         val timeGreeting = when {
                             hour < 12 -> "Good morning"
@@ -3388,6 +3552,26 @@ fun AiChatScreen(
                                                             Toast.makeText(
                                                                 context,
                                                                 if (!toolFailed(out.result)) "Live ApexChart added to note!" else out.result,
+                                                                Toast.LENGTH_SHORT
+                                                            ).show()
+                                                        }
+                                                    },
+                                                    onSaveHtmlToNote = { title, htmlContent ->
+                                                        coroutineScope.launch {
+                                                            val noteEntity = NoteEntity(
+                                                                title = title.ifBlank { "Saved HTML Page" },
+                                                                content = htmlContent,
+                                                                category = "HTML",
+                                                                folder = "All Notes",
+                                                                originalFolder = "All Notes"
+                                                            )
+                                                            val id = repository.saveNote(noteEntity)
+                                                            val saved = repository.getNoteByIdOnce(id) ?: noteEntity.copy(id = id)
+                                                            trackNote(saved)
+                                                            onUpdateCurrentNoteEntity?.invoke(saved)
+                                                            Toast.makeText(
+                                                                context,
+                                                                "Saved \"$title\" to Notes (opens in WebView in Read Mode)!",
                                                                 Toast.LENGTH_SHORT
                                                             ).show()
                                                         }
@@ -3843,10 +4027,29 @@ fun AiChatScreen(
                                     }
                                 }
 
-                                // Text input area ("Chat with AU Agent...")
+                                // Text input area ("Chat with AU Agent...") with automatic large-paste offloading (>6KB)
                                 TextField(
                                     value = inputText,
-                                    onValueChange = { inputText = it },
+                                    onValueChange = { newText ->
+                                        if (newText.length > 6000 && newText.length - inputText.length > 3500) {
+                                            // Offload huge pasted text to session attachment so TextField never lags or truncates
+                                            val pasteSid = currentSessionId
+                                            val label = "Pasted_Text_${newText.length}_chars.txt"
+                                            composerFileNameBySession[pasteSid] = label
+                                            composerContentBySession[pasteSid] = newText
+                                            sessionAttachmentNameMap[pasteSid] = label
+                                            sessionAttachmentTextMap[pasteSid] = newText
+                                            uploadProgressBySession[pasteSid] = 1f
+                                            uploadHeadlineBySession[pasteSid] = "Large Text Pasted (${newText.length} chars)"
+                                            uploadDetailBySession[pasteSid] = "100% attached • Ready to send or save to note"
+                                            val st = uploadStepsFor(pasteSid)
+                                            st.clear()
+                                            st.add(AgentStep("Attached ${newText.length} pasted chars (100% verbatim)", 1))
+                                            Toast.makeText(context, "Large text (${newText.length} chars) attached cleanly without lag!", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            inputText = newText
+                                        }
+                                    },
                                     placeholder = {
                                         Text(
                                             "Chat with AU Agent...",
@@ -3875,7 +4078,7 @@ fun AiChatScreen(
                                         }
                                 )
 
-                                // Bottom Control Row: [+] [Notes Picker Icon] ------ [Mic] [Waveform / Send]
+                                // Bottom Control Row: [+] [Notes Icon-Only] [Paste] ------ [Mic] [Waveform / Send]
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -3906,12 +4109,12 @@ fun AiChatScreen(
                                             )
                                         }
 
-                                        // Notes Picker Icon Button
+                                        // Point 14: Notes Picker Icon-Only Circular Button (no text clutter, with badge if notes attached)
                                         val hasAttachedNotes = attachedNotes.isNotEmpty()
-                                        Row(
+                                        Box(
                                             modifier = Modifier
-                                                .height(38.dp)
-                                                .clip(RoundedCornerShape(19.dp))
+                                                .size(38.dp)
+                                                .clip(CircleShape)
                                                 .background(
                                                     if (hasAttachedNotes) Color(0xFFD97757)
                                                     else if (isDarkMode) Color(0xFF28282F)
@@ -3921,26 +4124,81 @@ fun AiChatScreen(
                                                     width = if (hasAttachedNotes) 0.dp else 1.dp,
                                                     color = if (hasAttachedNotes) Color.Transparent
                                                     else if (isDarkMode) Color(0x26FFFFFF) else Color(0x16000000),
-                                                    shape = RoundedCornerShape(19.dp)
+                                                    shape = CircleShape
                                                 )
-                                                .clickable { showNoteAttachDialog = true }
-                                                .padding(horizontal = 12.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                .clickable { showNoteAttachDialog = true },
+                                            contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Description,
                                                 contentDescription = "Attach Notes to Chat",
                                                 tint = if (hasAttachedNotes) Color.White
                                                 else if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
-                                                modifier = Modifier.size(16.dp)
+                                                modifier = Modifier.size(18.dp)
                                             )
-                                            Text(
-                                                text = if (hasAttachedNotes) "Notes (${attachedNotes.size})" else "Notes",
-                                                fontSize = 11.5.sp,
-                                                fontWeight = if (hasAttachedNotes) FontWeight.Bold else FontWeight.SemiBold,
-                                                color = if (hasAttachedNotes) Color.White
-                                                else if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A)
+                                            if (hasAttachedNotes) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .align(Alignment.TopEnd)
+                                                        .padding(2.dp)
+                                                        .size(14.dp)
+                                                        .clip(CircleShape)
+                                                        .background(Color(0xFF18181B)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = "${attachedNotes.size}",
+                                                        fontSize = 8.5.sp,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        color = Color.White
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        // 1-Tap Large Clipboard Paste Icon-Only Button
+                                        Box(
+                                            modifier = Modifier
+                                                .size(38.dp)
+                                                .clip(CircleShape)
+                                                .background(if (isDarkMode) Color(0xFF28282F) else Color(0xFFEEECE6))
+                                                .border(
+                                                    width = 1.dp,
+                                                    color = if (isDarkMode) Color(0x26FFFFFF) else Color(0x16000000),
+                                                    shape = CircleShape
+                                                )
+                                                .clickable {
+                                                    val sysClip = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                                    val clipText = sysClip?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+                                                        ?: clipboard.getText()?.text
+                                                        ?: ""
+                                                    if (clipText.isBlank()) {
+                                                        Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                                                    } else if (clipText.length > 4000) {
+                                                        val pasteSid = currentSessionId
+                                                        val label = "Pasted_Text_${clipText.length}_chars.txt"
+                                                        composerFileNameBySession[pasteSid] = label
+                                                        composerContentBySession[pasteSid] = clipText
+                                                        sessionAttachmentNameMap[pasteSid] = label
+                                                        sessionAttachmentTextMap[pasteSid] = clipText
+                                                        uploadProgressBySession[pasteSid] = 1f
+                                                        uploadHeadlineBySession[pasteSid] = "Large Text Pasted (${clipText.length} chars)"
+                                                        uploadDetailBySession[pasteSid] = "100% attached • Ready to send or save to note"
+                                                        val st = uploadStepsFor(pasteSid)
+                                                        st.clear()
+                                                        st.add(AgentStep("Attached ${clipText.length} pasted chars (100% verbatim)", 1))
+                                                        Toast.makeText(context, "Pasted ${clipText.length} chars as full attachment!", Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        inputText = if (inputText.isBlank()) clipText else "$inputText\n$clipText"
+                                                    }
+                                                },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ContentPaste,
+                                                contentDescription = "Paste Text or Large File Content",
+                                                tint = if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
+                                                modifier = Modifier.size(17.dp)
                                             )
                                         }
                                     }
@@ -5542,152 +5800,152 @@ fun AiChatScreen(
                 }
             }
         }
+    }
 
-        // Attach Notes to Chat Dialog (opened from the Notes icon next to Search Mode)
-        if (showNoteAttachDialog) {
-            val visibleNotes = remember(allNotesForPicker, noteAttachSearchQuery) {
-                val q = noteAttachSearchQuery.trim()
-                allNotesForPicker.filter { agentVisible(it) }.filter { n ->
-                    q.isBlank() ||
-                        n.title.contains(q, ignoreCase = true) ||
-                        n.folder.contains(q, ignoreCase = true) ||
-                        n.content.contains(q, ignoreCase = true)
-                }
+    // Attach Notes to Chat Dialog (opened from the Notes icon in the composer)
+    if (showNoteAttachDialog) {
+        val visibleNotes = remember(allNotesForPicker, noteAttachSearchQuery) {
+            val q = noteAttachSearchQuery.trim()
+            allNotesForPicker.filter { agentVisible(it) }.filter { n ->
+                q.isBlank() ||
+                    n.title.contains(q, ignoreCase = true) ||
+                    n.folder.contains(q, ignoreCase = true) ||
+                    n.content.contains(q, ignoreCase = true)
             }
-            AlertDialog(
-                onDismissRequest = { showNoteAttachDialog = false },
-                containerColor = if (isDarkMode) Color(0xFF1A1A22) else Color(0xFFFAF8F5),
-                title = {
-                    Column {
-                        Text(
-                            text = "Attach Notes to Chat",
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B)
-                        )
-                        Text(
-                            text = "Tap any note to attach its full text, saved code, and tables directly to AU Agent",
-                            fontSize = 11.5.sp,
-                            color = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF71717A)
-                        )
-                    }
-                },
-                text = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 380.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = noteAttachSearchQuery,
-                            onValueChange = { noteAttachSearchQuery = it },
-                            placeholder = { Text("Search notes by title, folder, or code...", fontSize = 12.sp) },
-                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                            trailingIcon = {
-                                if (noteAttachSearchQuery.isNotBlank()) {
-                                    IconButton(onClick = { noteAttachSearchQuery = "" }, modifier = Modifier.size(22.dp)) {
-                                        Icon(Icons.Default.Close, contentDescription = "Clear", modifier = Modifier.size(15.dp))
-                                    }
+        }
+        AlertDialog(
+            onDismissRequest = { showNoteAttachDialog = false },
+            containerColor = if (isDarkMode) Color(0xFF1A1A22) else Color(0xFFFAF8F5),
+            title = {
+                Column {
+                    Text(
+                        text = "Attach Notes to Chat",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B)
+                    )
+                    Text(
+                        text = "Tap any note to attach its full text, saved code, and tables directly to AU Agent",
+                        fontSize = 11.5.sp,
+                        color = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF71717A)
+                    )
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 380.dp)
+                ) {
+                    OutlinedTextField(
+                        value = noteAttachSearchQuery,
+                        onValueChange = { noteAttachSearchQuery = it },
+                        placeholder = { Text("Search notes by title, folder, or code...", fontSize = 12.sp) },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                        trailingIcon = {
+                            if (noteAttachSearchQuery.isNotBlank()) {
+                                IconButton(onClick = { noteAttachSearchQuery = "" }, modifier = Modifier.size(22.dp)) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear", modifier = Modifier.size(15.dp))
                                 }
-                            },
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    if (visibleNotes.isEmpty()) {
+                        Text(
+                            text = "No matching notes found.",
+                            fontSize = 13.sp,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(vertical = 12.dp)
                         )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        if (visibleNotes.isEmpty()) {
-                            Text(
-                                text = "No matching notes found.",
-                                fontSize = 13.sp,
-                                color = Color.Gray,
-                                modifier = Modifier.padding(vertical = 12.dp)
-                            )
-                        } else {
-                            LazyColumn(
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 120.dp, max = 270.dp)
-                            ) {
-                                items(visibleNotes, key = { it.id }) { noteItem ->
-                                    val isAttached = attachedNotes.any { it.id == noteItem.id }
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(
-                                                if (isAttached) Color(0xFFD97757).copy(alpha = 0.16f)
-                                                else if (isDarkMode) Color(0xFF24242E)
-                                                else Color(0xFFEDEAE2)
-                                            )
-                                            .border(
-                                                width = if (isAttached) 1.dp else 0.5.dp,
-                                                color = if (isAttached) Color(0xFFD97757) else Color.Transparent,
-                                                shape = RoundedCornerShape(12.dp)
-                                            )
-                                            .clickable {
-                                                if (isAttached) {
-                                                    attachedNotes.removeAll { it.id == noteItem.id }
-                                                } else {
-                                                    attachedNotes.add(noteItem)
-                                                }
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 120.dp, max = 270.dp)
+                        ) {
+                            items(visibleNotes, key = { it.id }) { noteItem ->
+                                val isAttached = attachedNotes.any { it.id == noteItem.id }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(
+                                            if (isAttached) Color(0xFFD97757).copy(alpha = 0.16f)
+                                            else if (isDarkMode) Color(0xFF24242E)
+                                            else Color(0xFFEDEAE2)
+                                        )
+                                        .border(
+                                            width = if (isAttached) 1.dp else 0.5.dp,
+                                            color = if (isAttached) Color(0xFFD97757) else Color.Transparent,
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                        .clickable {
+                                            if (isAttached) {
+                                                attachedNotes.removeAll { it.id == noteItem.id }
+                                            } else {
+                                                attachedNotes.add(noteItem)
                                             }
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = noteItem.title.ifBlank { "Untitled Note" },
-                                                fontSize = 13.5.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = "${noteItem.folder} • ${noteItem.content.replace("\n", " ").take(65)}",
-                                                fontSize = 11.sp,
-                                                color = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF52525B),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
                                         }
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Icon(
-                                            imageVector = if (isAttached) Icons.Default.CheckCircle else Icons.Default.AddCircleOutline,
-                                            contentDescription = if (isAttached) "Attached" else "Attach",
-                                            tint = if (isAttached) Color(0xFFD97757) else Color.Gray,
-                                            modifier = Modifier.size(20.dp)
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = noteItem.title.ifBlank { "Untitled Note" },
+                                            fontSize = 13.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isDarkMode) Color(0xFFF4F4F6) else Color(0xFF18181B),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "${noteItem.folder} • ${noteItem.content.replace("\n", " ").take(65)}",
+                                            fontSize = 11.sp,
+                                            color = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF52525B),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Icon(
+                                        imageVector = if (isAttached) Icons.Default.CheckCircle else Icons.Default.AddCircleOutline,
+                                        contentDescription = if (isAttached) "Attached" else "Attach",
+                                        tint = if (isAttached) Color(0xFFD97757) else Color.Gray,
+                                        modifier = Modifier.size(20.dp)
+                                    )
                                 }
                             }
                         }
                     }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = { showNoteAttachDialog = false },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97757)),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Text(
-                            text = if (attachedNotes.isEmpty()) "Done" else "Attach (${attachedNotes.size})",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                },
-                dismissButton = {
-                    if (attachedNotes.isNotEmpty()) {
-                        TextButton(onClick = { attachedNotes.clear() }) {
-                            Text("Clear All", color = Color(0xFFEF4444))
-                        }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showNoteAttachDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97757)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(
+                        text = if (attachedNotes.isEmpty()) "Done" else "Attach (${attachedNotes.size})",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                if (attachedNotes.isNotEmpty()) {
+                    TextButton(onClick = { attachedNotes.clear() }) {
+                        Text("Clear All", color = Color(0xFFEF4444))
                     }
                 }
-            )
-        }
+            }
+        )
     }
 }
 
@@ -5727,7 +5985,8 @@ private fun RenderAgentRichMessage(
     isDarkMode: Boolean,
     onAddBitmapToNote: ((android.graphics.Bitmap, String) -> Unit)? = null,
     onAddSlideDeckToNote: ((com.example.ui.components.SlideDeckData) -> Unit)? = null,
-    onAddChartSpecToNote: ((com.example.ui.components.ChartDataSpec) -> Unit)? = null
+    onAddChartSpecToNote: ((com.example.ui.components.ChartDataSpec) -> Unit)? = null,
+    onSaveHtmlToNote: ((String, String) -> Unit)? = null
 ) {
     val blocks = remember(text) { NoteAgentFormatter.parseMessageToBlocks(text) }
     val textColor = if (isDarkMode) Color.White.copy(alpha = 0.95f) else Color(0xFF111111)
@@ -5901,7 +6160,8 @@ private fun RenderAgentRichMessage(
                         SlidesMakerCard(
                             initialDeck = deck,
                             isDarkMode = isDarkMode,
-                            onAddSlideDeckToNote = onAddSlideDeckToNote
+                            onAddSlideDeckToNote = onAddSlideDeckToNote,
+                            onSaveHtmlToNote = onSaveHtmlToNote
                         )
                     }
                 }
@@ -5943,7 +6203,8 @@ private fun RenderAgentRichMessage(
                     HtmlArtifactCard(
                         title = block.title,
                         htmlCode = block.htmlCode,
-                        isDarkMode = isDarkMode
+                        isDarkMode = isDarkMode,
+                        onSaveToNote = onSaveHtmlToNote
                     )
                 }
 

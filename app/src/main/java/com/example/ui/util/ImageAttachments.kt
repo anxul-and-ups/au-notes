@@ -7,26 +7,38 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import com.example.ui.util.RichTextFormatter.AttachmentInfo
 import java.io.File
+import java.net.URLDecoder
 
-/** Inline image lines: a note line that is exactly "[img:<id>]" holds the image at that spot. */
+/** Inline image lines: supports both standalone "[img:<id>]" lines and lines containing "[img:<id>]". */
 object ImageMarkers {
     private val lineRegex = Regex("^\\[img:([A-Za-z0-9_-]{3,48})]$")
+    private val anyRegex = Regex("\\[img:([A-Za-z0-9_-]{3,48})]")
 
     fun marker(id: String) = "[img:$id]"
 
-    /** Returns the attachment id when [line] is an image marker line, otherwise null. */
-    fun idOf(line: String): String? = lineRegex.matchEntire(line.trim())?.groupValues?.get(1)
+    /** Returns the attachment id when [line] is an image marker line (or contains one), otherwise null. */
+    fun idOf(line: String): String? {
+        val trimmed = line.trim()
+        lineRegex.matchEntire(trimmed)?.groupValues?.get(1)?.let { return it }
+        return anyRegex.find(trimmed)?.groupValues?.get(1)
+    }
+
+    /** Returns all attachment ids referenced in [line]. */
+    fun idsIn(line: String): List<String> =
+        anyRegex.findAll(line).map { it.groupValues[1] }.toList()
 
     /** Note text without marker lines — used for clipboard copy, previews, plain-text export. */
     fun strip(text: String): String {
         if (!text.contains("[img:")) return text
-        return text.lines().filter { idOf(it) == null }.joinToString("\n")
+        return text.replace(anyRegex, "").lines()
+            .filterIndexed { _, l -> l.isNotBlank() || !text.contains("[img:") }
+            .joinToString("\n")
     }
 
-    /** Replaces marker lines by spaces of the same length, so style-span offsets stay valid. */
+    /** Replaces markers by spaces of the same length, so style-span offsets stay valid. */
     fun blank(text: String): String {
         if (!text.contains("[img:")) return text
-        return text.lines().joinToString("\n") { if (idOf(it) != null) " ".repeat(it.length) else it }
+        return anyRegex.replace(text) { m -> " ".repeat(m.value.length) }
     }
 
     fun newId(): String = java.util.UUID.randomUUID().toString().replace("-", "").take(8)
@@ -41,11 +53,15 @@ object AttachmentRenderer {
 
     private val dimCache = HashMap<String, Pair<Int, Int>>()
 
-    /**
-     * Sensible first size for a newly added picture: wide pictures start almost full width, tall ones
-     * (phone screenshots!) start narrow so they never swallow the whole note and there is always room to
-     * type above, below and next to them. The user can still resize/move them freely.
-     */
+    fun isImageAttachment(att: AttachmentInfo): Boolean {
+        if (att.mimeType.startsWith("image/", ignoreCase = true)) return true
+        val lower = (att.fileName + " " + att.uri).lowercase()
+        return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
+            lower.endsWith(".webp") || lower.endsWith(".bmp") || lower.endsWith(".gif") ||
+            att.uri.startsWith("data:image/", ignoreCase = true) ||
+            att.srcWidth > 0 || att.srcHeight > 0
+    }
+
     fun defaultWidthFraction(context: android.content.Context, srcW: Int, srcH: Int): Float {
         if (srcW <= 0 || srcH <= 0) return 0.7f
         val dm = context.resources.displayMetrics
@@ -57,21 +73,59 @@ object AttachmentRenderer {
         return (targetH / (widthDp * aspect)).coerceIn(0.28f, 0.9f)
     }
 
+    private fun resolveLocalFile(rawPath: String, context: android.content.Context?): File? {
+        val candidates = mutableListOf<String>()
+        val clean = rawPath.removePrefix("file://").trim()
+        candidates.add(clean)
+        try {
+            val decoded = URLDecoder.decode(clean, "UTF-8")
+            if (decoded != clean) candidates.add(decoded)
+        } catch (_: Throwable) {}
+        android.net.Uri.parse(rawPath).path?.let { p ->
+            if (p.isNotBlank()) candidates.add(p)
+        }
+        for (c in candidates) {
+            val f = File(c)
+            if (f.exists() && f.isFile && f.length() > 0L) return f
+        }
+        // Check inside app attachments / filesDir / cacheDir by file name if path was relative or moved
+        if (context != null) {
+            val name = File(clean).name
+            if (name.isNotBlank()) {
+                val searchDirs = listOf(
+                    File(context.filesDir, "attachments"),
+                    File(context.filesDir, "note_attachments"),
+                    File(context.filesDir, "artifact_images"),
+                    context.filesDir,
+                    context.cacheDir
+                )
+                for (dir in searchDirs) {
+                    val f = File(dir, name)
+                    if (f.exists() && f.isFile && f.length() > 0L) return f
+                }
+            }
+        }
+        return null
+    }
+
     private fun openImageBytes(path: String, context: android.content.Context?): ByteArray? = try {
+        val trimmed = path.trim()
         when {
-            path.startsWith("data:image/", ignoreCase = true) -> {
-                val b64 = path.substringAfter("base64,", "")
+            trimmed.startsWith("data:image/", ignoreCase = true) -> {
+                val b64 = trimmed.substringAfter("base64,", "")
                 if (b64.isNotBlank()) android.util.Base64.decode(b64, android.util.Base64.DEFAULT) else null
             }
-            path.startsWith("content://") && context != null -> {
-                context.contentResolver.openInputStream(android.net.Uri.parse(path))?.use { it.readBytes() }
+            trimmed.startsWith("content://", ignoreCase = true) && context != null -> {
+                context.contentResolver.openInputStream(android.net.Uri.parse(trimmed))?.use { it.readBytes() }
             }
-            path.startsWith("file://") -> {
-                val raw = android.net.Uri.parse(path).path ?: path.removePrefix("file://")
-                val f = File(raw)
-                if (f.exists()) f.readBytes() else context?.contentResolver?.openInputStream(android.net.Uri.parse(path))?.use { it.readBytes() }
+            else -> {
+                val localFile = resolveLocalFile(trimmed, context)
+                if (localFile != null) {
+                    localFile.readBytes()
+                } else if (context != null) {
+                    context.contentResolver.openInputStream(android.net.Uri.parse(trimmed))?.use { it.readBytes() }
+                } else null
             }
-            else -> null
         }
     } catch (_: Exception) { null }
 
@@ -85,7 +139,9 @@ object AttachmentRenderer {
             if (bytes != null) {
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, o)
             } else {
-                BitmapFactory.decodeFile(att.uri, o)
+                val f = resolveLocalFile(att.uri, context)
+                if (f != null) BitmapFactory.decodeFile(f.absolutePath, o)
+                else BitmapFactory.decodeFile(att.uri.removePrefix("file://"), o)
             }
         } catch (_: Exception) {}
         val r = (o.outWidth.coerceAtLeast(1)) to (o.outHeight.coerceAtLeast(1))
@@ -129,7 +185,8 @@ object AttachmentRenderer {
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
             }
         } else {
-            val cleanPath = path.removePrefix("file://")
+            val f = resolveLocalFile(path, context)
+            val cleanPath = f?.absolutePath ?: path.removePrefix("file://")
             val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(cleanPath, b)
             if (b.outWidth <= 0) null else {
@@ -166,15 +223,15 @@ object AttachmentRenderer {
         val base = baseBitmap(att, maxOf(outWidth, 800), context) ?: return null
         val outW = outWidth.coerceAtLeast(1)
         val outH = if (att.fullPage) (outW / FULL_PAGE_ASPECT).toInt().coerceAtLeast(1)
-        else (outW * base.height.toFloat() / base.width).toInt().coerceAtLeast(1)
-        // full page: the whole picture is fitted inside the page frame (never stretched, never cut)
-        val fit = if (att.fullPage) minOf(1f, (base.width.toFloat() / base.height) / FULL_PAGE_ASPECT) else 1f
+        else (outW * base.height.toFloat() / base.width.coerceAtLeast(1)).toInt().coerceAtLeast(1)
+        val fit = if (att.fullPage) minOf(1f, (base.width.toFloat() / base.height.coerceAtLeast(1)) / FULL_PAGE_ASPECT) else 1f
         val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         val c = Canvas(out)
         c.drawColor(background)
+        val zoom = if (att.zoom > 0.05f) att.zoom else 1f
         val m = Matrix().apply {
             postTranslate(-base.width / 2f, -base.height / 2f)
-            val s = (outW.toFloat() / base.width) * att.zoom * fit
+            val s = (outW.toFloat() / base.width.coerceAtLeast(1)) * zoom * fit
             postScale(s, s)
             postTranslate(outW / 2f + att.posX * outW, outH / 2f + att.posY * outH)
         }

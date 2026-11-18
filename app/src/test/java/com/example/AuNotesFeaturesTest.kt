@@ -357,4 +357,14 @@ class AuNotesFeaturesTest {
         composeTestRule.onNodeWithTag("artifacts_filter_HTML").performClick()
         composeTestRule.waitForIdle()
     }
+
+    @Test
+    fun `DocumentOcrHelper detects direct OCR prompts and strips conversational prefixes`() {
+        assertTrue(com.example.ui.util.DocumentOcrHelper.isDirectOcrPrompt("is image ka text nikal ke de"))
+        assertTrue(com.example.ui.util.DocumentOcrHelper.isDirectOcrPrompt("ocr"))
+        assertFalse(com.example.ui.util.DocumentOcrHelper.isDirectOcrPrompt("is pdf se 10 slides banao"))
+
+        val cleaned = com.example.ui.util.DocumentOcrHelper.stripConversationalPrefix("Ok sir, here is the extracted text:\nHello World 123")
+        assertEquals("Hello World 123", cleaned)
+    }
 }
