@@ -60,11 +60,26 @@ jobs:
           if [ ! -f ".env" ] || grep -q "^GEMINI_API_KEY=\s*$" .env; then
             cp .env.example .env
           fi
+          GRADLE_CMD="gradle"
           if [ -f "./gradlew" ]; then
-            ./gradlew assembleRelease --no-configuration-cache --stacktrace
-          else
-            gradle assembleRelease --no-configuration-cache --stacktrace
+            chmod +x ./gradlew
+            GRADLE_CMD="./gradlew"
           fi
+          GRADLE_NET_ARGS="-Dorg.gradle.internal.http.connectionTimeout=120000 -Dorg.gradle.internal.http.socketTimeout=120000 -Dorg.gradle.internal.repository.max.tentatives=5 -Dorg.gradle.internal.repository.initial.backoff=2000"
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if $GRADLE_CMD assembleRelease --no-configuration-cache --stacktrace $GRADLE_NET_ARGS; then
+              echo "Build succeeded on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Build failed after 3 attempts"
+              exit 1
+            fi
+            echo "Transient dependency download error detected; retrying in 10s with --refresh-dependencies..."
+            sleep 10
+            GRADLE_NET_ARGS="$GRADLE_NET_ARGS --refresh-dependencies"
+          done
 
       - name: Find and Prepare APK
         id: find_apk
