@@ -179,6 +179,64 @@ fun pageLineColor(style: String, isDarkMode: Boolean): Color {
 }
 
 /**
+ * Computes rule Y-coordinates snapped directly to the rendered [androidx.compose.ui.text.TextLayoutResult]
+ * lines so increasing font size dynamically expands line spacing, Latin text sits flush ON the
+ * bottom line, and Hindi/Devanagari text hangs from the TOP line (shirorekha aligned).
+ */
+fun computeDynamicPageRuleYs(
+    layout: androidx.compose.ui.text.TextLayoutResult?,
+    fullText: String,
+    originY: Float,
+    fallbackStepPx: Float,
+    baselinePadPx: Float,
+    maxBottomPx: Float
+): List<Float> {
+    val ys = mutableListOf<Float>()
+    val step = fallbackStepPx.coerceAtLeast(18f)
+    if (layout != null && layout.lineCount > 0) {
+        var lastStep = step
+        for (i in 0 until layout.lineCount) {
+            val start = layout.getLineStart(i).coerceIn(0, fullText.length)
+            val end = layout.getLineEnd(i, visibleEnd = true).coerceIn(start, fullText.length)
+            val lineStr = if (start < end) fullText.substring(start, end) else ""
+            val lTop = layout.getLineTop(i)
+            val lBase = layout.getLineBaseline(i)
+            val lBot = layout.getLineBottom(i)
+            val ruleY = originY + com.example.ui.util.NoteArtifactCodec.computeRuleYForLine(
+                lineText = lineStr,
+                lineTop = lTop,
+                lineBaseline = lBase,
+                lineBottom = lBot,
+                baselineOffsetPx = baselinePadPx
+            )
+            ys.add(ruleY)
+            // For Hindi lines, also draw the bottom boundary line if the next line is blank/EOF
+            if (com.example.ui.util.NoteArtifactCodec.isDevanagariLine(lineStr)) {
+                val nextRuleY = originY + lBot + baselinePadPx * 0.5f
+                if (i == layout.lineCount - 1) {
+                    ys.add(nextRuleY)
+                }
+            }
+            val lineH = (lBot - lTop).coerceAtLeast(step * 0.8f)
+            lastStep = lineH
+        }
+        val effectiveStep = lastStep.coerceAtLeast(step)
+        var y = (ys.lastOrNull() ?: (originY + effectiveStep)) + effectiveStep
+        while (y < maxBottomPx) {
+            ys.add(y)
+            y += effectiveStep
+        }
+    } else {
+        var y = originY + step
+        while (y < maxBottomPx) {
+            ys.add(y)
+            y += step
+        }
+    }
+    return ys
+}
+
+/**
  * Primary rule-drawing helper used by both `NoteEditorScreen` and `ReadNoteScreen`.
  */
 fun DrawScope.drawPageRules(
@@ -198,10 +256,26 @@ fun DrawScope.drawPageRules(
     val maxBottom = maxOf(bottom, size.height, 520.dp.toPx())
 
     when (norm) {
-        "ruled", "legal", "a4" -> {
-            for (y in ys) {
-                if (y <= maxBottom) {
-                    drawLine(color, Offset(left, y), Offset(right, y), strokeWidth = stroke)
+        "ruled", "legal", "a4", "word_white" -> {
+            if (norm == "word_white" || norm == "a4") {
+                val frameColor = Color(0xFF94A3B8).copy(alpha = 0.32f)
+                drawRect(
+                    color = frameColor,
+                    topLeft = Offset(left + 6.dp.toPx(), top + 6.dp.toPx()),
+                    size = androidx.compose.ui.geometry.Size(
+                        (right - left - 12.dp.toPx()).coerceAtLeast(0f),
+                        (maxBottom - top - 12.dp.toPx()).coerceAtLeast(0f)
+                    ),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = stroke,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f), 0f)
+                    )
+                )
+            } else {
+                for (y in ys) {
+                    if (y <= maxBottom) {
+                        drawLine(color, Offset(left, y), Offset(right, y), strokeWidth = stroke)
+                    }
                 }
             }
         }

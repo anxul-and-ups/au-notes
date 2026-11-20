@@ -49,7 +49,7 @@ fun CrashReportScreen(crashText: String, onContinue: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Copy dabao aur ye poora text Claude ko bhej do.",
+            text = "Copy dabao aur ye crash report developer / support ko bhej do.",
             color = Color.White.copy(alpha = 0.8f),
             fontSize = 13.sp
         )

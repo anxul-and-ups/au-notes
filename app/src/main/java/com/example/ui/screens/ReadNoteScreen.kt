@@ -82,6 +82,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
+import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -124,6 +128,8 @@ import com.example.ui.components.loadNotePageStyle
 import com.example.ui.components.pageLineColor
 import com.example.ui.components.pagePaperColor
 import com.example.ui.components.pageStyleDisplayName
+import com.example.ui.util.CustomFontManager
+import com.example.ui.util.NoteArtifactCodec
 import com.example.ui.util.handleHardwareShortcuts
 
 @Composable
@@ -136,10 +142,22 @@ fun ReadNoteScreen(
     onDeleteNote: (Long) -> Unit,
     onToggleLock: (Long, Boolean) -> Unit,
     onOpenInSplitScreen: ((NoteEntity) -> Unit)? = null,
-    onOpenInSmallWindow: ((NoteEntity) -> Unit)? = null
+    onOpenInSmallWindow: ((NoteEntity) -> Unit)? = null,
+    onUpdateNoteContent: ((NoteEntity) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+
+    var liveNote by remember(note.id) { mutableStateOf(note) }
+    androidx.compose.runtime.LaunchedEffect(note) {
+        liveNote = note
+    }
+
+    val selectedFontId by preferences.selectedNoteFontId.collectAsState()
+    val importedFonts by preferences.importedFonts.collectAsState()
+    val activeNoteFontFamily = remember(selectedFontId, importedFonts) {
+        CustomFontManager.resolveFontFamily(selectedFontId, importedFonts)
+    }
 
     androidx.activity.compose.BackHandler {
         onBack()
@@ -877,6 +895,12 @@ fun ReadNoteScreen(
                             }
                         }
 
+                        // Dynamic notebook rule coordinates reported by real text lines inside ReadRichBody
+                        val measuredRuleYsByBlock = remember(liveNote.id, liveNote.content, liveNote.fontSize, savedLineSpacing, selectedFontId) {
+                            androidx.compose.runtime.mutableStateMapOf<Int, List<Float>>()
+                        }
+                        var paperContainerTopInRoot by remember { mutableStateOf(0f) }
+
                         // Scroll the note body independently with Page Style paper background, margin, and rules.
                         Column(
                             modifier = Modifier
@@ -892,21 +916,33 @@ fun ReadNoteScreen(
                                     } else Modifier
                                 )
                                 .verticalScroll(bodyScrollState)
+                                .onGloballyPositioned { coords ->
+                                    paperContainerTopInRoot = coords.positionInRoot().y
+                                }
                                 .drawBehind {
                                     if (viewAsFormat == "normal") {
                                         if (hasMargin) {
                                             val x = 28.dp.toPx()
-                                            drawLine(marginLineColor, androidx.compose.ui.geometry.Offset(x, 0f), androidx.compose.ui.geometry.Offset(x, size.height), 1.2.dp.toPx())
+                                            drawLine(marginLineColor, androidx.compose.ui.geometry.Offset(x, 0f), androidx.compose.ui.geometry.Offset(x, maxOf(size.height, 640.dp.toPx())), 1.2.dp.toPx())
                                             if (savedPageStyle == "legal") {
-                                                drawLine(marginLineColor, androidx.compose.ui.geometry.Offset(x + 3.dp.toPx(), 0f), androidx.compose.ui.geometry.Offset(x + 3.dp.toPx(), size.height), 1.2.dp.toPx())
+                                                drawLine(marginLineColor, androidx.compose.ui.geometry.Offset(x + 3.dp.toPx(), 0f), androidx.compose.ui.geometry.Offset(x + 3.dp.toPx(), maxOf(size.height, 640.dp.toPx())), 1.2.dp.toPx())
                                             }
                                         }
-                                        if (savedPageStyle in setOf("ruled", "legal", "grid", "dotted", "cornell", "a4")) {
-                                            val stepPx = ((note.fontSize * savedLineSpacing).sp.toPx()).coerceAtLeast(22.dp.toPx())
+                                        if (savedPageStyle != "standard") {
+                                            val stepPx = ((liveNote.fontSize * savedLineSpacing).sp.toPx()).coerceAtLeast(22.dp.toPx())
+                                            val realYs = measuredRuleYsByBlock.values.flatten().sorted()
                                             val ys = ArrayList<Float>()
-                                            var yy = stepPx
+                                            realYs.forEach { ry ->
+                                                if (ys.isEmpty() || kotlin.math.abs(ry - ys.last()) > 6f) {
+                                                    ys.add(ry)
+                                                }
+                                            }
                                             val limit = maxOf(size.height, 640.dp.toPx())
-                                            while (yy < limit) { ys.add(yy); yy += stepPx }
+                                            var yy = if (ys.isNotEmpty()) ys.last() + stepPx else (10.dp.toPx() + stepPx)
+                                            while (yy < limit) {
+                                                ys.add(yy)
+                                                yy += stepPx
+                                            }
                                             drawPageRules(
                                                 savedPageStyle,
                                                 ys,
@@ -925,7 +961,7 @@ fun ReadNoteScreen(
                                     start = if (viewAsFormat == "normal" && hasMargin) 38.dp else if (viewAsFormat == "normal" && savedPageStyle != "standard") 14.dp else 4.dp,
                                     end = if (viewAsFormat == "normal" && savedPageStyle != "standard") 14.dp else 4.dp,
                                     top = 10.dp,
-                                    bottom = 14.dp
+                                    bottom = 24.dp
                                 )
                         ) {
                         if (viewAsFormat == "md") {
@@ -1001,20 +1037,25 @@ fun ReadNoteScreen(
                                 }
                             }
                         } else {
-                        // Render Attached Images and Files in Read Mode (PART F Item 6 Fix)
-                        if (attachments.isNotEmpty()) {
+                        // Only show non-inline attachments in the top header (inline [img:id] photos render in exact Write Mode positions below)
+                        val inlineImgIds = remember(liveNote.content) {
+                            Regex("(?m)^\\[img:([A-Za-z0-9]{4,32})]$").findAll(liveNote.content).map { it.groupValues[1] }.toSet()
+                        }
+                        val headerAttachments = remember(attachments, inlineImgIds) {
+                            attachments.filterNot { it.id in inlineImgIds }
+                        }
+                        if (headerAttachments.isNotEmpty()) {
                             Text(
-                                text = "Attached Media & Files (${attachments.size}):",
+                                text = "Attached Media & Files (${headerAttachments.size}):",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = CrimsonPrimary
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                attachments.forEach { attachment ->
+                                headerAttachments.forEach { attachment ->
                                     val isImage = attachment.mimeType.startsWith("image")
                                     if (isImage) {
-                                        // Real Image Rendering in Read Mode
                                         GlassCard(
                                             modifier = Modifier.fillMaxWidth(),
                                             shape = RoundedCornerShape(12.dp),
@@ -1025,10 +1066,6 @@ fun ReadNoteScreen(
                                                 com.example.ui.components.AttachmentFrame(
                                                     att = attachment,
                                                     modifier = Modifier
-                                                        .offset(
-                                                            x = attachment.posX.coerceAtLeast(0f).dp,
-                                                            y = attachment.posY.dp
-                                                        )
                                                         .fillMaxWidth(attachment.widthFraction.coerceIn(0.22f, 1f)),
                                                     cornerRadius = 8
                                                 )
@@ -1065,16 +1102,16 @@ fun ReadNoteScreen(
                         }
 
                         // Content Area with DAY MODE CONTRAST FIX
-                        val displayContent = if (note.category == "API" && preferences.blurApis.value && !revealApi) {
-                            AutoClassifier.maskApiKey(note.content)
+                        val displayContent = if (liveNote.category == "API" && preferences.blurApis.value && !revealApi) {
+                            AutoClassifier.maskApiKey(liveNote.content)
                         } else {
-                            note.content
+                            liveNote.content
                         }
 
                         // Content Area with PAGE PAPER + DAY MODE CONTRAST FIX
                         val baseDefaultColor = if (lightPaper) Color(0xFF111111) else if (isDarkMode) Color.White.copy(0.92f) else Color(0xFF111111)
                         val currentFontColor = run {
-                            val parsed = try { Color(android.graphics.Color.parseColor(note.fontColorHex)) } catch (e: Exception) { null }
+                            val parsed = try { Color(android.graphics.Color.parseColor(liveNote.fontColorHex)) } catch (e: Exception) { null }
                             when {
                                 parsed == null -> baseDefaultColor
                                 lightPaper && parsed.luminance() > 0.85f -> Color(0xFF111111)
@@ -1084,37 +1121,74 @@ fun ReadNoteScreen(
                             }
                         }
 
-                        // Point 11: Notes saved from the Full-Screen HTML/Slides Artifact Viewer (or standalone HTML documents)
-                        // open directly as a full-screen interactive WebView in Read Mode!
-                        val webViewHtmlPayload = remember(displayContent) {
-                            val trimmed = displayContent.trim()
-                            when {
-                                trimmed.startsWith("<!--au_webview_note-->", ignoreCase = true) ->
-                                    trimmed.removePrefix("<!--au_webview_note-->").trim()
-                                trimmed.startsWith("<!DOCTYPE html", ignoreCase = true) ||
-                                    trimmed.startsWith("<html", ignoreCase = true) ||
-                                    trimmed.startsWith("AUFILE:", ignoreCase = true) -> trimmed
-                                else -> null
-                            }
+                        // Seamless Artifact + User Notes Rendering (Full-width auto-height WebView + trailing user text below)
+                        val splitNote = remember(displayContent, liveNote.title) {
+                            NoteArtifactCodec.splitNoteContent(displayContent, liveNote.title)
                         }
+                        val hasTopArtifacts = splitNote.artifacts.isNotEmpty() &&
+                            (displayContent.trimStart().startsWith(NoteArtifactCodec.WEBVIEW_MARKER, ignoreCase = true) ||
+                                displayContent.trimStart().startsWith("<!DOCTYPE html", ignoreCase = true) ||
+                                displayContent.trimStart().startsWith("<html", ignoreCase = true) ||
+                                displayContent.trimStart().startsWith("AUFILE:", ignoreCase = true))
 
-                        if (webViewHtmlPayload != null) {
-                            com.example.ui.components.DirectNoteWebView(
-                                title = note.title.ifBlank { "Interactive Artifact" },
-                                htmlCode = webViewHtmlPayload,
-                                isDarkMode = isDarkMode
-                            )
-                        } else if ((note.category == "Code" || note.isCodeFormat) &&
-                            !com.example.data.model.AutoClassifier.hasRichStructure(note.content, note.tableData, note.styleSpansJson, note.attachmentsJson)) {
-                            // Point 9: Use virtualized CodeBoxCard for large code (>6KB) so 50KB+ code notes never lag or crash!
+                        if (hasTopArtifacts) {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                splitNote.artifacts.forEach { art ->
+                                    val renderHtml = remember(art.code, art.kind) {
+                                        if (art.kind == NoteArtifactCodec.ArtifactKind.SLIDES) {
+                                            com.example.ui.components.AgentVisualsParser.parseSlideDeck(art.code)
+                                                ?.let { com.example.ui.components.AgentVisualsParser.buildSlidingHtmlArtifact(it) }
+                                                ?: art.code
+                                        } else art.code
+                                    }
+                                    com.example.ui.components.DirectNoteWebView(
+                                        title = art.title.ifBlank { liveNote.title.ifBlank { "Interactive Artifact" } },
+                                        htmlCode = renderHtml,
+                                        isDarkMode = isDarkMode
+                                    )
+                                }
+                                if (splitNote.editableText.isNotBlank()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    val tailText = splitNote.editableText
+                                    androidx.compose.foundation.text.selection.SelectionContainer {
+                                        ReadRichBody(
+                                            content = tailText,
+                                            styled = AnnotatedString(tailText),
+                                            attachments = allAttachments,
+                                            fontSize = liveNote.fontSize,
+                                            lineSpacing = savedLineSpacing,
+                                            fontFamily = activeNoteFontFamily,
+                                            color = currentFontColor,
+                                            isDarkMode = isDarkMode && !lightPaper,
+                                            paperTopInRoot = paperContainerTopInRoot,
+                                            onReportRuleYs = { blockId, ys -> measuredRuleYsByBlock[blockId] = ys },
+                                            onToggleCheckboxAtLine = { lineIdx ->
+                                                val updatedTail = NoteArtifactCodec.cycleCheckboxAtLine(tailText, lineIdx)
+                                                if (updatedTail != tailText) {
+                                                    val combined = NoteArtifactCodec.combineNoteContent(splitNote.artifacts, updatedTail)
+                                                    val updatedNote = liveNote.copy(content = combined, updatedAt = System.currentTimeMillis())
+                                                    liveNote = updatedNote
+                                                    onUpdateNoteContent?.invoke(updatedNote)
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        } else if ((liveNote.category == "Code" || liveNote.isCodeFormat) &&
+                            !com.example.data.model.AutoClassifier.hasRichStructure(liveNote.content, liveNote.tableData, liveNote.styleSpansJson, liveNote.attachmentsJson)) {
+                            // Virtualized CodeBoxCard for large code (>6KB) so 50KB+ code notes never lag or crash
                             if (displayContent.length > 6_000) {
                                 com.example.ui.components.CodeBoxCard(
-                                    title = note.title.ifBlank { "Code" },
+                                    title = liveNote.title.ifBlank { "Code" },
                                     code = displayContent,
                                     lang = "",
                                     isDarkMode = isDarkMode && !lightPaper,
                                     modifier = Modifier.fillMaxWidth(),
-                                    fontSize = note.fontSize.coerceIn(11, 18)
+                                    fontSize = liveNote.fontSize.coerceIn(11, 18)
                                 )
                             } else {
                                 val coloredCode by produceState<AnnotatedString?>(
@@ -1148,7 +1222,7 @@ fun ReadNoteScreen(
                         } else {
                             // Heavy styling of big notes runs on a background thread with loading badge for huge content
                             val styledState = produceState<AnnotatedString?>(
-                                initialValue = null, displayContent, spans, currentFontColor, note.fontSize
+                                initialValue = null, displayContent, spans, currentFontColor, liveNote.fontSize
                             ) {
                                 value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                                     if (spans.isNotEmpty() && displayContent.length <= 35_000) {
@@ -1156,7 +1230,7 @@ fun ReadNoteScreen(
                                             text = displayContent,
                                             spans = spans,
                                             defaultColor = currentFontColor,
-                                            fontSize = note.fontSize.toFloat()
+                                            fontSize = liveNote.fontSize.toFloat()
                                         )
                                     } else {
                                         AnnotatedString(displayContent)
@@ -1204,9 +1278,21 @@ fun ReadNoteScreen(
                                     content = displayContent,
                                     styled = linkedText,
                                     attachments = allAttachments,
-                                    fontSize = note.fontSize,
+                                    fontSize = liveNote.fontSize,
+                                    lineSpacing = savedLineSpacing,
+                                    fontFamily = activeNoteFontFamily,
                                     color = currentFontColor,
-                                    isDarkMode = isDarkMode && !lightPaper
+                                    isDarkMode = isDarkMode && !lightPaper,
+                                    paperTopInRoot = paperContainerTopInRoot,
+                                    onReportRuleYs = { blockId, ys -> measuredRuleYsByBlock[blockId] = ys },
+                                    onToggleCheckboxAtLine = { lineIdx ->
+                                        val updated = NoteArtifactCodec.cycleCheckboxAtLine(liveNote.content, lineIdx)
+                                        if (updated != liveNote.content) {
+                                            val updatedNote = liveNote.copy(content = updated, updatedAt = System.currentTimeMillis())
+                                            liveNote = updatedNote
+                                            onUpdateNoteContent?.invoke(updatedNote)
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -1754,8 +1840,11 @@ fun RenderTable(tableData: String, isDarkMode: Boolean) {
 
 /**
  * Advanced Read-mode body for notes:
- * Renders Markdown (#, ##, ###, bullets with crimson dots, dividers, tables, blockquotes,
- * bold/italic inline formatting, code boxes with Copy, checkboxes, and inline images).
+ * Renders Markdown (#, ##, ###, bullets, dividers, tables, blockquotes, bold/italic),
+ * seamless full-width auto-height HTML/Slides WebViews, interactive tri-state checkboxes
+ * ([ ] -> [x] Green Tick -> [!] Red Cross -> [ ]), dynamic Hindi/Latin ruled-line reporting,
+ * and pixel-accurate positioned image overlays matching Write Mode (side text stays beside images
+ * and scroll height automatically extends past the bottom-most image).
  */
 @Composable
 private fun ReadRichBody(
@@ -1763,399 +1852,537 @@ private fun ReadRichBody(
     styled: AnnotatedString,
     attachments: List<RichTextFormatter.AttachmentInfo>,
     fontSize: Int,
+    lineSpacing: Float = 1.35f,
+    fontFamily: FontFamily = FontFamily.Default,
     color: Color,
-    isDarkMode: Boolean
+    isDarkMode: Boolean,
+    paperTopInRoot: Float = 0f,
+    onReportRuleYs: (blockId: Int, ys: List<Float>) -> Unit = { _, _ -> },
+    onToggleCheckboxAtLine: ((lineIndex: Int) -> Unit)? = null
 ) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
     val checkRegex = remember { Regex("^([ \\t]*)(\\[ ]|\\[x]|\\[!]) (.*)$") }
+    val mdCheckRegex = remember { Regex("^([ \\t]*[-*]\\s+)(\\[ ]|\\[x]|\\[X]|\\[!])\\s*(.*)$") }
     val lines = content.split("\n")
     val starts = IntArray(lines.size)
     var acc = 0
-    lines.forEachIndexed { i, l -> starts[i] = acc; acc += l.length + 1 }
+    lines.forEachIndexed { idx, l -> starts[idx] = acc; acc += l.length + 1 }
 
     val fences = remember(content) { com.example.ui.components.CodeFences.find(content) }
     val borderColor = if (isDarkMode) Color(0xFF333B48) else Color(0xFFCBD5E1)
     val subColor = if (isDarkMode) Color.LightGray.copy(alpha = 0.8f) else Color.DarkGray.copy(alpha = 0.8f)
-    var i = 0
+    val effectiveLineHeight = (fontSize * lineSpacing).sp
 
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        while (i < lines.size) {
-            val rawLine = lines[i]
-            val trimmedLine = rawLine.trim()
-            val imgId = com.example.ui.util.ImageMarkers.idOf(rawLine)
-            val check = checkRegex.matchEntire(rawLine)
-            val fence = fences.firstOrNull { it.start == starts[i] }
+    // Track body container bounds + overlay positioned image anchors & heights so side text matches Write Mode
+    // AND outer verticalScroll always scrolls all the way past the bottom-most positioned image.
+    var bodyWidthPx by remember { mutableStateOf(0f) }
+    var bodyTopInRoot by remember { mutableStateOf(0f) }
+    val imageAnchorY = remember(content, attachments) { androidx.compose.runtime.mutableStateMapOf<String, Float>() }
+    val imageMeasuredHeightPx = remember(content, attachments) { androidx.compose.runtime.mutableStateMapOf<String, Float>() }
 
-            when {
-                // Fenced block (live Editorial Charts, Swipeable Slides, Diagrams, HTML, or Code Box)
-                fence != null -> {
-                    Spacer(Modifier.height(6.dp))
-                    val langLower = fence.lang.trim().lowercase()
-                    val slideDeck = remember(fence.code, langLower) {
-                        if (langLower in setOf("slides", "typography_slides", "slide_deck")) {
-                            com.example.ui.components.AgentVisualsParser.parseSlideDeck(fence.code)
-                        } else null
-                    }
-                    val chartSpec = remember(fence.code, langLower) {
-                        if (langLower in setOf("chart", "graph", "json:apex", "apex", "apexcharts") || langLower.startsWith("json:apex")) {
-                            com.example.ui.components.AgentVisualsParser.parseChart(fence.code)
-                        } else null
-                    }
-                    val diagramSpec = remember(fence.code, langLower) {
-                        if (langLower in setOf("diagram", "svg", "mermaid", "flowchart", "mindmap", "sequence")) {
-                            com.example.ui.components.AgentVisualsParser.parseDiagram(fence.code)
-                        } else null
-                    }
-                    val organisedSpec = remember(fence.code, langLower) {
-                        if (langLower in setOf("organised_file", "file")) {
-                            com.example.ui.components.AgentVisualsParser.parseOrganisedFile(fence.code)
-                        } else null
-                    }
+    // Identify positioned/resized inline images (posX > 4dp, posY != 0, or widthFraction < 0.90)
+    // vs full-width standard flow images.
+    val positionedOverlayImages = remember(content, attachments) {
+        val list = mutableListOf<RichTextFormatter.AttachmentInfo>()
+        lines.forEach { raw ->
+            val id = com.example.ui.util.ImageMarkers.idOf(raw) ?: return@forEach
+            val att = attachments.firstOrNull { it.id == id } ?: return@forEach
+            if (att.posX > 4f || att.posY != 0f || att.widthFraction < 0.90f) {
+                list.add(att)
+            }
+        }
+        list
+    }
+    val positionedIds = remember(positionedOverlayImages) { positionedOverlayImages.map { it.id }.toSet() }
 
-                    when {
-                        slideDeck != null -> {
-                            com.example.ui.components.SlidesMakerCard(
-                                initialDeck = slideDeck,
-                                isDarkMode = isDarkMode
-                            )
-                        }
-                        chartSpec != null -> {
-                            com.example.ui.components.AgentChartCard(
-                                spec = chartSpec,
-                                isDarkMode = isDarkMode
-                            )
-                        }
-                        diagramSpec != null -> {
-                            com.example.ui.components.AgentDiagramCard(
-                                spec = diagramSpec,
-                                isDarkMode = isDarkMode
-                            )
-                        }
-                        organisedSpec != null -> {
-                            com.example.ui.components.OrganisedFileCard(
-                                spec = organisedSpec,
-                                isDarkMode = isDarkMode
-                            )
-                        }
-                        langLower == "html" && (fence.code.contains("<div", true) || fence.code.contains("<html", true) || fence.code.contains("<style", true) || fence.code.contains("<svg", true)) -> {
-                            com.example.ui.components.HtmlArtifactCard(
-                                title = fence.title.ifBlank { "Interactive HTML" },
-                                htmlCode = fence.code,
-                                isDarkMode = isDarkMode
-                            )
-                        }
-                        else -> {
-                            val codeStart = fence.codeStart
-                            val codeEnd = (fence.codeStart + fence.code.length).coerceAtMost(styled.length)
-                            val codeStyled = if (codeStart in 0..codeEnd && codeStart < codeEnd) styled.subSequence(codeStart, codeEnd) else null
-                            com.example.ui.components.CodeBoxCard(
-                                title = fence.title.ifBlank { "Title" },
-                                code = fence.code,
-                                lang = fence.lang,
-                                isDarkMode = isDarkMode,
-                                modifier = Modifier.fillMaxWidth(),
-                                fontSize = (fontSize - 2).coerceAtLeast(11),
-                                styledCode = codeStyled
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    var k = i
-                    while (k < lines.size && starts[k] < fence.end) k++
-                    i = if (k > i) k else i + 1
-                }
+    val maxOverlayBottomPx = remember(
+        positionedOverlayImages,
+        imageAnchorY.toMap(),
+        imageMeasuredHeightPx.toMap(),
+        density
+    ) {
+        var maxBottom = 0f
+        positionedOverlayImages.forEach { att ->
+            val anchorY = imageAnchorY[att.id] ?: 0f
+            val offsetYPx = with(density) { att.posY.dp.toPx() }
+            val hPx = imageMeasuredHeightPx[att.id] ?: with(density) { 220.dp.toPx() }
+            val bottom = (anchorY + offsetYPx + hPx).coerceAtLeast(0f)
+            if (bottom > maxBottom) maxBottom = bottom
+        }
+        maxBottom
+    }
 
-                // Inline image
-                imgId != null -> {
-                    val att = attachments.firstOrNull { it.id == imgId }
-                    if (att != null) {
-                        Spacer(Modifier.height(8.dp))
-                        com.example.ui.components.AttachmentFrame(
-                            att = att,
-                            modifier = Modifier
-                                .offset(
-                                    x = att.posX.coerceAtLeast(0f).dp,
-                                    y = att.posY.dp
+    val minBoxHeightDp = with(density) {
+        if (maxOverlayBottomPx > 0f) (maxOverlayBottomPx + 40.dp.toPx()).toDp() else 0.dp
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (minBoxHeightDp > 0.dp) Modifier.heightIn(min = minBoxHeightDp) else Modifier)
+            .onSizeChanged { bodyWidthPx = it.width.toFloat() }
+            .onGloballyPositioned { coords ->
+                bodyTopInRoot = coords.positionInRoot().y
+            }
+    ) {
+        var i = 0
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            while (i < lines.size) {
+                val rawLine = lines[i]
+                val trimmedLine = rawLine.trim()
+                val imgId = com.example.ui.util.ImageMarkers.idOf(rawLine)
+                val check = checkRegex.matchEntire(rawLine)
+                val mdCheck = if (check == null) mdCheckRegex.matchEntire(rawLine) else null
+                val fence = fences.firstOrNull { it.start == starts[i] }
+
+                when {
+                    // Fenced block (Seamless auto-height WebView for HTML/Slides, or Charts/Diagrams/CodeBox)
+                    fence != null -> {
+                        Spacer(Modifier.height(6.dp))
+                        val langLower = fence.lang.trim().lowercase()
+                        val slideDeck = remember(fence.code, langLower) {
+                            if (langLower in setOf("slides", "typography_slides", "slide_deck")) {
+                                com.example.ui.components.AgentVisualsParser.parseSlideDeck(fence.code)
+                            } else null
+                        }
+                        val chartSpec = remember(fence.code, langLower) {
+                            if (langLower in setOf("chart", "graph", "json:apex", "apex", "apexcharts") || langLower.startsWith("json:apex")) {
+                                com.example.ui.components.AgentVisualsParser.parseChart(fence.code)
+                            } else null
+                        }
+                        val diagramSpec = remember(fence.code, langLower) {
+                            if (langLower in setOf("diagram", "svg", "mermaid", "flowchart", "mindmap", "sequence")) {
+                                com.example.ui.components.AgentVisualsParser.parseDiagram(fence.code)
+                            } else null
+                        }
+                        val organisedSpec = remember(fence.code, langLower) {
+                            if (langLower in setOf("organised_file", "file")) {
+                                com.example.ui.components.AgentVisualsParser.parseOrganisedFile(fence.code)
+                            } else null
+                        }
+
+                        when {
+                            slideDeck != null -> {
+                                val slidingHtml = remember(slideDeck) {
+                                    com.example.ui.components.AgentVisualsParser.buildSlidingHtmlArtifact(slideDeck)
+                                }
+                                com.example.ui.components.DirectNoteWebView(
+                                    title = slideDeck.deckTitle.ifBlank { "Presentation Slides" },
+                                    htmlCode = slidingHtml,
+                                    isDarkMode = isDarkMode
                                 )
-                                .fillMaxWidth(att.widthFraction.coerceIn(0.22f, 1f))
-                        )
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    i++
-                }
-
-                // Heading 1: # Title
-                rawLine.startsWith("# ") -> {
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        text = parseInlineMarkdown(rawLine.removePrefix("# "), color),
-                        fontSize = (fontSize + 7).sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = color,
-                        lineHeight = (fontSize + 13).sp
-                    )
-                    HorizontalDivider(thickness = 2.dp, color = CrimsonPrimary, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
-                    i++
-                }
-
-                // Heading 2: ## Title (with full-width subtle underline divider as seen in My Documents)
-                rawLine.startsWith("## ") -> {
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        text = parseInlineMarkdown(rawLine.removePrefix("## "), color),
-                        fontSize = (fontSize + 4).sp,
-                        fontWeight = FontWeight.Bold,
-                        color = color,
-                        lineHeight = (fontSize + 9).sp
-                    )
-                    HorizontalDivider(thickness = 1.dp, color = borderColor, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
-                    i++
-                }
-
-                // Heading 3: ### Title
-                rawLine.startsWith("### ") -> {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = parseInlineMarkdown(rawLine.removePrefix("### "), color),
-                        fontSize = (fontSize + 2).sp,
-                        fontWeight = FontWeight.Bold,
-                        color = color,
-                        lineHeight = (fontSize + 6).sp
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    i++
-                }
-
-                // Heading 4+: #### Title
-                rawLine.startsWith("#### ") -> {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = parseInlineMarkdown(rawLine.removePrefix("#### "), color),
-                        fontSize = fontSize.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = color
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    i++
-                }
-
-                // Multi-page break marker: ---page--- or [page_break]
-                trimmedLine.equals("---page---", ignoreCase = true) || trimmedLine.equals("[page_break]", ignoreCase = true) -> {
-                    val pageNum = remember(i, lines) {
-                        lines.subList(0, i + 1).count {
-                            val t = it.trim()
-                            t.equals("---page---", ignoreCase = true) || t.equals("[page_break]", ignoreCase = true)
-                        } + 1
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        HorizontalDivider(modifier = Modifier.weight(1f), thickness = 1.dp, color = CrimsonPrimary.copy(alpha = 0.45f))
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .background(CrimsonPrimary.copy(alpha = 0.14f))
-                                .border(1.dp, CrimsonPrimary.copy(alpha = 0.4f), RoundedCornerShape(50))
-                                .padding(horizontal = 12.dp, vertical = 3.dp)
-                        ) {
-                            Text(
-                                text = "PAGE $pageNum",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = CrimsonPrimary,
-                                letterSpacing = 1.2.sp
-                            )
-                        }
-                        HorizontalDivider(modifier = Modifier.weight(1f), thickness = 1.dp, color = CrimsonPrimary.copy(alpha = 0.45f))
-                    }
-                    i++
-                }
-
-                // Horizontal Rule: --- or ***
-                trimmedLine == "---" || trimmedLine == "***" -> {
-                    HorizontalDivider(
-                        thickness = 1.dp,
-                        color = borderColor,
-                        modifier = Modifier.padding(vertical = 10.dp)
-                    )
-                    i++
-                }
-
-                // Blockquote: > text
-                rawLine.startsWith("> ") -> {
-                    val quoteText = rawLine.removePrefix("> ")
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
-                            .padding(start = 10.dp, end = 8.dp, top = 6.dp, bottom = 6.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .width(3.dp)
-                                .height(18.dp)
-                                .background(CrimsonPrimary, RoundedCornerShape(2.dp))
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = parseInlineMarkdown(quoteText, subColor),
-                            fontStyle = FontStyle.Italic,
-                            fontSize = fontSize.sp,
-                            color = subColor,
-                            lineHeight = (fontSize + 6).sp
-                        )
-                    }
-                    i++
-                }
-
-                // Task item with checkbox: [ ] / [x] / [!]
-                check != null -> {
-                    val state = check.groupValues[2]
-                    val bodyStart = starts[i] + check.groupValues[1].length + 4
-                    val bodyEnd = starts[i] + rawLine.length
-                    val tint = when (state) {
-                        "[x]" -> Color(0xFF35B65B)
-                        "[!]" -> Color(0xFFE05252)
-                        else -> if (isDarkMode) Color.White.copy(.75f) else Color(0xFF555555)
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .size(18.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(if (state == "[ ]") Color.Transparent else tint.copy(alpha = .18f))
-                                .border(1.6.dp, tint, RoundedCornerShape(4.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            when (state) {
-                                "[x]" -> Icon(Icons.Default.Check, null, tint = tint, modifier = Modifier.size(14.dp))
-                                "[!]" -> Icon(Icons.Default.Close, null, tint = tint, modifier = Modifier.size(14.dp))
-                                else -> Unit
+                            }
+                            chartSpec != null -> {
+                                com.example.ui.components.AgentChartCard(
+                                    spec = chartSpec,
+                                    isDarkMode = isDarkMode
+                                )
+                            }
+                            diagramSpec != null -> {
+                                com.example.ui.components.AgentDiagramCard(
+                                    spec = diagramSpec,
+                                    isDarkMode = isDarkMode
+                                )
+                            }
+                            organisedSpec != null -> {
+                                com.example.ui.components.OrganisedFileCard(
+                                    spec = organisedSpec,
+                                    isDarkMode = isDarkMode
+                                )
+                            }
+                            langLower == "html" && (fence.code.contains("<div", true) || fence.code.contains("<html", true) || fence.code.contains("<style", true) || fence.code.contains("<svg", true)) -> {
+                                com.example.ui.components.DirectNoteWebView(
+                                    title = fence.title.ifBlank { NoteArtifactCodec.inferHtmlTitle(fence.code) },
+                                    htmlCode = fence.code,
+                                    isDarkMode = isDarkMode
+                                )
+                            }
+                            else -> {
+                                val codeStart = fence.codeStart
+                                val codeEnd = (fence.codeStart + fence.code.length).coerceAtMost(styled.length)
+                                val codeStyled = if (codeStart in 0..codeEnd && codeStart < codeEnd) styled.subSequence(codeStart, codeEnd) else null
+                                com.example.ui.components.CodeBoxCard(
+                                    title = fence.title.ifBlank { "Title" },
+                                    code = fence.code,
+                                    lang = fence.lang,
+                                    isDarkMode = isDarkMode,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    fontSize = (fontSize - 2).coerceAtLeast(11),
+                                    styledCode = codeStyled
+                                )
                             }
                         }
-                        Spacer(Modifier.width(10.dp))
-                        val lineText = if (bodyStart <= bodyEnd && bodyEnd <= styled.length) styled.subSequence(bodyStart, bodyEnd).text else check.groupValues[3]
-                        Text(
-                            text = parseInlineMarkdown(lineText, if (state == "[x]") Color.Gray else color),
-                            fontSize = fontSize.sp,
-                            color = if (state == "[x]") Color.Gray else color,
-                            textDecoration = if (state == "[x]") androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
-                            lineHeight = (fontSize + 6).sp
-                        )
+                        Spacer(Modifier.height(6.dp))
+                        var k = i
+                        while (k < lines.size && starts[k] < fence.end) k++
+                        i = if (k > i) k else i + 1
                     }
-                    i++
-                }
 
-                // Markdown Task item: - [ ] or - [x]
-                rawLine.trimStart().startsWith("- [ ] ") || rawLine.trimStart().startsWith("- [x] ") ||
-                rawLine.trimStart().startsWith("* [ ] ") || rawLine.trimStart().startsWith("* [x] ") -> {
-                    val isChecked = rawLine.contains("[x]")
-                    val body = rawLine.substringAfter("] ")
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .size(18.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(if (isChecked) Color(0xFF35B65B).copy(alpha = .18f) else Color.Transparent)
-                                .border(1.6.dp, if (isChecked) Color(0xFF35B65B) else (if (isDarkMode) Color.White.copy(.75f) else Color(0xFF555555)), RoundedCornerShape(4.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isChecked) {
-                                Icon(Icons.Default.Check, null, tint = Color(0xFF35B65B), modifier = Modifier.size(14.dp))
+                    // Inline image: if positioned/resized beside text, place zero-height anchor so side text stays beside it
+                    imgId != null -> {
+                        val att = attachments.firstOrNull { it.id == imgId }
+                        if (att != null) {
+                            if (att.id in positionedIds) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(0.dp)
+                                        .onGloballyPositioned { coords ->
+                                            imageAnchorY[att.id] = (coords.positionInRoot().y - bodyTopInRoot).coerceAtLeast(0f)
+                                        }
+                                )
+                            } else {
+                                Spacer(Modifier.height(8.dp))
+                                com.example.ui.components.AttachmentFrame(
+                                    att = att,
+                                    modifier = Modifier.fillMaxWidth(att.widthFraction.coerceIn(0.22f, 1f))
+                                )
+                                Spacer(Modifier.height(8.dp))
                             }
                         }
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = parseInlineMarkdown(body, if (isChecked) Color.Gray else color),
-                            fontSize = fontSize.sp,
-                            color = if (isChecked) Color.Gray else color,
-                            textDecoration = if (isChecked) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
-                            lineHeight = (fontSize + 6).sp
-                        )
-                    }
-                    i++
-                }
-
-                // Bullet item: - text, * text, or • text with round dot indicator
-                rawLine.trimStart().startsWith("- ") || rawLine.trimStart().startsWith("* ") || rawLine.trimStart().startsWith("• ") -> {
-                    val item = rawLine.trimStart().drop(2)
-                    Row(modifier = Modifier.padding(start = 6.dp, top = 2.dp, bottom = 2.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .padding(top = 8.dp)
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(CrimsonPrimary)
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = parseInlineMarkdown(item, color),
-                            fontSize = fontSize.sp,
-                            color = color,
-                            lineHeight = (fontSize + 6).sp
-                        )
-                    }
-                    i++
-                }
-
-                // Markdown Table
-                rawLine.trimStart().startsWith("|") && rawLine.trimEnd().endsWith("|") -> {
-                    val tableLines = mutableListOf<String>()
-                    while (i < lines.size && lines[i].trimStart().startsWith("|") && lines[i].trimEnd().endsWith("|")) {
-                        tableLines.add(lines[i])
                         i++
                     }
-                    ReadMarkdownTableView(tableLines, fontSize, isDarkMode)
-                    Spacer(Modifier.height(6.dp))
-                }
 
-                // Regular Paragraph lines
-                else -> {
-                    var j = i
-                    while (j < lines.size &&
-                        com.example.ui.util.ImageMarkers.idOf(lines[j]) == null &&
-                        !checkRegex.matches(lines[j]) &&
-                        fences.none { it.start == starts[j] } &&
-                        !lines[j].startsWith("# ") &&
-                        !lines[j].startsWith("## ") &&
-                        !lines[j].startsWith("### ") &&
-                        !lines[j].startsWith("#### ") &&
-                        !lines[j].startsWith("> ") &&
-                        lines[j].trim() != "---" &&
-                        lines[j].trim() != "***" &&
-                        !lines[j].trim().equals("---page---", ignoreCase = true) &&
-                        !lines[j].trim().equals("[page_break]", ignoreCase = true) &&
-                        !lines[j].trimStart().startsWith("- ") &&
-                        !lines[j].trimStart().startsWith("* ") &&
-                        !lines[j].trimStart().startsWith("• ") &&
-                        !(lines[j].trimStart().startsWith("|") && lines[j].trimEnd().endsWith("|")) &&
-                        (j - i) < 45
-                    ) j++
-
-                    val from = starts[i]
-                    val to = (starts[j - 1] + lines[j - 1].length).coerceAtMost(styled.length)
-                    if (from <= to) {
-                        val subText = styled.subSequence(from, to)
-                        // If it contains inline markdown markers (** or * or `), parse them
-                        val rawSub = subText.text
-                        val textToRender = if (rawSub.contains("**") || rawSub.contains("`") || (rawSub.contains("*") && !rawSub.contains(" * "))) {
-                            parseInlineMarkdown(rawSub, color)
-                        } else {
-                            subText
-                        }
+                    // Heading 1: # Title
+                    rawLine.startsWith("# ") -> {
+                        Spacer(Modifier.height(10.dp))
                         Text(
-                            text = textToRender,
-                            fontSize = fontSize.sp,
+                            text = parseInlineMarkdown(rawLine.removePrefix("# "), color),
+                            fontSize = (fontSize + 7).sp,
+                            fontFamily = fontFamily,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = color,
+                            lineHeight = (fontSize + 13).sp
+                        )
+                        HorizontalDivider(thickness = 2.dp, color = CrimsonPrimary, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+                        i++
+                    }
+
+                    // Heading 2: ## Title
+                    rawLine.startsWith("## ") -> {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            text = parseInlineMarkdown(rawLine.removePrefix("## "), color),
+                            fontSize = (fontSize + 4).sp,
+                            fontFamily = fontFamily,
+                            fontWeight = FontWeight.Bold,
+                            color = color,
+                            lineHeight = (fontSize + 9).sp
+                        )
+                        HorizontalDivider(thickness = 1.dp, color = borderColor, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+                        i++
+                    }
+
+                    // Heading 3: ### Title
+                    rawLine.startsWith("### ") -> {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = parseInlineMarkdown(rawLine.removePrefix("### "), color),
+                            fontSize = (fontSize + 2).sp,
+                            fontFamily = fontFamily,
+                            fontWeight = FontWeight.Bold,
                             color = color,
                             lineHeight = (fontSize + 6).sp
                         )
+                        Spacer(Modifier.height(4.dp))
+                        i++
                     }
-                    i = j
+
+                    // Heading 4+: #### Title
+                    rawLine.startsWith("#### ") -> {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = parseInlineMarkdown(rawLine.removePrefix("#### "), color),
+                            fontSize = fontSize.sp,
+                            fontFamily = fontFamily,
+                            fontWeight = FontWeight.SemiBold,
+                            color = color
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        i++
+                    }
+
+                    // Multi-page break marker: ---page--- or [page_break]
+                    trimmedLine.equals("---page---", ignoreCase = true) || trimmedLine.equals("[page_break]", ignoreCase = true) -> {
+                        val pageNum = remember(i, lines) {
+                            lines.subList(0, i + 1).count {
+                                val t = it.trim()
+                                t.equals("---page---", ignoreCase = true) || t.equals("[page_break]", ignoreCase = true)
+                            } + 1
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            HorizontalDivider(modifier = Modifier.weight(1f), thickness = 1.dp, color = CrimsonPrimary.copy(alpha = 0.45f))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(CrimsonPrimary.copy(alpha = 0.14f))
+                                    .border(1.dp, CrimsonPrimary.copy(alpha = 0.4f), RoundedCornerShape(50))
+                                    .padding(horizontal = 12.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = "PAGE $pageNum",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = CrimsonPrimary,
+                                    letterSpacing = 1.2.sp
+                                )
+                            }
+                            HorizontalDivider(modifier = Modifier.weight(1f), thickness = 1.dp, color = CrimsonPrimary.copy(alpha = 0.45f))
+                        }
+                        i++
+                    }
+
+                    // Horizontal Rule: --- or ***
+                    trimmedLine == "---" || trimmedLine == "***" -> {
+                        HorizontalDivider(
+                            thickness = 1.dp,
+                            color = borderColor,
+                            modifier = Modifier.padding(vertical = 10.dp)
+                        )
+                        i++
+                    }
+
+                    // Blockquote: > text
+                    rawLine.startsWith("> ") -> {
+                        val quoteText = rawLine.removePrefix("> ")
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
+                                .padding(start = 10.dp, end = 8.dp, top = 6.dp, bottom = 6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .height(18.dp)
+                                    .background(CrimsonPrimary, RoundedCornerShape(2.dp))
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = parseInlineMarkdown(quoteText, subColor),
+                                fontStyle = FontStyle.Italic,
+                                fontFamily = fontFamily,
+                                fontSize = fontSize.sp,
+                                color = subColor,
+                                lineHeight = effectiveLineHeight
+                            )
+                        }
+                        i++
+                    }
+
+                    // Interactive Tri-State Task item: [ ] / [x] / [!] or - [ ] / - [x] / - [!]
+                    check != null || mdCheck != null -> {
+                        val lineIndex = i
+                        val state = (check?.groupValues?.get(2) ?: mdCheck!!.groupValues[2]).lowercase()
+                        val lineText = if (check != null) {
+                            val bodyStart = starts[i] + check.groupValues[1].length + 4
+                            val bodyEnd = starts[i] + rawLine.length
+                            if (bodyStart <= bodyEnd && bodyEnd <= styled.length) styled.subSequence(bodyStart, bodyEnd).text else check.groupValues[3]
+                        } else {
+                            mdCheck!!.groupValues[3]
+                        }
+                        val green = Color(0xFF22C55E)
+                        val red = Color(0xFFEF4444)
+                        val idleBorder = if (isDarkMode) Color.White.copy(0.68f) else Color(0xFF475569)
+                        val fillColor = when (state) {
+                            "[x]" -> green
+                            "[!]" -> red
+                            else -> if (isDarkMode) Color.White.copy(0.06f) else Color.White.copy(0.88f)
+                        }
+                        val boxBorder = when (state) {
+                            "[x]" -> green
+                            "[!]" -> red
+                            else -> idleBorder
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = onToggleCheckboxAtLine != null) {
+                                    onToggleCheckboxAtLine?.invoke(lineIndex)
+                                }
+                                .padding(vertical = 4.dp, horizontal = 2.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(21.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(fillColor)
+                                    .border(1.7.dp, boxBorder, RoundedCornerShape(6.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                when (state) {
+                                    "[x]" -> Icon(Icons.Default.Check, contentDescription = "Checked", tint = Color.White, modifier = Modifier.size(14.dp))
+                                    "[!]" -> Icon(Icons.Default.Close, contentDescription = "Crossed", tint = Color.White, modifier = Modifier.size(14.dp))
+                                    else -> Unit
+                                }
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                text = parseInlineMarkdown(lineText, if (state == "[x]") Color.Gray else color),
+                                fontSize = fontSize.sp,
+                                fontFamily = fontFamily,
+                                color = if (state == "[x]") Color.Gray else if (state == "[!]") red.copy(alpha = 0.88f) else color,
+                                textDecoration = if (state == "[x]") androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                                lineHeight = effectiveLineHeight
+                            )
+                        }
+                        i++
+                    }
+
+                    // Bullet item: - text, * text, or • text with round dot indicator
+                    rawLine.trimStart().startsWith("- ") || rawLine.trimStart().startsWith("* ") || rawLine.trimStart().startsWith("• ") -> {
+                        val item = rawLine.trimStart().drop(2)
+                        Row(modifier = Modifier.padding(start = 6.dp, top = 2.dp, bottom = 2.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 8.dp)
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(CrimsonPrimary)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                text = parseInlineMarkdown(item, color),
+                                fontSize = fontSize.sp,
+                                fontFamily = fontFamily,
+                                color = color,
+                                lineHeight = effectiveLineHeight
+                            )
+                        }
+                        i++
+                    }
+
+                    // Markdown Table
+                    rawLine.trimStart().startsWith("|") && rawLine.trimEnd().endsWith("|") -> {
+                        val tableLines = mutableListOf<String>()
+                        while (i < lines.size && lines[i].trimStart().startsWith("|") && lines[i].trimEnd().endsWith("|")) {
+                            tableLines.add(lines[i])
+                            i++
+                        }
+                        ReadMarkdownTableView(tableLines, fontSize, isDarkMode)
+                        Spacer(Modifier.height(6.dp))
+                    }
+
+                    // Regular Paragraph lines (reports exact TextLayoutResult line coordinates for ruled paper!)
+                    else -> {
+                        val blockId = i
+                        var j = i
+                        while (j < lines.size &&
+                            com.example.ui.util.ImageMarkers.idOf(lines[j]) == null &&
+                            !checkRegex.matches(lines[j]) &&
+                            !mdCheckRegex.matches(lines[j]) &&
+                            fences.none { it.start == starts[j] } &&
+                            !lines[j].startsWith("# ") &&
+                            !lines[j].startsWith("## ") &&
+                            !lines[j].startsWith("### ") &&
+                            !lines[j].startsWith("#### ") &&
+                            !lines[j].startsWith("> ") &&
+                            lines[j].trim() != "---" &&
+                            lines[j].trim() != "***" &&
+                            !lines[j].trim().equals("---page---", ignoreCase = true) &&
+                            !lines[j].trim().equals("[page_break]", ignoreCase = true) &&
+                            !lines[j].trimStart().startsWith("- ") &&
+                            !lines[j].trimStart().startsWith("* ") &&
+                            !lines[j].trimStart().startsWith("• ") &&
+                            !(lines[j].trimStart().startsWith("|") && lines[j].trimEnd().endsWith("|")) &&
+                            (j - i) < 45
+                        ) j++
+
+                        val from = starts[i]
+                        val to = (starts[j - 1] + lines[j - 1].length).coerceAtMost(styled.length)
+                        if (from <= to) {
+                            val subText = styled.subSequence(from, to)
+                            val rawSub = subText.text
+                            val textToRender = if (rawSub.contains("**") || rawSub.contains("`") || (rawSub.contains("*") && !rawSub.contains(" * "))) {
+                                parseInlineMarkdown(rawSub, color)
+                            } else {
+                                subText
+                            }
+                            var blockTopInRoot by remember(blockId) { mutableStateOf(0f) }
+                            var lastLayout by remember(blockId) { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+                            val padPx = with(density) { 3.dp.toPx() }
+                            androidx.compose.runtime.LaunchedEffect(blockTopInRoot, paperTopInRoot, lastLayout) {
+                                val lay = lastLayout ?: return@LaunchedEffect
+                                val originY = blockTopInRoot - paperTopInRoot
+                                val fullBlockStr = textToRender.text
+                                val blockYs = ArrayList<Float>(lay.lineCount)
+                                for (li in 0 until lay.lineCount) {
+                                    val ls = lay.getLineStart(li).coerceIn(0, fullBlockStr.length)
+                                    val le = lay.getLineEnd(li, visibleEnd = true).coerceIn(ls, fullBlockStr.length)
+                                    val lineTxt = if (ls < le) fullBlockStr.substring(ls, le) else ""
+                                    val ry = originY + NoteArtifactCodec.computeRuleYForLine(
+                                        lineText = lineTxt,
+                                        lineTop = lay.getLineTop(li),
+                                        lineBaseline = lay.getLineBaseline(li),
+                                        lineBottom = lay.getLineBottom(li),
+                                        baselineOffsetPx = padPx
+                                    )
+                                    blockYs.add(ry)
+                                }
+                                onReportRuleYs(blockId, blockYs)
+                            }
+                            Text(
+                                text = textToRender,
+                                fontSize = fontSize.sp,
+                                fontFamily = fontFamily,
+                                color = color,
+                                lineHeight = effectiveLineHeight,
+                                onTextLayout = { lastLayout = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .onGloballyPositioned { coords ->
+                                        blockTopInRoot = coords.positionInRoot().y
+                                    }
+                            )
+                        }
+                        i = j
+                    }
+                }
+            }
+        }
+
+        // Overlay layer for positioned/resized inline images: preserves exact side-text layout from Write Mode
+        if (bodyWidthPx > 0f && positionedOverlayImages.isNotEmpty()) {
+            positionedOverlayImages.forEach { att ->
+                val anchorY = imageAnchorY[att.id] ?: 0f
+                val savedOffsetXPx = with(density) { att.posX.coerceAtLeast(0f).dp.toPx() }
+                val savedOffsetYPx = with(density) { att.posY.dp.toPx() }
+                val wf = att.widthFraction.coerceIn(0.22f, 1f)
+                val maxOffsetXPx = (bodyWidthPx * (1f - wf)).coerceAtLeast(0f)
+                val clampedXPx = savedOffsetXPx.coerceIn(0f, maxOffsetXPx)
+                val finalYPx = (anchorY + savedOffsetYPx).coerceAtLeast(0f)
+                val imgWidthDp = with(density) { (bodyWidthPx * wf).toDp() }
+
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            androidx.compose.ui.unit.IntOffset(
+                                clampedXPx.roundToInt(),
+                                finalYPx.roundToInt()
+                            )
+                        }
+                        .width(imgWidthDp)
+                        .onSizeChanged { sz ->
+                            imageMeasuredHeightPx[att.id] = sz.height.toFloat()
+                        }
+                ) {
+                    com.example.ui.components.AttachmentFrame(
+                        att = att,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         }

@@ -1,0 +1,25 @@
+au-notes-x-bugs
+==================
+1. readmode ke andar page wali lines and pages to sahi se render ho rhe hain but agar un pages per kuch bhi likhdo to vo readmode me sahi se render nahi hota lines upar niche ho jati hain and text hamesha line se chipak kar rahe and agar hindi text hai to line se upar chipak kar rhe itna to tumhe pata hi hoga and agar user text ka size increase karta hai to text page ki line se bahar na nikle uske sath us line ka bhi size increase ho jae jo height ho  vo  so fix it 
+2. agent jo artifacts and slides ready karta hai to bhaut bar chat me show nahi hota kabhi kabhi hi show hota hai and sirf slides and artifacts ka option hai jo sidebar ke andar usi me show hota hai and agar kabhi show hota bhi hai to bhaut late render hota hai kaii bar chat close karke again open karni padti hai tab show hota hai to ise fix karo and aisa bhi rakho ki agent apke topic ke according us artifact and slide ko named kar paye jaise claude ai karta hai and remember maine abhi claude ai ka name liya to app me kahi bhi ye mention mat karna ki in claude style , like claude ai , aisa kuch bhi nahi bas jitna bol rha hu utni hi clearity ke sath work karte jao
+3. and jo artifacts generate hote hain vo full screen me nahi hote matlab hote to hain but idk what ye app ke code me hai ya agent khud aisa karta hai ki artifact generate krte time vo ek square me band rhta hai jisse full screen me fill hi nahi ho pata and this problem is with both features like desktop  view and mobile view 
+4. and ye bug bhaut main hai it means jo noteviewer hai I mean note reader ek hi baat hai to ... to is noteviewer me agar koi bhi artifact add karta hu to vo ek rectangle chip ke andar add hota hai jisse full screen me fill nahi hota  and like ye same aise hi add ho jaise ki web view me hota hai like easily scroll bcs tum scrolling ka code sahi rakhna iske andar koi bhi problem nahi honi chahiye .. easily scroll ho sake niche tak I mean jaha tak code end hai web ka  . and iske andar zoom in out lock kar dena and bas ek option enabled rakhna and thats mobile view and web desktop view and iska effect sirf artifact per hi padna chahiye baki note per koi effect nahi and agar user note edit karre to jo artifact ka code hai vo pure note me na ho balki ek rectangle card ho jis per artifact ka title pada hua ho jaisa ki chat me show hota hai and uske andar sara code ekdam safe rahe jis per tap karne se edit kiya ja sake and usi ke according preview me bhi changes aa sake and user edit karta hai note to ye artifact ka code to ekdam safe rahe but note edit karne per jo bhi user add karta hai vo is artifact ke niche rahe jisse noteviewer me bhi easily scroll karke dekha ja sake vaha per scroling off ho jaye jaha per kuch bhi nahi I mean jaha per note khatm ho
+5. and agent chat ke andar se paste wala button remove karo 
+6. and ek aur bug ye hai ki agar user notewriter me image add Karta hai toh image ke sides se and up down ek blank space rhta hai jis per kuch bhi type kar sake image ke sides se jo acha feature hai lekin aisa karne per readmode ke andar aisa dikhta hi nahi hai vo text upar niche ho jata hai  matlab us blank  space me text rahta hi nahi hai baki sab jagah ho jta hai ... and agar koi note hai jisme sirf text hai and maine usme niche koi image add kardi toh  readmode me full scroll hota hi nahi jaha tak image hai I think vo image ko koi hard object nahi manta app  
+7. and ek sabse main feature jo tumhe add karna hai and thats settings ke andar ek fonts option create karo jiske andar user ttf otf ya aur jo bhi fonts hote hain unhe add kar sake and vo fonts note writing me add ho sake and jo toolbar hai notewriter ke andar vahi ek font ka icon create kardo other tools ke pass jaha se fonts change ho sake matlab vo usi fonts wale option per redirect karde jo settings me tha and us settings me fonts option per jakar font delete favourite and add bhi ho sake 
+and jo check box ka option hai vo write mode me bhaut bekar ban rha hai abhi ajeeb sa use fix karo and aisa karo ki ye check box readmode me bhi enable rahe jis per tap karne per iske andar green tick cross and blank hota rahe and mainscreen per bahar se dekhne per bhi aisa hi dikhe ok 
+
+
+and jo iska agent mode hai agar isme model switch kardo to other models ka reply fast nahi ata late karte hain abhi bhi 
+
+and  other models fail ho jate hain so ye bhaut problem deta hai kabhi kabhi agent notes edit nahi kar pta 
+
+matlab Aisa kardo ki koi bhi custom provider ka and koi sa bhi model literally koi sa bhi model 
+fast ekdam fast instant reply de 
+and sare tools vagaira and Sara kaam kar paye 
+
+
+
+
+after fix karte jaao sath hi and app test karna ki koi bug rah to nahi gaya and other bugs bhi find karo and 
+har fix ka bug batana ki ye kyu tha 

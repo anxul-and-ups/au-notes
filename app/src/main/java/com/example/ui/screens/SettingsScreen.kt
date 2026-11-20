@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FontDownload
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lock
@@ -89,6 +90,7 @@ fun SettingsScreen(
     onOpenSecurityArea: () -> Unit = {},
     onOpenApiRoom: () -> Unit = {},
     onOpenThemeSettings: () -> Unit = {},
+    onOpenFontsSettings: () -> Unit = {},
     onOpenAgentSettings: () -> Unit = {},
     onOpenBackupRestore: () -> Unit = {},
     onOpenKeyboardShortcuts: () -> Unit = {},
@@ -115,6 +117,11 @@ fun SettingsScreen(
     var showSecurityPinPrompt by remember { mutableStateOf(false) }
     val themePanelLocked by preferences.themePanelLocked.collectAsState()
     val themeMode by preferences.themeMode.collectAsState()
+    val selectedFontId by preferences.selectedNoteFontId.collectAsState()
+    val importedFonts by preferences.importedFonts.collectAsState()
+    val activeFontName = remember(selectedFontId, importedFonts) {
+        com.example.ui.util.CustomFontManager.getFontDisplayName(selectedFontId, importedFonts)
+    }
     var showThemePinPrompt by remember { mutableStateOf(false) }
 
     if (showSecurityPinPrompt) {
@@ -376,6 +383,40 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
+            // 4b. Fonts Manager (Search, Preview, Import .ttf/.otf, Favorites, Delete)
+            GlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_fonts_card"),
+                shape = RoundedCornerShape(16.dp),
+                isDarkMode = isDarkMode,
+                elevation = 3.dp,
+                onClick = onOpenFontsSettings
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF8B5CF6).copy(alpha = 0.16f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.FontDownload, contentDescription = "Fonts", tint = Color(0xFF8B5CF6), modifier = Modifier.size(22.dp))
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text("Fonts", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                            Text("Active: $activeFontName • Search, Preview & Add .ttf/.otf", fontSize = 11.sp, color = Color(0xFF8B5CF6))
+                        }
+                    }
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color(0xFF8B5CF6), modifier = Modifier.size(20.dp))
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
             // 5. Backup & Restore (Export / Import All App Data)
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -403,53 +444,6 @@ fun SettingsScreen(
                         }
                     }
                     Icon(Icons.Default.ChevronRight, null, tint = Color(0xFFF59E0B), modifier = Modifier.size(20.dp))
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // 6. Small Window (Native Android Freeform Multi-Window — zero overlay hack)
-            GlassCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("settings_small_window_card"),
-                shape = RoundedCornerShape(16.dp),
-                isDarkMode = isDarkMode,
-                elevation = 3.dp,
-                onClick = onEnterSmallWindowMode
-            ) {
-                Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            Box(
-                                modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF10B981).copy(alpha = 0.15f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Default.OpenInNew, null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column {
-                                Text("Small Window (Multi-Window)", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
-                                Text("Native Android Freeform window with system resize, close & expand controls", fontSize = 11.sp, color = Color(0xFF10B981))
-                            }
-                        }
-                        Icon(Icons.Default.ChevronRight, null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Button(
-                        onClick = onEnterSmallWindowMode,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("settings_small_window_button"),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Text("Open in Small Window", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
                 }
             }
 

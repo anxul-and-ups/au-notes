@@ -2610,7 +2610,7 @@ private fun EditorialGrowthCurveBlock(
 }
 
 // =============================================================================================
-// CLAUDE-STYLE SLIDES ARTIFACT CARD + FULL-SCREEN SWIPEABLE VIEWER DIALOG
+// INTERACTIVE SLIDES ARTIFACT CARD + FULL-SCREEN SWIPEABLE VIEWER DIALOG
 // =============================================================================================
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -2856,8 +2856,8 @@ fun SlidesMakerCard(
                                 )
                                 settings.javaScriptEnabled = true
                                 settings.domStorageEnabled = true
+                                settings.useWideViewPort = desktopMode
                                 settings.loadWithOverviewMode = desktopMode
-                                settings.useWideViewPort = true
                                 settings.allowFileAccess = true
                                 settings.allowContentAccess = true
                                 settings.allowFileAccessFromFileURLs = true
@@ -2865,18 +2865,21 @@ fun SlidesMakerCard(
                                 settings.setSupportZoom(true)
                                 settings.builtInZoomControls = true
                                 settings.displayZoomControls = false
+                                setInitialScale(0)
                                 addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
                                 webChromeClient = WebChromeClient()
                                 webViewClient = createSafeWebViewClient()
-                                tag = "$desktopMode::$latestSlidingHtml"
+                                tag = "$desktopMode::${latestSlidingHtml.hashCode()}"
                                 loadDataWithBaseURL("file:///android_asset/", latestSlidingHtml, "text/html", "UTF-8", null)
                             }
                         },
                         update = { wv ->
                             val currentHtml = slidingHtml
-                            val tagKey = "$desktopMode::$currentHtml"
-                            wv.settings.loadWithOverviewMode = desktopMode
+                            val tagKey = "$desktopMode::${currentHtml.hashCode()}"
                             if (wv.tag != tagKey) {
+                                wv.settings.useWideViewPort = desktopMode
+                                wv.settings.loadWithOverviewMode = desktopMode
+                                wv.setInitialScale(0)
                                 wv.tag = tagKey
                                 wv.loadDataWithBaseURL("file:///android_asset/", currentHtml, "text/html", "UTF-8", null)
                             }
@@ -4012,7 +4015,7 @@ fun AgentDiagramCard(
 }
 
 // =============================================================================================
-// CLAUDE-STYLE INTERACTIVE HTML ARTIFACT CARD + FULL-SCREEN WEBVIEW MODAL
+// INTERACTIVE HTML ARTIFACT CARD + FULL-SCREEN WEBVIEW MODAL
 // =============================================================================================
 
 @Composable
@@ -4026,7 +4029,7 @@ fun HtmlArtifactCard(
     val scope = rememberCoroutineScope()
     val fileMode = htmlCode.startsWith("AUFILE:")
     val filePath = htmlCode.removePrefix("AUFILE:").trim()
-    var desktopMode by remember { mutableStateOf(true) }
+    var desktopMode by remember { mutableStateOf(false) }
     var showFullScreen by remember { mutableStateOf(false) }
 
     val resolvedHtmlState = produceState(initialValue = "", htmlCode, isDarkMode, desktopMode) {
@@ -4046,26 +4049,27 @@ fun HtmlArtifactCard(
     }
 
     val configureAndLoad: (WebView, Boolean, String) -> Unit = { wv, isDesktop, currentHtml ->
-        wv.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            allowFileAccess = true
-            allowContentAccess = true
-            allowFileAccessFromFileURLs = true
-            allowUniversalAccessFromFileURLs = true
-            setSupportZoom(true)
-            builtInZoomControls = true
-            displayZoomControls = false
-            useWideViewPort = true
-            loadWithOverviewMode = isDesktop
-            userAgentString = if (isDesktop) {
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            } else {
-                null
-            }
-        }
         val tagKey = "$isDesktop::${currentHtml.hashCode()}::${currentHtml.length}"
         if (wv.tag != tagKey && (currentHtml.isNotBlank() || fileMode)) {
+            wv.settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                allowFileAccess = true
+                allowContentAccess = true
+                allowFileAccessFromFileURLs = true
+                allowUniversalAccessFromFileURLs = true
+                setSupportZoom(true)
+                builtInZoomControls = true
+                displayZoomControls = false
+                useWideViewPort = isDesktop
+                loadWithOverviewMode = isDesktop
+                userAgentString = if (isDesktop) {
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                } else {
+                    null
+                }
+            }
+            wv.setInitialScale(0)
             wv.tag = tagKey
             if (currentHtml.isNotBlank()) {
                 val baseUrl = if (fileMode) {
@@ -4183,14 +4187,14 @@ fun HtmlArtifactCard(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = if (desktopMode) "Full-Screen Desktop View (1024px)" else "Full-Screen Responsive View",
+                                text = if (desktopMode) "Full-Screen Desktop View (1280px)" else "Full-Screen Mobile View",
                                 fontSize = 10.5.sp,
                                 color = fg.copy(alpha = 0.6f),
                                 maxLines = 1
                             )
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Inside-Viewer Save to Notes Icon Button (Point 11)
+                            // Inside-Viewer Save to Notes Icon Button
                             if (onSaveToNote != null) {
                                 IconButton(
                                     onClick = {
@@ -4220,7 +4224,7 @@ fun HtmlArtifactCard(
                                 )
                                 Spacer(Modifier.width(4.dp))
                                 Text(
-                                    if (desktopMode) "Desktop" else "Fit",
+                                    if (desktopMode) "Desktop" else "Mobile",
                                     fontSize = 11.5.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = if (desktopMode) Color(0xFFEA580C) else fg
@@ -4311,8 +4315,12 @@ fun HtmlArtifactCard(
 }
 
 /**
- * Point 11: WebView-Native Rendering in Read Mode & Split-Screen Mode for notes saved from the
- * Full-Screen HTML / Presentation Artifact Viewer.
+ * Seamless Full-Width Auto-Height WebView for Read Mode (NoteViewer):
+ *  - Zoom in/out is completely locked so gestures never distort the note layout.
+ *  - ONLY ONE toggle is exposed: Mobile View / Desktop View (scoped strictly to this artifact).
+ *  - Dynamically expands to the full height of the HTML content via JS ResizeObserver bridge so
+ *    the outer NoteViewer vertical scroll glides smoothly to the bottom of the artifact and into
+ *    any user notes written underneath.
  */
 @Composable
 fun DirectNoteWebView(
@@ -4323,41 +4331,113 @@ fun DirectNoteWebView(
     val context = LocalContext.current
     val fileMode = htmlCode.trim().startsWith("AUFILE:")
     val filePath = htmlCode.trim().removePrefix("AUFILE:").trim()
-    var desktopMode by remember { mutableStateOf(true) }
-    var showFullScreen by remember { mutableStateOf(false) }
+    var desktopMode by remember { mutableStateOf(false) }
+
+    val isHorizontalSlideDeck = remember(htmlCode) {
+        htmlCode.contains("id=\"deck\"", ignoreCase = true) ||
+            htmlCode.contains("slides-track", ignoreCase = true) ||
+            htmlCode.contains("scroll-snap-type:x", ignoreCase = true) ||
+            htmlCode.contains("scroll-snap-type: x", ignoreCase = true)
+    }
+
+    var measuredCssHeightPx by remember(htmlCode, desktopMode) {
+        mutableStateOf(if (isHorizontalSlideDeck) 560 else 480)
+    }
+
+    val heightObserverScript = remember {
+        """
+        <script id="au-height-reporter">
+        (function(){
+          var lastH = 0;
+          function report(){
+            try {
+              var b = document.body;
+              var d = document.documentElement;
+              var h = Math.max(
+                b ? b.scrollHeight : 0,
+                b ? b.offsetHeight : 0,
+                d ? d.scrollHeight : 0,
+                d ? d.offsetHeight : 0
+              );
+              if (h > 40 && Math.abs(h - lastH) > 4) {
+                lastH = h;
+                if (window.AUHeightBridge && window.AUHeightBridge.reportHeight) {
+                  window.AUHeightBridge.reportHeight(Math.ceil(h));
+                }
+              }
+            } catch(e) {}
+          }
+          window.addEventListener('load', function(){ report(); setTimeout(report, 180); setTimeout(report, 650); setTimeout(report, 1400); });
+          if (document.readyState !== 'loading') { setTimeout(report, 60); setTimeout(report, 350); }
+          try {
+            if (typeof ResizeObserver !== 'undefined') {
+              var ro = new ResizeObserver(function(){ report(); });
+              if (document.body) ro.observe(document.body);
+              ro.observe(document.documentElement);
+            }
+          } catch(e) {}
+          try {
+            if (typeof MutationObserver !== 'undefined' && document.body) {
+              new MutationObserver(function(){ setTimeout(report, 80); }).observe(document.body, { childList: true, subtree: true, attributes: true });
+            }
+          } catch(e) {}
+        })();
+        </script>
+        """.trimIndent()
+    }
 
     val resolvedHtmlState = produceState(initialValue = "", htmlCode, isDarkMode, desktopMode) {
         value = withContext(Dispatchers.Default) {
-            if (fileMode) {
+            val raw = if (fileMode) {
                 runCatching {
                     val f = File(filePath)
-                    if (f.exists()) {
-                        val inlined = com.example.data.ai.ArtifactBuilder.inlineForExport(f, context)
-                        com.example.data.ai.ArtifactBuilder.harden(inlined, isDarkMode, desktopMode)
-                    } else ""
+                    if (f.exists()) com.example.data.ai.ArtifactBuilder.inlineForExport(f, context) else ""
                 }.getOrDefault("")
+            } else htmlCode
+            if (raw.isBlank()) return@withContext ""
+            val hardened = com.example.data.ai.ArtifactBuilder.harden(
+                html = raw,
+                isDarkMode = isDarkMode,
+                desktopMode = desktopMode,
+                lockZoom = true
+            )
+            // For normal scrollable pages (not 100vh horizontal decks), ensure height:auto so scrollHeight reflects true content
+            val scrollFixCss = if (!isHorizontalSlideDeck) {
+                "<style id=\"au-note-inline-flow\">html,body{height:auto !important;min-height:0 !important;overflow-y:visible !important;}</style>"
+            } else ""
+            val inject = scrollFixCss + heightObserverScript
+            val bodyEnd = Regex("</body>", RegexOption.IGNORE_CASE).find(hardened)
+            if (bodyEnd != null) {
+                hardened.replaceRange(bodyEnd.range.first, bodyEnd.range.first, inject)
             } else {
-                com.example.data.ai.ArtifactBuilder.harden(htmlCode, isDarkMode, desktopMode)
+                hardened + inject
             }
         }
     }
 
     val configureWebView: (WebView, Boolean, String) -> Unit = { wv, isDesktop, currentHtml ->
-        wv.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            allowFileAccess = true
-            allowContentAccess = true
-            allowFileAccessFromFileURLs = true
-            allowUniversalAccessFromFileURLs = true
-            setSupportZoom(true)
-            builtInZoomControls = true
-            displayZoomControls = false
-            useWideViewPort = true
-            loadWithOverviewMode = isDesktop
-        }
-        val tagKey = "$isDesktop::${currentHtml.hashCode()}::${currentHtml.length}"
+        val tagKey = "note::$isDesktop::${currentHtml.hashCode()}::${currentHtml.length}"
         if (wv.tag != tagKey && (currentHtml.isNotBlank() || fileMode)) {
+            wv.settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                allowFileAccess = true
+                allowContentAccess = true
+                allowFileAccessFromFileURLs = true
+                allowUniversalAccessFromFileURLs = true
+                // Zoom strictly locked in NoteViewer
+                setSupportZoom(false)
+                builtInZoomControls = false
+                displayZoomControls = false
+                useWideViewPort = isDesktop
+                loadWithOverviewMode = isDesktop
+                userAgentString = if (isDesktop) {
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                } else null
+            }
+            wv.setInitialScale(0)
+            wv.isVerticalScrollBarEnabled = false
+            wv.isHorizontalScrollBarEnabled = isDesktop || isHorizontalSlideDeck
             wv.tag = tagKey
             if (currentHtml.isNotBlank()) {
                 wv.loadDataWithBaseURL("file:///android_asset/", currentHtml, "text/html", "UTF-8", null)
@@ -4373,22 +4453,28 @@ fun DirectNoteWebView(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .border(1.dp, borderCol, RoundedCornerShape(14.dp))
     ) {
+        // Minimal Artifact Header Bar with ONLY the Mobile / Desktop view toggle
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
                 .background(if (isDarkMode) Color(0xFF1C1E26) else Color(0xFFEFECE4))
+                .border(0.8.dp, borderCol, RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
                 .padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Default.DesktopWindows, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(16.dp))
+                Icon(
+                    imageVector = if (desktopMode) Icons.Default.DesktopWindows else Icons.Default.PhoneAndroid,
+                    contentDescription = null,
+                    tint = Color(0xFFEA580C),
+                    modifier = Modifier.size(16.dp)
+                )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = title.ifBlank { "Interactive WebView Note" },
+                    text = title.ifBlank { "Interactive Artifact" },
                     fontSize = 12.5.sp,
                     fontWeight = FontWeight.Bold,
                     color = fg,
@@ -4396,40 +4482,99 @@ fun DirectNoteWebView(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { desktopMode = !desktopMode }) {
-                    Text(
-                        if (desktopMode) "Desktop 1024px" else "Mobile Fit",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFEA580C)
-                    )
-                }
-                IconButton(onClick = { showFullScreen = true }, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = Color(0xFFEA580C), modifier = Modifier.size(18.dp))
-                }
+
+            // ONLY ONE toggle enabled: Mobile View / Desktop View (scoped to this artifact only)
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFFEA580C).copy(alpha = 0.14f))
+                    .border(1.dp, Color(0xFFEA580C).copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                    .clickable { desktopMode = !desktopMode }
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (desktopMode) Icons.Default.DesktopWindows else Icons.Default.PhoneAndroid,
+                    contentDescription = "Toggle artifact viewport",
+                    tint = Color(0xFFEA580C),
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    text = if (desktopMode) "Desktop View" else "Mobile View",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFEA580C)
+                )
             }
         }
 
         val currentHtml = resolvedHtmlState.value
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(560.dp)
+        androidx.compose.foundation.layout.BoxWithConstraints(
+            modifier = Modifier.fillMaxWidth()
         ) {
+            val availWidthDp = maxWidth.value.coerceAtLeast(320f)
+            val computedHeightDp = if (isHorizontalSlideDeck) {
+                if (desktopMode) (availWidthDp * 0.72f).coerceIn(320f, 520f).dp else 560.dp
+            } else {
+                val scaled = if (desktopMode) {
+                    (measuredCssHeightPx * (availWidthDp / 1280f)) + 24f
+                } else {
+                    measuredCssHeightPx.toFloat() + 18f
+                }
+                scaled.coerceIn(260f, 14000f).dp
+            }
+
+            val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+            val heightBridge = remember {
+                object {
+                    @android.webkit.JavascriptInterface
+                    fun reportHeight(cssPx: Int) {
+                        if (cssPx in 60..24000) {
+                            mainHandler.post {
+                                measuredCssHeightPx = cssPx
+                            }
+                        }
+                    }
+                }
+            }
+
             AndroidView(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(computedHeightDp),
                 factory = { ctx ->
                     WebView(ctx).apply {
                         layoutParams = ViewGroup.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
                         )
+                        setBackgroundColor(android.graphics.Color.TRANSPARENT)
                         addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
+                        addJavascriptInterface(heightBridge, "AUHeightBridge")
+                        // Allow parent NoteViewer verticalScroll to scroll seamlessly; only horizontal slide decks claim horizontal drag
+                        var downX = 0f
+                        var downY = 0f
                         setOnTouchListener { v, event ->
-                            when (event.actionMasked) {
-                                android.view.MotionEvent.ACTION_DOWN -> v.parent?.requestDisallowInterceptTouchEvent(true)
-                                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.parent?.requestDisallowInterceptTouchEvent(false)
+                            if (isHorizontalSlideDeck || desktopMode) {
+                                when (event.actionMasked) {
+                                    android.view.MotionEvent.ACTION_DOWN -> {
+                                        downX = event.x
+                                        downY = event.y
+                                        v.parent?.requestDisallowInterceptTouchEvent(false)
+                                    }
+                                    android.view.MotionEvent.ACTION_MOVE -> {
+                                        val dx = kotlin.math.abs(event.x - downX)
+                                        val dy = kotlin.math.abs(event.y - downY)
+                                        v.parent?.requestDisallowInterceptTouchEvent(dx > dy * 1.25f)
+                                    }
+                                    android.view.MotionEvent.ACTION_UP,
+                                    android.view.MotionEvent.ACTION_CANCEL -> {
+                                        v.parent?.requestDisallowInterceptTouchEvent(false)
+                                    }
+                                }
+                            } else {
+                                v.parent?.requestDisallowInterceptTouchEvent(false)
                             }
                             false
                         }
@@ -4451,82 +4596,10 @@ fun DirectNoteWebView(
             )
         }
     }
-
-    if (showFullScreen) {
-        Dialog(
-            onDismissRequest = { showFullScreen = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
-        ) {
-            com.example.ui.components.ConfigureEdgeToEdgeDialog(isDarkMode = isDarkMode)
-            Surface(
-                modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
-                color = if (isDarkMode) Color(0xFF0F1015) else Color(0xFFFAF8F5)
-            ) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(if (isDarkMode) Color(0xFF171821) else Color.White)
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        IconButton(onClick = { showFullScreen = false }) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", tint = fg)
-                        }
-                        Text(
-                            text = title.ifBlank { "Interactive Note" },
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = fg,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        TextButton(onClick = { desktopMode = !desktopMode }) {
-                            Text(
-                                if (desktopMode) "Desktop" else "Mobile Fit",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFFEA580C)
-                            )
-                        }
-                    }
-                    HorizontalDivider(color = borderCol)
-                    val fullHtml = resolvedHtmlState.value
-                    AndroidView(
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                        factory = { ctx ->
-                            WebView(ctx).apply {
-                                layoutParams = ViewGroup.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ViewGroup.LayoutParams.MATCH_PARENT
-                                )
-                                addJavascriptInterface(AUChartBridge(ctx), "AUChartBridge")
-                                webChromeClient = WebChromeClient()
-                                webViewClient = createSafeWebViewClient()
-                                configureWebView(this, desktopMode, fullHtml)
-                            }
-                        },
-                        update = { wv ->
-                            configureWebView(wv, desktopMode, resolvedHtmlState.value)
-                        },
-                        onRelease = { wv ->
-                            runCatching {
-                                (wv.parent as? ViewGroup)?.removeView(wv)
-                                wv.stopLoading()
-                                wv.destroy()
-                            }
-                        }
-                    )
-                }
-            }
-        }
-    }
 }
 
 // =============================================================================================
-// CLAUDE-STYLE PDF DOCUMENT ARTIFACT CARD
+// PDF DOCUMENT ARTIFACT CARD
 // =============================================================================================
 
 @Composable

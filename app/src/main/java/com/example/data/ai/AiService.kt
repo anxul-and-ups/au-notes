@@ -124,6 +124,8 @@ class AiService {
              Output a clean `<svg viewBox="0 0 680 400" xmlns="http://www.w3.org/2000/svg">...</svg>` with warm cream background `#EFECE4`, `#18181B` 3px borders, and high-contrast labels.
     """.trimIndent()
 
+    private val dynamicModelCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     private suspend fun resolveDynamicModel(
         provider: String,
         apiKey: String,
@@ -132,9 +134,13 @@ class AiService {
     ): String {
         val cleanReq = requestedModel.removePrefix("models/").trim()
         if (cleanReq.isNotBlank()) return cleanReq
+        val cacheKey = "$provider|${baseUrl.trim()}|${apiKey.trim().hashCode()}"
+        dynamicModelCache[cacheKey]?.let { if (it.isNotBlank()) return it }
         val check = ApiConnectivityChecker.check(provider, apiKey, baseUrl)
         if (check.ok && check.models.isNotEmpty()) {
-            return check.models.first().removePrefix("models/").trim()
+            val picked = check.models.first().removePrefix("models/").trim()
+            if (picked.isNotBlank()) dynamicModelCache[cacheKey] = picked
+            return picked
         }
         throw ApiFailure("No active model selected. Open API Room and tap Model Detector to detect models from your API key.", false)
     }
@@ -1195,76 +1201,94 @@ class AiService {
             })
         }
 
-        // Try real-time SSE streaming first if onDelta is provided
-        if (onDelta != null) {
-            try {
-                val streamReqBody = JSONObject().apply {
-                    put("model", model)
-                    put("messages", messages)
-                    put("temperature", 0.7)
-                    put("stream", true)
-                }
-                val streamReq = Request.Builder()
-                    .url(primaryEndpoint)
-                    .header("Authorization", "Bearer ${apiKey.trim()}")
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "text/event-stream")
-                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
-                    .post(streamReqBody.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-                client.newCall(streamReq).execute().use { resp ->
-                    val contentType = resp.header("Content-Type").orEmpty().lowercase()
-                    if (resp.isSuccessful && contentType.contains("event-stream")) {
-                        val source = resp.body?.source()
-                        if (source != null) {
-                            val acc = StringBuilder()
-                            val reasoningAcc = StringBuilder()
-                            while (!source.exhausted()) {
-                                val line = source.readUtf8Line() ?: break
-                                if (!line.startsWith("data:")) continue
-                                val data = line.removePrefix("data:").trim()
-                                if (data.isEmpty() || data == "[DONE]") continue
-                                val chunk = try { JSONObject(data) } catch (_: Exception) { continue }
-                                val deltaObj = chunk.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta") ?: continue
-                                val rChunk = deltaObj.optString("reasoning_content", deltaObj.optString("reasoning", ""))
-                                if (rChunk.isNotEmpty()) {
-                                    reasoningAcc.append(rChunk)
-                                    onThoughtDelta?.invoke(reasoningAcc.toString())
-                                }
-                                val cChunk = deltaObj.optString("content", "")
-                                if (cChunk.isNotEmpty()) {
-                                    acc.append(cChunk)
-                                    val liveClean = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
-                                    if (liveClean.isNotEmpty()) onDelta(liveClean)
-                                }
-                            }
-                            val finalStreamed = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
-                            if (finalStreamed.isNotEmpty()) return finalStreamed
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-                // Fall back to standard JSON completion request below
-            }
+        val isOpenRouter = cleanBase.contains("openrouter", ignoreCase = true)
+        val isReasoningModel = Regex("(^|/)(o1|o3|o4|gpt-5)", RegexOption.IGNORE_CASE).containsMatchIn(model)
+        val candidateEndpoints = if (cleanBase.endsWith("/v1")) {
+            listOf(primaryEndpoint)
+        } else {
+            listOf(primaryEndpoint, "$cleanBase/v1/chat/completions")
         }
 
-        fun executeChatRequest(url: String, maxTokens: Int?): Pair<Int, String> {
-            val reqBody = JSONObject().apply {
-                put("model", model)
-                put("messages", messages)
-                put("temperature", 0.7)
-                if (maxTokens != null) {
-                    put("max_tokens", maxTokens)
-                }
-            }
-            val request = Request.Builder()
+        fun buildOpenAiRequest(url: String, bodyJson: JSONObject, acceptStream: Boolean): Request {
+            val builder = Request.Builder()
                 .url(url)
                 .header("Authorization", "Bearer ${apiKey.trim()}")
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
-                .post(reqBody.toString().toRequestBody("application/json".toMediaType()))
-                .build()
-            client.newCall(request).execute().use { resp ->
+            if (acceptStream) builder.header("Accept", "text/event-stream")
+            if (isOpenRouter) {
+                builder.header("HTTP-Referer", "https://aunotes.app")
+                builder.header("X-Title", "AU Notes")
+            }
+            return builder.post(bodyJson.toString().toRequestBody("application/json".toMediaType())).build()
+        }
+
+        // Try real-time SSE streaming first if onDelta is provided (supports /v1 fallback for custom URLs)
+        if (onDelta != null) {
+            for (streamUrl in candidateEndpoints) {
+                try {
+                    val streamReqBody = JSONObject().apply {
+                        put("model", model)
+                        put("messages", messages)
+                        if (!isReasoningModel) put("temperature", 0.7)
+                        put("stream", true)
+                    }
+                    client.newCall(buildOpenAiRequest(streamUrl, streamReqBody, acceptStream = true)).execute().use { resp ->
+                        if (resp.code == 404 && streamUrl != candidateEndpoints.last()) {
+                            return@use
+                        }
+                        val contentType = resp.header("Content-Type").orEmpty().lowercase()
+                        if (resp.isSuccessful && (contentType.contains("event-stream") || contentType.contains("text/plain") || contentType.isBlank())) {
+                            val source = resp.body?.source()
+                            if (source != null) {
+                                val acc = StringBuilder()
+                                val reasoningAcc = StringBuilder()
+                                while (!source.exhausted()) {
+                                    val line = source.readUtf8Line() ?: break
+                                    if (!line.startsWith("data:")) continue
+                                    val data = line.removePrefix("data:").trim()
+                                    if (data.isEmpty() || data == "[DONE]") continue
+                                    val chunk = try { JSONObject(data) } catch (_: Exception) { continue }
+                                    val deltaObj = chunk.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta") ?: continue
+                                    val rChunk = deltaObj.optString("reasoning_content", deltaObj.optString("reasoning", ""))
+                                    if (rChunk.isNotEmpty()) {
+                                        reasoningAcc.append(rChunk)
+                                        onThoughtDelta?.invoke(reasoningAcc.toString())
+                                    }
+                                    val cChunk = deltaObj.optString("content", "")
+                                    if (cChunk.isNotEmpty()) {
+                                        acc.append(cChunk)
+                                        val liveClean = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
+                                        if (liveClean.isNotEmpty()) onDelta(liveClean)
+                                    }
+                                }
+                                val finalStreamed = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
+                                if (finalStreamed.isNotEmpty()) return finalStreamed
+                            }
+                        }
+                    }
+                    break
+                } catch (_: Exception) {
+                    // Fall back to next endpoint or standard JSON completion request below
+                }
+            }
+        }
+
+        fun executeChatRequest(
+            url: String,
+            maxTokens: Int?,
+            includeTemp: Boolean = !isReasoningModel,
+            useMaxCompletionTokens: Boolean = false
+        ): Pair<Int, String> {
+            val reqBody = JSONObject().apply {
+                put("model", model)
+                put("messages", messages)
+                if (includeTemp) put("temperature", 0.7)
+                if (maxTokens != null) {
+                    put(if (useMaxCompletionTokens) "max_completion_tokens" else "max_tokens", maxTokens)
+                }
+            }
+            client.newCall(buildOpenAiRequest(url, reqBody, acceptStream = false)).execute().use { resp ->
                 return resp.code to (resp.body?.string() ?: "")
             }
         }
@@ -1281,18 +1305,19 @@ class AiService {
                 body = retry404.second
             }
         }
-        // Broad fallback on HTTP 400 / 422 (e.g., Groq, OpenRouter, or custom models rejecting max_tokens=16384)
+        // Broad fallback on HTTP 400 / 422 (Groq/OpenRouter/OpenAI reasoning/custom models rejecting max_tokens or temperature)
         if (code == 400 || code == 422) {
-            for (fallbackTokens in listOf(8192, 4096, null)) {
-                val retryRes = executeChatRequest(activeEndpoint, fallbackTokens)
-                if (retryRes.first in 200..299) {
-                    code = retryRes.first
-                    body = retryRes.second
-                    break
-                } else {
-                    code = retryRes.first
-                    body = retryRes.second
-                }
+            val fallbackPlans = listOf(
+                Triple(8192, !isReasoningModel, false),
+                Triple(4096, !isReasoningModel, false),
+                Triple(8192, false, true),
+                Triple(null, false, false)
+            )
+            for ((toks, tempFlag, compFlag) in fallbackPlans) {
+                val retryRes = executeChatRequest(activeEndpoint, toks, includeTemp = tempFlag, useMaxCompletionTokens = compFlag)
+                code = retryRes.first
+                body = retryRes.second
+                if (code in 200..299) break
             }
         }
 
@@ -1349,6 +1374,69 @@ class AiService {
             put("role", "user")
             put("content", userPrompt)
         })
+
+        // Fast SSE streaming first when onDelta is supplied
+        if (onDelta != null) {
+            try {
+                val streamBody = JSONObject().apply {
+                    put("model", model)
+                    put("max_tokens", 8192)
+                    put("system", systemPrompt)
+                    put("messages", messages)
+                    put("stream", true)
+                }
+                val streamReq = Request.Builder()
+                    .url("https://api.anthropic.com/v1/messages")
+                    .header("x-api-key", apiKey.trim())
+                    .header("anthropic-version", "2023-06-01")
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+                    .post(streamBody.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
+                client.newCall(streamReq).execute().use { resp ->
+                    val contentType = resp.header("Content-Type").orEmpty().lowercase()
+                    if (resp.isSuccessful && contentType.contains("event-stream")) {
+                        val source = resp.body?.source()
+                        if (source != null) {
+                            val acc = StringBuilder()
+                            val thoughtAcc = StringBuilder()
+                            while (!source.exhausted()) {
+                                val line = source.readUtf8Line() ?: break
+                                if (!line.startsWith("data:")) continue
+                                val data = line.removePrefix("data:").trim()
+                                if (data.isEmpty() || data == "[DONE]") continue
+                                val evt = try { JSONObject(data) } catch (_: Exception) { continue }
+                                if (evt.optString("type") == "content_block_delta") {
+                                    val delta = evt.optJSONObject("delta") ?: continue
+                                    when (delta.optString("type")) {
+                                        "thinking_delta" -> {
+                                            val t = delta.optString("thinking", "")
+                                            if (t.isNotEmpty()) {
+                                                thoughtAcc.append(t)
+                                                onThoughtDelta?.invoke(thoughtAcc.toString())
+                                            }
+                                        }
+                                        "text_delta" -> {
+                                            val txt = delta.optString("text", "")
+                                            if (txt.isNotEmpty()) {
+                                                acc.append(txt)
+                                                val liveClean = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
+                                                if (liveClean.isNotEmpty()) onDelta(liveClean)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            val finalStreamed = stripAndExtractThinkTags(acc.toString().trim(), onThoughtDelta)
+                            if (finalStreamed.isNotEmpty()) return finalStreamed
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Fall back to standard non-streaming request below
+            }
+        }
 
         val reqBody = JSONObject().apply {
             put("model", model)

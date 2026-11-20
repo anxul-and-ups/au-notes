@@ -1520,13 +1520,68 @@ fun CompactNoteCard(
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                Text(
-                    text = displayContent,
-                    fontSize = 12.sp,
-                    color = if (isDarkMode) Color.White.copy(alpha = 0.65f) else Color(0xFF555555),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                val checkboxPreview = remember(note.content, note.category, blurApis) {
+                    if (note.category == "API" && blurApis) emptyList()
+                    else com.example.ui.util.NoteArtifactCodec.extractCheckboxLines(note.content, maxLines = 2)
+                }
+                if (checkboxPreview.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        checkboxPreview.forEach { item ->
+                            val green = Color(0xFF22C55E)
+                            val red = Color(0xFFEF4444)
+                            val idleCol = if (isDarkMode) Color.White.copy(alpha = 0.65f) else Color(0xFF555555)
+                            val fillCol = when (item.state) {
+                                com.example.ui.util.NoteArtifactCodec.CheckboxState.CHECKED -> green
+                                com.example.ui.util.NoteArtifactCodec.CheckboxState.CROSSED -> red
+                                com.example.ui.util.NoteArtifactCodec.CheckboxState.UNCHECKED -> Color.Transparent
+                            }
+                            val borderCol = when (item.state) {
+                                com.example.ui.util.NoteArtifactCodec.CheckboxState.CHECKED -> green
+                                com.example.ui.util.NoteArtifactCodec.CheckboxState.CROSSED -> red
+                                com.example.ui.util.NoteArtifactCodec.CheckboxState.UNCHECKED -> idleCol
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(13.dp)
+                                        .clip(RoundedCornerShape(3.5.dp))
+                                        .background(fillCol)
+                                        .border(1.2.dp, borderCol, RoundedCornerShape(3.5.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    when (item.state) {
+                                        com.example.ui.util.NoteArtifactCodec.CheckboxState.CHECKED ->
+                                            Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(9.dp))
+                                        com.example.ui.util.NoteArtifactCodec.CheckboxState.CROSSED ->
+                                            Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(9.dp))
+                                        com.example.ui.util.NoteArtifactCodec.CheckboxState.UNCHECKED -> Unit
+                                    }
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = item.text,
+                                    fontSize = 11.5.sp,
+                                    color = if (item.state == com.example.ui.util.NoteArtifactCodec.CheckboxState.CHECKED) Color.Gray else idleCol,
+                                    textDecoration = if (item.state == com.example.ui.util.NoteArtifactCodec.CheckboxState.CHECKED)
+                                        androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Text(
+                        text = displayContent,
+                        fontSize = 12.sp,
+                        color = if (isDarkMode) Color.White.copy(alpha = 0.65f) else Color(0xFF555555),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(2.dp))
 

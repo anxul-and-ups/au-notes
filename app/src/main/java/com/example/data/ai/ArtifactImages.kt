@@ -473,9 +473,15 @@ object ArtifactBuilder {
 
     /**
      * Converts ```json:apex and ```mermaid blocks inside HTML into secure <div> containers
-     * and injects local offline ApexCharts & Mermaid.js scripts with custom toolbars and error boundaries.
+     * and injects local offline ApexCharts & Mermaid.js scripts with custom toolbars, error
+     * boundaries, and full-bleed Desktop/Mobile viewport CSS (removing narrow square-box walls).
      */
-    fun harden(html: String, isDarkMode: Boolean = false, desktopMode: Boolean = false): String {
+    fun harden(
+        html: String,
+        isDarkMode: Boolean = false,
+        desktopMode: Boolean = false,
+        lockZoom: Boolean = false
+    ): String {
         var h = html
         var counter = 1
 
@@ -492,32 +498,64 @@ object ArtifactBuilder {
             buildMermaidContainerHtml(counter++, m.groupValues[1])
         }
 
-        if (desktopMode) {
-            val viewportMetaRegex = Regex("<meta[^>]+name\\s*=\\s*[\"']viewport[\"'][^>]*>", RegexOption.IGNORE_CASE)
-            val desktopViewport = "<meta name=\"viewport\" content=\"width=1280, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes\">"
-            h = if (viewportMetaRegex.containsMatchIn(h)) {
-                viewportMetaRegex.replaceFirst(h, desktopViewport)
+        val targetViewport = when {
+            desktopMode && lockZoom ->
+                "<meta name=\"viewport\" content=\"width=1280, initial-scale=1.0, user-scalable=no\">"
+            desktopMode ->
+                "<meta name=\"viewport\" content=\"width=1280, initial-scale=1.0, minimum-scale=0.2, maximum-scale=5.0, user-scalable=yes\">"
+            lockZoom ->
+                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover\">"
+            else ->
+                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover\">"
+        }
+
+        val viewportMetaRegex = Regex("<meta[^>]+name\\s*=\\s*[\"']viewport[\"'][^>]*>", RegexOption.IGNORE_CASE)
+        val hasViewport = viewportMetaRegex.containsMatchIn(h)
+        if (hasViewport) {
+            h = viewportMetaRegex.replaceFirst(h, targetViewport)
+        }
+
+        // Remove any previous mode-override style block so Mobile <-> Desktop toggles cleanly
+        val modeStyleRegex = Regex("<style id=\"au-mode-override\">[\\s\\S]*?</style>", RegexOption.IGNORE_CASE)
+        h = modeStyleRegex.replace(h, "")
+
+        val fullBleedCss = if (desktopMode) {
+            """
+            <style id="au-mode-override">
+              html,body{width:100% !important;min-width:1280px !important;min-height:100vh !important;margin:0 !important;box-sizing:border-box !important;overflow-x:auto !important;}
+              body>main,body>.container,body>.wrapper,body>.page,body>.app,body>#app,body>#root,body>.shell{max-width:none !important;width:100% !important;box-sizing:border-box !important;}
+            </style>
+            """.trimIndent()
+        } else {
+            """
+            <style id="au-mode-override">
+              html,body{width:100% !important;max-width:100vw !important;min-height:100vh !important;margin:0 !important;box-sizing:border-box !important;overflow-x:hidden !important;}
+              body>main,body>.container,body>.wrapper,body>.page,body>.app,body>#app,body>#root,body>.shell{max-width:100% !important;width:100% !important;box-sizing:border-box !important;}
+            </style>
+            """.trimIndent()
+        }
+
+        if (h.contains("<!--au-viz-->")) {
+            val closeHead = Regex("</head>", RegexOption.IGNORE_CASE).find(h)
+            val inject = (if (!hasViewport) targetViewport else "") + fullBleedCss
+            return if (closeHead != null) {
+                h.replaceRange(closeHead.range.first, closeHead.range.first, inject)
             } else {
-                h
+                inject + h
             }
         }
 
-        if (h.contains("<!--au-viz-->")) return h
         val head = Regex("<head[^>]*>", RegexOption.IGNORE_CASE).find(h)
         val extra = StringBuilder("<!--au-viz-->")
-        if (!Regex("name\\s*=\\s*[\"']viewport[\"']", RegexOption.IGNORE_CASE).containsMatchIn(h)) {
-            if (desktopMode) {
-                extra.append("<meta name=\"viewport\" content=\"width=1280, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes\">")
-            } else {
-                extra.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover\">")
-            }
+        if (!hasViewport) {
+            extra.append(targetViewport)
         }
         extra.append(
             """
             <style>
-              html,body{min-height:100vh;width:100%;margin:0;box-sizing:border-box;overflow-x:auto}
+              html,body{min-height:100vh;width:100%;margin:0;box-sizing:border-box}
               :where(img,video,svg){max-width:100%}
-              :where(img){height:auto;max-height:420px;object-fit:contain;border-radius:12px;display:block;margin:10px auto}
+              :where(img){height:auto;max-height:480px;object-fit:contain;border-radius:12px;display:block;margin:10px auto}
               :where(body){overflow-wrap:anywhere;box-sizing:border-box}
               .au-viz-card{width:100%;margin:16px 0;border-radius:16px;padding:14px;box-sizing:border-box;background:${if (isDarkMode) "#18181F" else "#FFFFFF"};border:1px solid ${if (isDarkMode) "rgba(255,255,255,0.12)" else "rgba(15,23,42,0.12)"};box-shadow:0 8px 24px rgba(0,0,0,0.06);font-family:system-ui,-apple-system,sans-serif;}
               .au-viz-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${if (isDarkMode) "rgba(255,255,255,0.08)" else "rgba(15,23,42,0.08)"};}
@@ -553,6 +591,13 @@ object ArtifactBuilder {
         }
         h = if (head != null) h.replaceRange(head.range.last + 1, head.range.last + 1, extra.toString())
         else extra.toString() + h
+        // Append full-bleed override right before </head> so it wins over page inline styles
+        val closeHead = Regex("</head>", RegexOption.IGNORE_CASE).find(h)
+        h = if (closeHead != null) {
+            h.replaceRange(closeHead.range.first, closeHead.range.first, fullBleedCss)
+        } else {
+            h + fullBleedCss
+        }
         return h
     }
 

@@ -367,4 +367,163 @@ class AuNotesFeaturesTest {
         val cleaned = com.example.ui.util.DocumentOcrHelper.stripConversationalPrefix("Ok sir, here is the extracted text:\nHello World 123")
         assertEquals("Hello World 123", cleaned)
     }
+
+    @Test
+    fun `NoteArtifactCodec aligns Devanagari to top shirorekha and Latin to baseline`() {
+        assertTrue(com.example.ui.util.NoteArtifactCodec.isDevanagariLine("नमस्ते दुनिया"))
+        assertFalse(com.example.ui.util.NoteArtifactCodec.isDevanagariLine("Hello AU Notes 2026"))
+
+        val lineTop = 100f
+        val lineBaseline = 136f
+        val lineBottom = 148f
+        val hindiY = com.example.ui.util.NoteArtifactCodec.computeRuleYForLine(
+            lineText = "हिंदी नोट्स",
+            lineTop = lineTop,
+            lineBaseline = lineBaseline,
+            lineBottom = lineBottom,
+            baselineOffsetPx = 3f
+        )
+        val englishY = com.example.ui.util.NoteArtifactCodec.computeRuleYForLine(
+            lineText = "English notes",
+            lineTop = lineTop,
+            lineBaseline = lineBaseline,
+            lineBottom = lineBottom,
+            baselineOffsetPx = 3f
+        )
+        assertTrue("Devanagari rule must stick near line top shirorekha", hindiY in 100f..112f)
+        assertTrue("Latin rule must sit right under baseline", englishY >= lineBaseline && englishY <= lineBottom)
+    }
+
+    @Test
+    fun `NoteArtifactCodec smartTopicTitle tri-state checkboxes and artifact split-combine work cleanly`() {
+        val inferredFromH1 = com.example.ui.util.NoteArtifactCodec.smartTopicTitle(
+            providedTitle = "HTML Page",
+            htmlOrJson = "<html><head><title>Untitled</title></head><body><h1>Indian Army History</h1></body></html>",
+            userPrompt = "Indian Army par html page banao",
+            isSlides = false
+        )
+        assertEquals("Indian Army History", inferredFromH1)
+
+        val inferredFromPrompt = com.example.ui.util.NoteArtifactCodec.smartTopicTitle(
+            providedTitle = "Slides",
+            htmlOrJson = "[]",
+            userPrompt = "Photosynthesis par slides banao",
+            isSlides = true
+        )
+        assertEquals("Photosynthesis — Slides", inferredFromPrompt)
+
+        // Tri-state checkbox cycle: Blank -> Green Tick -> Red Cross -> Blank
+        val start = "[ ] Buy milk\n- [ ] Finish report"
+        val step1 = com.example.ui.util.NoteArtifactCodec.cycleCheckboxAtLine(start, 0)
+        assertTrue(step1.startsWith("[x] Buy milk"))
+        val step2 = com.example.ui.util.NoteArtifactCodec.cycleCheckboxAtLine(step1, 0)
+        assertTrue(step2.startsWith("[!] Buy milk"))
+        val step3 = com.example.ui.util.NoteArtifactCodec.cycleCheckboxAtLine(step2, 0)
+        assertTrue(step3.startsWith("[ ] Buy milk"))
+
+        val parsedChecks = com.example.ui.util.NoteArtifactCodec.extractCheckboxLines(
+            "[ ] Open task\n[x] Done task\n[!] Failed task",
+            maxLines = 5
+        )
+        assertEquals(3, parsedChecks.size)
+        assertEquals(com.example.ui.util.NoteArtifactCodec.CheckboxState.UNCHECKED, parsedChecks[0].state)
+        assertEquals(com.example.ui.util.NoteArtifactCodec.CheckboxState.CHECKED, parsedChecks[1].state)
+        assertEquals(com.example.ui.util.NoteArtifactCodec.CheckboxState.CROSSED, parsedChecks[2].state)
+
+        // Artifact + user text split & combine round-trip (Write Mode keeps raw HTML out of user text)
+        val htmlDoc = "<!DOCTYPE html><html><head><title>Solar Guide</title></head><body><h1>Solar</h1></body></html>"
+        val stored = com.example.ui.util.NoteArtifactCodec.combineNoteContent(
+            artifacts = listOf(
+                com.example.ui.util.NoteArtifactCodec.EditableNoteArtifact(
+                    id = "a0",
+                    kind = com.example.ui.util.NoteArtifactCodec.ArtifactKind.HTML,
+                    title = "Solar Guide",
+                    code = htmlDoc
+                )
+            ),
+            editableText = "My personal notes below the web page"
+        )
+        val split = com.example.ui.util.NoteArtifactCodec.splitNoteContent(stored)
+        assertEquals(1, split.artifacts.size)
+        assertEquals("Solar Guide", split.artifacts.first().title)
+        assertEquals("My personal notes below the web page", split.editableText)
+        assertFalse("Editable text must not contain raw HTML tags", split.editableText.contains("<html>"))
+    }
+
+    @Test
+    fun `ArtifactBuilder hardens full-bleed Mobile and Desktop views with Read-Mode zoom lock`() {
+        val boxedHtml = """<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div class="container" style="max-width:420px">Hello</div></body></html>"""
+        val desktopLocked = ArtifactBuilder.harden(boxedHtml, isDarkMode = false, desktopMode = true, lockZoom = true)
+        assertTrue("Desktop locked must set width=1280", desktopLocked.contains("width=1280"))
+        assertTrue("Desktop locked must disable zoom", desktopLocked.contains("user-scalable=no"))
+        assertTrue("Full-bleed override CSS must be injected", desktopLocked.contains("au-mode-override"))
+
+        val mobileLocked = ArtifactBuilder.harden(desktopLocked, isDarkMode = false, desktopMode = false, lockZoom = true)
+        assertTrue("Mobile locked must switch back to width=device-width", mobileLocked.contains("width=device-width"))
+        assertTrue("Mobile locked must keep zoom disabled", mobileLocked.contains("user-scalable=no"))
+    }
+
+    @Test
+    fun `AgentTools parses custom model variations and excludes unwanted Claude branding from prompts`() {
+        // 1. Unclosed <tool_call> tag with trailing comma
+        val unclosed = """<tool_call>{"name":"edit_note","args":{"note_id":7,"new_content":"Updated text",}}"""
+        val parsedUnclosed = AgentTools.parse(unclosed)
+        assertNotNull(parsedUnclosed)
+        assertEquals("edit_note", parsedUnclosed!!.name)
+        assertEquals(7L, parsedUnclosed.args.optLong("note_id"))
+
+        // 2. Prose + fenced JSON with tool_name & parameters aliases
+        val proseFenced = """
+            Sure, I will update that note right away!
+            ```json
+            {"tool_name": "create_note", "parameters": {"title": "Study Plan", "content": "Chapter 1",}}
+            ```
+        """.trimIndent()
+        val parsedFenced = AgentTools.parse(proseFenced)
+        assertNotNull(parsedFenced)
+        assertEquals("create_note", parsedFenced!!.name)
+        assertEquals("Study Plan", parsedFenced.args.optString("title"))
+
+        // 3. System prompt contains zero mentions of "claude"
+        val prompt = AgentTools.buildSystemPrompt(
+            userName = "Anshul",
+            enabled = AgentTools.ALL,
+            openNoteContext = null,
+            notesIndex = "",
+            workMode = true,
+            includeDesign = true
+        )
+        assertFalse("System prompt must not mention Claude", prompt.contains("claude", ignoreCase = true))
+    }
+
+    @Test
+    fun `FontsSettingsScreen renders live font previews filters by search and applies selection`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = AppPreferences(context)
+        prefs.setSelectedNoteFontId("system_default")
+
+        composeTestRule.setContent {
+            com.example.ui.screens.FontsSettingsScreen(
+                preferences = prefs,
+                isDarkMode = false,
+                onBack = {}
+            )
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Fonts").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("fonts_search_input").performTextInput("Devanagari")
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Noto Sans Devanagari").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("font_card_noto_sans_devanagari").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals("noto_sans_devanagari", prefs.selectedNoteFontId.value)
+
+        composeTestRule.onNodeWithTag("font_fav_noto_sans_devanagari").performClick()
+        composeTestRule.waitForIdle()
+        assertTrue(prefs.favoriteFontIds.value.contains("noto_sans_devanagari"))
+    }
 }
+

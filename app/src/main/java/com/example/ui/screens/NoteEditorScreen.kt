@@ -230,13 +230,18 @@ import kotlin.math.roundToInt
 
 import androidx.compose.material.icons.filled.Splitscreen
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.FontDownload
+import androidx.compose.material.icons.filled.Code
 import com.example.ui.components.PageStyleDialog
+import com.example.ui.components.computeDynamicPageRuleYs
 import com.example.ui.components.drawPageRules
 import com.example.ui.components.isLightPageStyle
 import com.example.ui.components.loadNotePageStyle
 import com.example.ui.components.pageLineColor
 import com.example.ui.components.pagePaperColor
 import com.example.ui.components.saveNotePageStyle
+import com.example.ui.util.CustomFontManager
+import com.example.ui.util.NoteArtifactCodec
 import com.example.ui.util.handleHardwareShortcuts
 
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
@@ -248,6 +253,7 @@ fun NoteEditorScreen(
     preferences: AppPreferences,
     onBack: () -> Unit,
     onOpenTableEditor: (initialTableData: String, onResult: (String) -> Unit) -> Unit = { _, _ -> },
+    onOpenFontsSettings: () -> Unit = {},
     onOpenInSplitScreen: ((NoteEntity?) -> Unit)? = null,
     onOpenInSmallWindow: ((NoteEntity?) -> Unit)? = null,
     onSaveNote: (
@@ -276,9 +282,21 @@ fun NoteEditorScreen(
     val coroutineScope = rememberCoroutineScope()
     val aiService = remember { AiService() }
 
+    val selectedFontId by preferences.selectedNoteFontId.collectAsState()
+    val importedFonts by preferences.importedFonts.collectAsState()
+    val activeNoteFontFamily = remember(selectedFontId, importedFonts) {
+        CustomFontManager.resolveFontFamily(selectedFontId, importedFonts)
+    }
+
+    val initialSplit = remember(initialNote?.id, initialNote?.content) {
+        NoteArtifactCodec.splitNoteContent(initialNote?.content ?: "", initialNote?.title ?: "")
+    }
+    var embeddedArtifacts by remember { mutableStateOf(initialSplit.artifacts) }
+    var editingArtifact by remember { mutableStateOf<NoteArtifactCodec.EditableNoteArtifact?>(null) }
+
     var title by remember { mutableStateOf(initialNote?.title ?: "") }
     var contentValue by remember {
-        val initContent = initialNote?.content ?: ""
+        val initContent = initialSplit.editableText
         mutableStateOf(TextFieldValue(text = initContent, selection = TextRange(initContent.length)))
     }
     var selectedCategory by remember { mutableStateOf(initialNote?.category ?: "Normal") }
@@ -461,7 +479,11 @@ fun NoteEditorScreen(
     }
 
     fun isNoteEmpty(): Boolean {
-        return title.trim().isBlank() && contentValue.text.trim().isBlank() && attachments.isEmpty() && tableData.trim().isBlank()
+        return title.trim().isBlank() &&
+            contentValue.text.trim().isBlank() &&
+            attachments.isEmpty() &&
+            tableData.trim().isBlank() &&
+            embeddedArtifacts.isEmpty()
     }
 
     data class EditorHistorySnapshot(
@@ -497,10 +519,11 @@ fun NoteEditorScreen(
             else -> selectedCategory
         }
 
+        val combinedContent = NoteArtifactCodec.combineNoteContent(embeddedArtifacts, contentValue.text)
         onSaveNote(
             currentNoteId,
             title,
-            contentValue.text,
+            combinedContent,
             autoCat,
             isBold,
             isItalic,
@@ -535,7 +558,7 @@ fun NoteEditorScreen(
     // Debounced Auto-Save (skip initial composition pass when opening note)
     var isFirstAutoSavePass by remember { mutableStateOf(true) }
     LaunchedEffect(
-        title, contentValue.text, spans, tableData, attachments,
+        title, contentValue.text, embeddedArtifacts, spans, tableData, attachments,
         isBold, isItalic, isUnderline, isStrikethrough, isCodeFormat,
         fontSize, selectedColorHex, alignment, listType, saveInChoice
     ) {
@@ -1668,6 +1691,92 @@ fun NoteEditorScreen(
                         Spacer(modifier = Modifier.height(14.dp))
                     }
 
+                    // Embedded HTML / Slides Artifact Cards (Clean clickable card instead of dumping raw HTML into editor)
+                    if (embeddedArtifacts.isNotEmpty()) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp)
+                        ) {
+                            embeddedArtifacts.forEach { art ->
+                                val cardBg = if (isDarkMode && !lightPaper) Color(0xFF171821) else Color(0xFFFAF8F5)
+                                val cardBorder = if (isDarkMode && !lightPaper) Color(0xFF2C2F3E) else Color(0xFFD6D3CB)
+                                val cardFg = if (isDarkMode && !lightPaper) Color(0xFFF4F1EA) else Color(0xFF18181B)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(cardBg)
+                                        .border(1.2.dp, cardBorder, RoundedCornerShape(14.dp))
+                                        .clickable { editingArtifact = art }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(38.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(Color(0xFFEA580C).copy(alpha = 0.16f))
+                                                .border(1.dp, Color(0xFFEA580C).copy(alpha = 0.45f), RoundedCornerShape(10.dp)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(Icons.Default.Code, contentDescription = null, tint = Color(0xFFEA580C), modifier = Modifier.size(19.dp))
+                                        }
+                                        Spacer(Modifier.width(10.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = art.title.ifBlank { "Interactive Artifact" },
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = cardFg,
+                                                maxLines = 1,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "Tap card to edit ${if (art.kind == NoteArtifactCodec.ArtifactKind.SLIDES) "Slides" else "HTML"} code • Write notes below",
+                                                fontSize = 11.sp,
+                                                color = cardFg.copy(alpha = 0.65f),
+                                                maxLines = 1,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(7.dp))
+                                                .background(Color(0xFFEA580C).copy(alpha = 0.14f))
+                                                .padding(horizontal = 7.dp, vertical = 3.dp)
+                                        ) {
+                                            Text(
+                                                text = if (art.kind == NoteArtifactCodec.ArtifactKind.SLIDES) "SLIDES" else "HTML",
+                                                fontSize = 9.5.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = Color(0xFFEA580C)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                embeddedArtifacts = embeddedArtifacts.filterNot { it.id == art.id }
+                                            },
+                                            modifier = Modifier.size(30.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Remove artifact",
+                                                tint = Color(0xFFEF4444),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Main Content Input (Day Mode text contrast fix & Auto-Scroll buffer)
                     Box(modifier = Modifier
                         .fillMaxWidth()
@@ -1701,6 +1810,25 @@ fun NoteEditorScreen(
                                         val end = (m.range.last + 1).coerceIn(start, raw.length)
                                         if (start < end) {
                                             addStyle(SpanStyle(color = Color.Transparent, fontSize = 0.sp), start, end)
+                                        }
+                                    }
+                                }
+                                // Keep checkbox markers invisible with consistent monospace width so drawn checkboxes never collide with text
+                                if (raw.contains("[ ]") || raw.contains("[x]") || raw.contains("[!]")) {
+                                    val cbRegex = Regex("(?m)^([ \\t]*)(\\[ \\]|\\[x\\]|\\[!\\]) ")
+                                    for (m in cbRegex.findAll(raw)) {
+                                        val g = m.groups[2] ?: continue
+                                        val s = g.range.first.coerceIn(0, raw.length)
+                                        val e = (g.range.last + 1).coerceIn(s, raw.length)
+                                        if (s < e) {
+                                            addStyle(
+                                                SpanStyle(
+                                                    color = Color.Transparent,
+                                                    fontFamily = FontFamily.Monospace
+                                                ),
+                                                s,
+                                                e
+                                            )
                                         }
                                     }
                                 }
@@ -1801,7 +1929,7 @@ fun NoteEditorScreen(
                         visualTransformation = editorVisualTransformation,
                         textStyle = TextStyle(
                             fontSize = fontSize.sp,
-                            fontFamily = if (isCodeFormat || isJsonMode) FontFamily.Monospace else FontFamily.Default,
+                            fontFamily = if (isCodeFormat || isJsonMode) FontFamily.Monospace else activeNoteFontFamily,
                             textAlign = when (alignment) {
                                 "center" -> TextAlign.Center
                                 "right" -> TextAlign.Right
@@ -1814,8 +1942,9 @@ fun NoteEditorScreen(
                         decorationBox = { innerTextField ->
                             if (contentValue.text.isBlank()) {
                                 Text(
-                                    text = "Start typing your notes, code, or ideas...",
+                                    text = if (embeddedArtifacts.isNotEmpty()) "Add notes below your artifact..." else "Start typing your notes, code, or ideas...",
                                     fontSize = fontSize.sp,
+                                    fontFamily = if (isCodeFormat || isJsonMode) FontFamily.Monospace else activeNoteFontFamily,
                                     color = if (isDarkMode) Color.White.copy(0.35f) else Color.Gray.copy(0.6f)
                                 )
                             }
@@ -1830,23 +1959,26 @@ fun NoteEditorScreen(
                             .heightIn(min = 260.dp)
                             .focusRequester(contentFocusRequester)
                             .drawBehind {
-                                // Notebook rules: one line under every REAL text line (so text always sits on the lines,
-                                // whatever the font size / images above), then continues to fill the page.
-                                if (pageStyle == "ruled" || pageStyle == "legal" || pageStyle == "grid" || pageStyle == "dotted") {
+                                // Dynamic notebook rules: Latin sits flush ON the bottom line, Hindi/Devanagari
+                                // hangs cleanly from the TOP line, and font-size increases scale row height dynamically.
+                                if (pageStyle != "standard") {
                                     val lay = textLayout
                                     val fallbackStep = (fontSize * lineSpacing).sp.toPx().coerceAtLeast(18.dp.toPx())
-                                    val ys = ArrayList<Float>()
-                                    var stepPx = fallbackStep
-                                    if (lay != null && lay.lineCount > 0) {
-                                        for (i in 0 until lay.lineCount) ys.add(lay.getLineBaseline(i) + 4.dp.toPx())
-                                        stepPx = (lay.getLineBottom(0) - lay.getLineTop(0)).coerceAtLeast(14.dp.toPx())
-                                    }
-                                    var yy = (ys.lastOrNull() ?: (fallbackStep - 6.dp.toPx())) + stepPx
-                                    val limit = maxOf(size.height, 520.dp.toPx())
-                                    while (yy < limit) { ys.add(yy); yy += stepPx }
+                                    val stepPx = if (lay != null && lay.lineCount > 0) {
+                                        (lay.getLineBottom(0) - lay.getLineTop(0)).coerceAtLeast(16.dp.toPx())
+                                    } else fallbackStep
+                                    val limit = maxOf(size.height, 560.dp.toPx())
+                                    val ys = computeDynamicPageRuleYs(
+                                        layout = lay,
+                                        fullText = contentValue.text,
+                                        originY = 0f,
+                                        fallbackStepPx = stepPx,
+                                        baselinePadPx = 3.dp.toPx(),
+                                        maxBottomPx = limit
+                                    )
                                     val padStart = if (hasMargin) 40.dp.toPx() else 8.dp.toPx()
                                     drawPageRules(
-                                        pageStyle, ys, stepPx, -padStart, size.width + 8.dp.toPx(), 0f, ys.last() + stepPx,
+                                        pageStyle, ys, stepPx, -padStart, size.width + 8.dp.toPx(), 0f, (ys.lastOrNull() ?: limit) + stepPx,
                                         pageLineColor(pageStyle, isDarkMode), 1.dp.toPx()
                                     )
                                 }
@@ -2064,35 +2196,50 @@ fun NoteEditorScreen(
                         }
                     }
 
-                    // Real, clickable checkbox rectangles drawn over the (invisible) "[ ]" markers.
+                    // Real, crisp tri-state checkboxes drawn cleanly centered over the invisible "[ ]"/"[x]"/"[!]" markers.
                     textLayout?.let { layout ->
                         val full = contentValue.text
                         if (layout.layoutInput.text.length == full.length) {
                             val markerRegex = Regex("(?m)^([ \\t]*)(\\[ \\]|\\[x\\]|\\[!\\]) ")
+                            val boxDp = 19.dp
+                            val boxPx = with(density) { boxDp.toPx() }
                             markerRegex.findAll(full).forEach { m ->
                                 val markerStart = m.groups[2]!!.range.first
+                                val markerEnd = (m.groups[2]!!.range.last + 1).coerceAtMost(full.length)
                                 val line = layout.getLineForOffset(markerStart)
-                                val x = layout.getHorizontalPosition(markerStart, true)
+                                val xStart = layout.getHorizontalPosition(markerStart, true)
+                                val xEnd = layout.getHorizontalPosition(markerEnd, true)
+                                val spanW = (xEnd - xStart).coerceAtLeast(boxPx)
+                                val centeredX = xStart + (spanW - boxPx) / 2f
                                 val top = layout.getLineTop(line)
                                 val bottom = layout.getLineBottom(line)
-                                val boxPx = with(density) { 18.dp.toPx() }
                                 val state = m.groups[2]!!.value
-                                val green = Color(0xFF35B65B)
-                                val red = Color(0xFFE05252)
-                                val tint = when (state) { "[x]" -> green; "[!]" -> red; else -> if (isDarkMode) Color.White.copy(.75f) else Color(0xFF555555) }
+                                val green = Color(0xFF22C55E)
+                                val red = Color(0xFFEF4444)
+                                val idleBorder = if (isDarkMode && !lightPaper) Color.White.copy(0.65f) else Color(0xFF475569)
+                                val fillColor = when (state) {
+                                    "[x]" -> green
+                                    "[!]" -> red
+                                    else -> if (isDarkMode && !lightPaper) Color.White.copy(0.06f) else Color.White.copy(0.85f)
+                                }
+                                val borderColor = when (state) {
+                                    "[x]" -> green
+                                    "[!]" -> red
+                                    else -> idleBorder
+                                }
                                 Box(
                                     modifier = Modifier
-                                        .offset { IntOffset(x.roundToInt(), (top + (bottom - top - boxPx) / 2f).roundToInt()) }
-                                        .size(18.dp)
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(if (state == "[ ]") Color.Transparent else tint.copy(alpha = .18f))
-                                        .border(1.6.dp, tint, RoundedCornerShape(4.dp))
+                                        .offset { IntOffset(centeredX.roundToInt(), (top + (bottom - top - boxPx) / 2f).roundToInt()) }
+                                        .size(boxDp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(fillColor)
+                                        .border(1.7.dp, borderColor, RoundedCornerShape(6.dp))
                                         .clickable { cycleCheckboxAt(markerStart) },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     when (state) {
-                                        "[x]" -> Icon(Icons.Default.Check, "Checked", tint = green, modifier = Modifier.size(14.dp))
-                                        "[!]" -> Icon(Icons.Default.Close, "Crossed", tint = red, modifier = Modifier.size(14.dp))
+                                        "[x]" -> Icon(Icons.Default.Check, "Checked", tint = Color.White, modifier = Modifier.size(13.5.dp))
+                                        "[!]" -> Icon(Icons.Default.Close, "Crossed", tint = Color.White, modifier = Modifier.size(13.5.dp))
                                         else -> Unit
                                     }
                                 }
@@ -2663,6 +2810,19 @@ Row(
 
                         ToolDivider(isDarkMode)
 
+                        // Fonts manager shortcut directly in NoteWriter toolbar
+                        EditorTool(
+                            icon = Icons.Default.FontDownload, label = "Fonts",
+                            active = selectedFontId != CustomFontManager.DEFAULT_FONT_ID, idleTint = idleTint
+                        ) {
+                            if (!isNoteEmpty()) {
+                                performSave(showToast = false, thenNavigateBack = false)
+                            }
+                            onOpenFontsSettings()
+                        }
+
+                        ToolDivider(isDarkMode)
+
                         // PDF mode: page preview + PDF / single page / image export
                         EditorTool(
                             icon = Icons.Default.PictureAsPdf, label = "PDF",
@@ -2679,6 +2839,67 @@ Row(
             }
 
         }
+    }
+
+    // Artifact Code Editor Modal (when tapping an HTML/Slides Artifact Card in Write Mode)
+    editingArtifact?.let { art ->
+        var editTitle by remember(art.id) { mutableStateOf(art.title) }
+        var editCode by remember(art.id) { mutableStateOf(art.code) }
+        AlertDialog(
+            onDismissRequest = { editingArtifact = null },
+            containerColor = if (isDarkMode) Color(0xFF141821) else Color.White,
+            title = {
+                Text(
+                    text = "Edit ${if (art.kind == NoteArtifactCodec.ArtifactKind.SLIDES) "Slides" else "HTML"} Artifact",
+                    fontWeight = FontWeight.Bold,
+                    color = if (isDarkMode) Color.White else Color(0xFF111827)
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = editTitle,
+                        onValueChange = { editTitle = it },
+                        label = { Text("Artifact Title") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = editCode,
+                        onValueChange = { editCode = it },
+                        label = { Text(if (art.kind == NoteArtifactCodec.ArtifactKind.SLIDES) "Slides JSON" else "HTML / CSS / JS Code") },
+                        textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 17.sp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 240.dp, max = 380.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        embeddedArtifacts = embeddedArtifacts.map { item ->
+                            if (item.id == art.id) item.copy(
+                                title = editTitle.trim().ifBlank { item.title },
+                                code = editCode
+                            ) else item
+                        }
+                        editingArtifact = null
+                        Toast.makeText(context, "Artifact updated", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("Save Changes", color = CrimsonPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingArtifact = null }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
     }
 
     // Paragraph style sheet — alignment + bullet/number/letter lists + indentation.

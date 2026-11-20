@@ -96,11 +96,13 @@ fun ConfigureEdgeToEdgeDialog(isDarkMode: Boolean = true) {
             val dialogWindow = (view.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
             dialogWindow?.let { win ->
                 androidx.core.view.WindowCompat.setDecorFitsSystemWindows(win, false)
+                win.decorView.setPadding(0, 0, 0, 0)
                 win.setLayout(
                     android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                     android.view.ViewGroup.LayoutParams.MATCH_PARENT
                 )
                 win.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+                win.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
                 win.statusBarColor = android.graphics.Color.TRANSPARENT
                 win.navigationBarColor = android.graphics.Color.TRANSPARENT
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {

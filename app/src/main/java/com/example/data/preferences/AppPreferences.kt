@@ -24,6 +24,12 @@ data class ApiProviderEntry(
     val isCustom: Boolean = false
 )
 
+data class ImportedFontEntry(
+    val id: String,
+    val name: String,
+    val filePath: String
+)
+
 class AppPreferences(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("au_notes_prefs", Context.MODE_PRIVATE)
@@ -560,7 +566,7 @@ class AppPreferences(context: Context) {
     fun setNotePageStyle(noteId: Long, style: String) {
         if (noteId <= 0L) return
         val clean = when (style) {
-            "ruled", "legal", "grid", "dotted", "word_white" -> style
+            "ruled", "legal", "grid", "dotted", "cornell", "word_white" -> style
             else -> "standard"
         }
         val updated = _notePageStyles.value + (noteId to clean)
@@ -664,6 +670,59 @@ class AppPreferences(context: Context) {
     fun setSearchModeEnabled(enabled: Boolean) {
         _searchModeEnabled.value = enabled
         prefs.edit().putBoolean("agent_search_mode", enabled).apply()
+    }
+
+    // ---- Custom Fonts Manager (Settings -> Fonts & NoteEditor toolbar) ----
+    private val _selectedNoteFontId = MutableStateFlow(
+        prefs.getString("selected_note_font_id", "system_default") ?: "system_default"
+    )
+    val selectedNoteFontId: StateFlow<String> = _selectedNoteFontId.asStateFlow()
+    fun setSelectedNoteFontId(fontId: String) {
+        val clean = fontId.trim().ifBlank { "system_default" }
+        _selectedNoteFontId.value = clean
+        prefs.edit().putString("selected_note_font_id", clean).apply()
+    }
+
+    private val _favoriteFontIds = MutableStateFlow(
+        prefs.getStringSet("favorite_font_ids", emptySet())?.toSet() ?: emptySet()
+    )
+    val favoriteFontIds: StateFlow<Set<String>> = _favoriteFontIds.asStateFlow()
+    fun toggleFavoriteFont(fontId: String) {
+        val cur = _favoriteFontIds.value.toMutableSet()
+        if (!cur.add(fontId)) cur.remove(fontId)
+        _favoriteFontIds.value = cur
+        prefs.edit().putStringSet("favorite_font_ids", cur).apply()
+    }
+
+    private fun loadImportedFonts(): List<ImportedFontEntry> {
+        val raw = prefs.getString("imported_fonts_list", null) ?: return emptyList()
+        return raw.split("~~").mapNotNull { row ->
+            val p = row.split("|")
+            if (p.size < 3) null else ImportedFontEntry(p[0], p[1], p[2])
+        }
+    }
+
+    private val _importedFonts = MutableStateFlow(loadImportedFonts())
+    val importedFonts: StateFlow<List<ImportedFontEntry>> = _importedFonts.asStateFlow()
+
+    private fun persistImportedFonts(list: List<ImportedFontEntry>) {
+        val raw = list.joinToString("~~") { "${it.id}|${it.name.replace("|", " ")}|${it.filePath}" }
+        prefs.edit().putString("imported_fonts_list", raw).apply()
+    }
+
+    fun addImportedFont(entry: ImportedFontEntry) {
+        val updated = _importedFonts.value.filterNot { it.id == entry.id } + entry
+        _importedFonts.value = updated
+        persistImportedFonts(updated)
+    }
+
+    fun removeImportedFont(fontId: String) {
+        val updated = _importedFonts.value.filterNot { it.id == fontId }
+        _importedFonts.value = updated
+        persistImportedFonts(updated)
+        if (fontId in _favoriteFontIds.value) {
+            toggleFavoriteFont(fontId)
+        }
     }
 
     fun getEffectiveApiKey(): String {

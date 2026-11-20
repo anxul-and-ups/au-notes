@@ -499,6 +499,8 @@ object AgentTools {
                 - Size: tiny source 6–8 slides; medium 10–14; long/full context 14–22 (max 24). Roughly one slide per section or idea.
                 - Slide 1 = layout `title`; last slide = `closing` (summary / takeaway). In between mix layouts: `content` (title + 3–5 informative bullets), `stats` for big numbers, `timeline` for dates/steps, `bars` for numeric comparisons, `table` for comparisons, `two_column` for pros/cons or A vs B, `quote` for a quote, `image_right` / `image_left` when a picture helps (avoid `image_full` so images stay cleanly framed and never stretch full-screen over text).
                 - Pictures: an image/PDF/note the user attached is a SOURCE to READ, not a decoration. Extract its text and facts and build the content from them. Do NOT insert the user's own photo into slides or HTML unless the user explicitly asks ("meri photo slides me lagao", "image page me daalo") or the design clearly needs it; if it is unclear whether they want it embedded, ask ONE short question. If they do ask, use `image_file` (inbox file name or number) on `image_right`/`image_left`. For decorative/topic pictures use `image_query` (3–8 specific words), at most 1 image per slide, properly framed.
+                - SMART TOPIC-BASED NAMING: Always pass a concise, descriptive 2–6 word topic title (e.g. "Indian Army Overview", "Photosynthesis Study Guide") in `title` for `create_html_page`, `create_html_slides`, and `create_slide_deck` — NEVER use generic names like "HTML Page", "Slides", or "Untitled".
+                - FULL-BLEED EDGE-TO-EDGE LAYOUT: In `create_html_page`, design full-width responsive layouts (`html, body { width: 100%; min-height: 100vh; margin: 0; padding: 0; }`) that fill the screen edge-to-edge on both Mobile and Desktop without trapping the entire page inside a narrow square box or outer border wall.
                 - `slides_json` must be one valid JSON array. Put `*word*` around one key word of a title to highlight it.
                 - NEVER print the slide JSON, the tool arguments or a <tool_call> as text for the user.
                 """.trimIndent()
@@ -628,7 +630,7 @@ object AgentTools {
                  • `footnote`: Optional bottom note.
             3. **Charts & Built-in SVG Icons (`add_chart` or ```chart)**:
                - Supported `chart_type` / `type`: `"bar"`, `"pie"`, `"line"`, `"blocks"`, `"timeline"`, `"pyramid"`, `"table"`.
-               - Supported built-in `icon` names on chart items: `"sparkle"`, `"gemini"`, `"whale"`, `"deepseek"`, `"claude"`, `"openai"`, `"cpu"`, `"code"`, `"star"`, `"check"`, `"trend"`, `"shield"`, `"book"`, `"bolt"`, `"globe"`.
+               - Supported built-in `icon` names on chart items: `"sparkle"`, `"gemini"`, `"whale"`, `"deepseek"`, `"openai"`, `"cpu"`, `"code"`, `"star"`, `"check"`, `"trend"`, `"shield"`, `"book"`, `"bolt"`, `"globe"`.
             4. **Vector Diagrams (`diagram` block / `<svg>`)**:
                - Use `viewBox="0 0 680 400"`, warm paper background `<rect width="680" height="400" rx="18" fill="#EFECE4" stroke="#18181B" stroke-width="3"/>`, crisp `#18181B` strokes (`stroke-width="2.5"`), accent fills (`#EA580C`, `#3F6212`, `#CA8A04`), and clear typography labels so diagrams look like hand-crafted editorial illustrations.
             """.trimIndent()
@@ -694,11 +696,53 @@ object AgentTools {
         }
     }
 
-    private val toolTagRegex = Regex("<tool_call>\\s*(\\{[\\s\\S]*?\\})\\s*</tool_call>")
+    private val toolTagRegex = Regex("<tool_call>\\s*(\\{[\\s\\S]*?\\})\\s*(?:</tool_call>|$)", RegexOption.IGNORE_CASE)
     private val thinkTagRegex = Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE)
+    private val fencedJsonRegex = Regex("```(?:json)?\\s*\\r?\\n(\\{[\\s\\S]*?\\})\\s*```", RegexOption.IGNORE_CASE)
 
     private fun stripThinkBlocks(raw: String): String =
         raw.replace(thinkTagRegex, "").trim()
+
+    private fun parseJsonLenient(raw: String): JSONObject? {
+        runCatching { return JSONObject(raw) }
+        val noTrailingCommas = raw.replace(Regex(",\\s*([}\\]])"), "$1")
+        return runCatching { JSONObject(noTrailingCommas) }.getOrNull()
+    }
+
+    private fun extractToolName(obj: JSONObject): String {
+        for (k in listOf("name", "tool_name", "tool", "function")) {
+            val v = obj.opt(k)
+            if (v is String && v.isNotBlank()) return v.trim()
+            if (v is JSONObject) {
+                val nested = v.optString("name", "").trim()
+                if (nested.isNotBlank()) return nested
+            }
+        }
+        return ""
+    }
+
+    private fun extractToolArgs(obj: JSONObject, rawJson: String): JSONObject {
+        for (k in listOf("args", "arguments", "parameters", "input")) {
+            val v = obj.opt(k)
+            if (v is JSONObject) return v
+            if (v is String && v.trim().startsWith("{")) {
+                parseJsonLenient(v.trim())?.let { return it }
+            }
+        }
+        val fn = obj.optJSONObject("function")
+        if (fn != null) {
+            for (k in listOf("args", "arguments", "parameters")) {
+                val v = fn.opt(k)
+                if (v is JSONObject) return v
+                if (v is String && v.trim().startsWith("{")) {
+                    parseJsonLenient(v.trim())?.let { return it }
+                }
+            }
+        }
+        return parseJsonLenient(rawJson)?.apply {
+            remove("name"); remove("tool_name"); remove("tool"); remove("function")
+        } ?: JSONObject()
+    }
 
     /** Strict parse first; if the JSON is broken (big nested slide JSON often is) try to salvage name + title + every complete slide. */
     fun parse(reply: String): ParsedToolCall? {
@@ -709,10 +753,12 @@ object AgentTools {
     /** True when the reply is an attempt at a tool call, even if its JSON is broken. */
     fun looksLikeToolCall(reply: String): Boolean {
         val t = stripThinkBlocks(reply)
-        if (t.contains("<tool_call>")) return true
-        val body = t.removePrefix("```json").removePrefix("```JSON").removePrefix("```").trim()
-        return body.startsWith("{") && (body.contains("\"args\"") || body.contains("\"arguments\"")) &&
-            Regex("\"name\"\\s*:\\s*\"[A-Za-z0-9_]+\"").containsMatchIn(body)
+        if (t.contains("<tool_call>", ignoreCase = true)) return true
+        val body = fencedJsonRegex.find(t)?.groupValues?.get(1)?.trim()
+            ?: t.removePrefix("```json").removePrefix("```JSON").removePrefix("```").trim()
+        return body.startsWith("{") &&
+            (body.contains("\"args\"") || body.contains("\"arguments\"") || body.contains("\"parameters\"") || body.contains("\"input\"")) &&
+            Regex("\"(?:name|tool_name|tool)\"\\s*:\\s*\"[A-Za-z0-9_]+\"").containsMatchIn(body)
     }
 
     private val SALVAGE_TOOLS = setOf(
@@ -726,9 +772,9 @@ object AgentTools {
     }
 
     private fun salvage(reply: String): ParsedToolCall? {
-        val start = reply.indexOf("<tool_call>")
+        val start = reply.indexOf("<tool_call>", ignoreCase = true)
         val body = (if (start >= 0) reply.substring(start + "<tool_call>".length) else reply).substringBefore("</tool_call>")
-        val name = Regex("\"name\"\\s*:\\s*\"([A-Za-z0-9_]+)\"").find(body)?.groupValues?.get(1) ?: return null
+        val name = Regex("\"(?:name|tool_name|tool)\"\\s*:\\s*\"([A-Za-z0-9_]+)\"").find(body)?.groupValues?.get(1) ?: return null
         if (name !in SALVAGE_TOOLS) return null
         val args = JSONObject()
         for (k in listOf("title", "theme", "accent_color", "type", "chart_type", "unit", "subtitle", "category", "folder", "mode")) {
@@ -742,7 +788,9 @@ object AgentTools {
                 "edit_note", "edit_current_note" -> "new_content"
                 else -> "content"
             }
-            val salvagedBody = extractStringField(body, fieldKey)?.takeIf { it.isNotBlank() } ?: return null
+            val salvagedBody = extractStringField(body, fieldKey)?.takeIf { it.isNotBlank() }
+                ?: extractStringField(body, "content")?.takeIf { it.isNotBlank() }
+                ?: return null
             args.put(fieldKey, salvagedBody)
             return ParsedToolCall(name = name, args = args, textBefore = if (start > 0) reply.substring(0, start).trim() else "")
         }
@@ -826,17 +874,32 @@ object AgentTools {
     private fun parseStrict(reply: String): ParsedToolCall? {
         val m = toolTagRegex.find(reply)
         if (m != null) {
-            return try {
-                val obj = JSONObject(m.groupValues[1])
-                val name = obj.optString("name").trim()
-                if (name.isBlank()) null
-                else ParsedToolCall(
-                    name = name,
-                    args = obj.optJSONObject("args") ?: obj.optJSONObject("arguments") ?: JSONObject(),
-                    textBefore = reply.substring(0, m.range.first).trim()
-                )
-            } catch (_: Exception) {
-                null
+            val obj = parseJsonLenient(m.groupValues[1])
+            if (obj != null) {
+                val name = extractToolName(obj)
+                if (name.isNotBlank()) {
+                    return ParsedToolCall(
+                        name = name,
+                        args = extractToolArgs(obj, m.groupValues[1]),
+                        textBefore = reply.substring(0, m.range.first).trim()
+                    )
+                }
+            }
+        }
+
+        val fencedMatch = fencedJsonRegex.find(reply)
+        if (fencedMatch != null) {
+            val rawJson = fencedMatch.groupValues[1].trim()
+            val obj = parseJsonLenient(rawJson)
+            if (obj != null) {
+                val name = extractToolName(obj)
+                if (name.isNotBlank() && ALL.any { it.id == name }) {
+                    return ParsedToolCall(
+                        name = name,
+                        args = extractToolArgs(obj, rawJson),
+                        textBefore = reply.substring(0, fencedMatch.range.first).trim()
+                    )
+                }
             }
         }
 
@@ -849,26 +912,17 @@ object AgentTools {
         val lastBrace = t.lastIndexOf('}')
         if (firstBrace >= 0 && lastBrace > firstBrace) {
             val jsonStr = t.substring(firstBrace, lastBrace + 1)
-            return try {
-                val obj = JSONObject(jsonStr)
-                val name = obj.optString("name").trim()
-                if (name.isBlank()) {
-                    null
-                } else {
-                    val argsObj = obj.optJSONObject("args") ?: obj.optJSONObject("arguments") ?: run {
-                        val a = JSONObject(jsonStr)
-                        a.remove("name")
-                        a
-                    }
+            val obj = parseJsonLenient(jsonStr)
+            if (obj != null) {
+                val name = extractToolName(obj)
+                if (name.isNotBlank() && ALL.any { it.id == name }) {
                     val textBefore = if (firstBrace > 0) t.substring(0, firstBrace).trim() else ""
-                    ParsedToolCall(
+                    return ParsedToolCall(
                         name = name,
-                        args = argsObj,
+                        args = extractToolArgs(obj, jsonStr),
                         textBefore = textBefore
                     )
                 }
-            } catch (_: Exception) {
-                null
             }
         }
         return null

@@ -21,6 +21,7 @@ import com.example.ui.components.AppBackdropState
 import com.example.ui.components.LocalAppBackdrop
 import com.example.ui.screens.SecuritySettingsScreen
 import com.example.ui.screens.ThemeSettingsScreen
+import com.example.ui.screens.FontsSettingsScreen
 import com.example.ui.screens.AgentSettingsScreen
 import com.example.ui.screens.MyDocumentsScreen
 import androidx.compose.runtime.CompositionLocalProvider
@@ -89,6 +90,7 @@ sealed class Screen {
     data object SecurityArea : Screen()
     data object SecuritySettings : Screen()
     data object ThemeSettings : Screen()
+    data class FontsSettings(val returnScreen: Screen = Settings) : Screen()
     data object AgentSettings : Screen()
     data object ApiRoom : Screen()
     data object HtmlViewer : Screen()
@@ -716,6 +718,15 @@ fun AuNotesApp(
                                 currentScreen = cur.copy(note = cur.note.copy(isLocked = targetLocked))
                             }
                         }
+                    },
+                    onUpdateNoteContent = { updatedNote ->
+                        coroutineScope.launch {
+                            repository.saveNote(updatedNote)
+                            val cur = currentScreen
+                            if (cur is Screen.ReadNote && cur.note.id == updatedNote.id) {
+                                currentScreen = cur.copy(note = updatedNote)
+                            }
+                        }
                     }
                 )
                 }
@@ -763,6 +774,12 @@ fun AuNotesApp(
                             initialTableData = initialData,
                             onSaved = onResult,
                             returnScreen = screen
+                        )
+                    },
+                    onOpenFontsSettings = {
+                        val resumeNote = latestEditedNote ?: screen.note
+                        currentScreen = Screen.FontsSettings(
+                            returnScreen = screen.copy(note = resumeNote)
                         )
                     },
                     onSaveNote = { id, title, content, category, isBold, isItalic, isUnderline, isStrikethrough, isCodeFormat, fontSize, fontColorHex, alignment, listType, tableData, styleSpansJson, attachmentsJson, chosenFolder, onSaved ->
@@ -866,6 +883,7 @@ fun AuNotesApp(
                     },
                     onOpenApiRoom = { currentScreen = Screen.ApiRoom },
                     onOpenThemeSettings = { currentScreen = Screen.ThemeSettings },
+                    onOpenFontsSettings = { currentScreen = Screen.FontsSettings(Screen.Settings) },
                     onOpenAgentSettings = { currentScreen = Screen.AgentSettings },
                     onOpenBackupRestore = { currentScreen = Screen.BackupRestore },
                     onOpenKeyboardShortcuts = { currentScreen = Screen.KeyboardShortcuts },
@@ -953,6 +971,14 @@ fun AuNotesApp(
                     preferences = preferences,
                     isDarkMode = isDarkMode,
                     onBack = { currentScreen = Screen.Settings }
+                )
+            }
+
+            is Screen.FontsSettings -> {
+                FontsSettingsScreen(
+                    preferences = preferences,
+                    isDarkMode = isDarkMode,
+                    onBack = { currentScreen = screen.returnScreen }
                 )
             }
 

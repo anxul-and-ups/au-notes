@@ -1906,8 +1906,14 @@ fun AiChatScreen(
                 }
             }
             "create_html_page" -> {
-                val title = args.optString("title", "Interactive HTML Page").trim().ifBlank { "Interactive HTML Page" }
                 val htmlCode = args.optString("html_code", "").trim()
+                val latestPrompt = messagesFor(targetSessionId).lastOrNull { it.sender == "user" }?.text.orEmpty()
+                val title = com.example.ui.util.NoteArtifactCodec.smartTopicTitle(
+                    providedTitle = args.optString("title", ""),
+                    htmlOrJson = htmlCode,
+                    userPrompt = latestPrompt,
+                    isSlides = false
+                )
                 val saveToDownloads = args.optBoolean("save_to_downloads", true)
                 if (htmlCode.isBlank()) {
                     ToolOutcome("NOT DONE: html_code was empty.")
@@ -1973,8 +1979,14 @@ fun AiChatScreen(
                 }
             }
             "create_html_slides" -> {
-                val title = args.optString("title", "Slides").trim().ifBlank { "Slides" }
                 val slidesArr = args.optJSONArray("slides") ?: org.json.JSONArray()
+                val latestPrompt = messagesFor(targetSessionId).lastOrNull { it.sender == "user" }?.text.orEmpty()
+                val title = com.example.ui.util.NoteArtifactCodec.smartTopicTitle(
+                    providedTitle = args.optString("title", ""),
+                    htmlOrJson = slidesArr.toString(),
+                    userPrompt = latestPrompt,
+                    isSlides = true
+                )
                 if (slidesArr.length() == 0) {
                     ToolOutcome("NOT DONE: no valid slides were received. Call create_html_slides again with slides_json written as a valid inline JSON array. Do NOT paste the JSON in chat.")
                 } else {
@@ -2014,11 +2026,17 @@ fun AiChatScreen(
                 }
             }
             "create_slide_deck" -> {
-                val title = args.optString("title", "Typography Slides").trim().ifBlank { "Typography Slides" }
+                val slidesArr = args.optJSONArray("slides") ?: org.json.JSONArray()
+                val latestPrompt = messagesFor(targetSessionId).lastOrNull { it.sender == "user" }?.text.orEmpty()
+                val title = com.example.ui.util.NoteArtifactCodec.smartTopicTitle(
+                    providedTitle = args.optString("title", ""),
+                    htmlOrJson = slidesArr.toString(),
+                    userPrompt = latestPrompt,
+                    isSlides = true
+                )
                 val theme = args.optString("theme", "orange").trim().ifBlank { "orange" }
                 val noteIdArg = args.optLong("note_id", -1L).takeIf { it > 0 }
                 val addToNote = args.optBoolean("add_to_note", false) || noteIdArg != null
-                val slidesArr = args.optJSONArray("slides") ?: org.json.JSONArray()
                 if (slidesArr.length() == 0) {
                     ToolOutcome("NOT DONE: slides array was empty.")
                 } else {
@@ -2782,6 +2800,13 @@ fun AiChatScreen(
                 var toolRepairTries = 0
                 var streamedAny = false
                 val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+                fun mergeWithArtifacts(baseText: String, artifacts: List<String>): String {
+                    if (artifacts.isEmpty()) return baseText
+                    val extras = artifacts.filter { block -> !baseText.contains(block.trim()) }
+                    if (extras.isEmpty()) return baseText
+                    return if (baseText.isBlank()) extras.joinToString("\n")
+                    else (baseText.trimEnd() + "\n\n" + extras.joinToString("\n"))
+                }
                 while (true) {
                     stepRunning(if (steps == 0) "Thinking & planning response" else "Preparing next action", targetSessionId)
                     val reply = aiService.chatOnce(
@@ -2798,9 +2823,14 @@ fun AiChatScreen(
                             val vis = visibleStreamText(acc)
                             if (vis.isNotBlank()) {
                                 streamedAny = true
+                                val snapArtifacts = targetArtifactBlocks.toList()
                                 mainHandler.post {
                                     val i = targetMessages.indexOfFirst { it.id == botMsgId }
-                                    if (i != -1) targetMessages[i] = targetMessages[i].copy(text = vis)
+                                    if (i != -1) {
+                                        targetMessages[i] = targetMessages[i].copy(
+                                            text = mergeWithArtifacts(vis, snapArtifacts)
+                                        )
+                                    }
                                 }
                             }
                             mainHandler.post {
@@ -2869,6 +2899,22 @@ fun AiChatScreen(
                     stepFinish(!toolFailed(outcome.result), targetSessionId)
                     outcome.noteResults?.let { results = it }
                     outcome.pending?.let { pending = it }
+                    // Immediately surface any newly built HTML / Slides / PDF / Chart artifacts in chat
+                    // so the user never has to close/reopen chat or wait for the follow-up summary turn.
+                    if (targetArtifactBlocks.isNotEmpty() || outcome.noteResults != null || outcome.pending != null) {
+                        val snapArtifacts = targetArtifactBlocks.toList()
+                        val idxNow = targetMessages.indexOfFirst { it.id == botMsgId }
+                        if (idxNow != -1) {
+                            val currentText = targetMessages[idxNow].text
+                            targetMessages[idxNow] = targetMessages[idxNow].copy(
+                                text = mergeWithArtifacts(currentText, snapArtifacts),
+                                noteResults = results,
+                                pendingAction = pending,
+                                steps = targetSteps.toList()
+                            )
+                        }
+                        saveSessionFor(targetSessionId)
+                    }
                     turns.add(ConversationTurn("user", prompt))
                     turns.add(ConversationTurn("bot", reply))
                     prompt = "[TOOL RESULT: ${call.name}]\n${outcome.result}\n\nContinue. If everything is done, answer the user in plain text."
@@ -2876,12 +2922,7 @@ fun AiChatScreen(
                 }
 
                 if (targetArtifactBlocks.isNotEmpty()) {
-                    val extras = targetArtifactBlocks.filter { block ->
-                        !finalText.contains(block.trim())
-                    }.joinToString("\n")
-                    if (extras.isNotBlank()) {
-                        finalText = (finalText + "\n" + extras).trim()
-                    }
+                    finalText = mergeWithArtifacts(finalText, targetArtifactBlocks.toList())
                     targetArtifactBlocks.clear()
                 }
 
@@ -2939,15 +2980,35 @@ fun AiChatScreen(
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 val idx = targetMessages.indexOfFirst { it.id == botMsgId }
-                if (idx != -1 && targetMessages[idx].text.isBlank()) {
-                    targetMessages[idx] = targetMessages[idx].copy(text = "[Response stopped by user]", steps = targetSteps.toList())
+                if (idx != -1) {
+                    val existing = targetMessages[idx].text
+                    val preserved = if (targetArtifactBlocks.isNotEmpty()) {
+                        val extras = targetArtifactBlocks.filter { b -> !existing.contains(b.trim()) }.joinToString("\n")
+                        if (extras.isBlank()) existing else (existing.trimEnd() + "\n\n" + extras).trim()
+                    } else existing
+                    targetMessages[idx] = targetMessages[idx].copy(
+                        text = preserved.ifBlank { "[Response stopped by user]" },
+                        steps = targetSteps.toList()
+                    )
+                    saveSessionFor(targetSessionId)
                 }
+                targetArtifactBlocks.clear()
                 targetSteps.clear()
             } catch (e: Exception) {
                 val idx = targetMessages.indexOfFirst { it.id == botMsgId }
-                if (idx != -1 && targetMessages[idx].text.isBlank()) {
-                    targetMessages[idx] = targetMessages[idx].copy(text = "Error: ${e.message}", steps = targetSteps.toList())
+                if (idx != -1) {
+                    val existing = targetMessages[idx].text
+                    val preserved = if (targetArtifactBlocks.isNotEmpty()) {
+                        val extras = targetArtifactBlocks.filter { b -> !existing.contains(b.trim()) }.joinToString("\n")
+                        if (extras.isBlank()) existing else (existing.trimEnd() + "\n\n" + extras).trim()
+                    } else existing
+                    targetMessages[idx] = targetMessages[idx].copy(
+                        text = preserved.ifBlank { "Error: ${e.message}" },
+                        steps = targetSteps.toList()
+                    )
+                    saveSessionFor(targetSessionId)
                 }
+                targetArtifactBlocks.clear()
                 targetSteps.clear()
             } finally {
                 loadingBySession[targetSessionId] = false
@@ -3447,7 +3508,7 @@ fun AiChatScreen(
                                                     }
                                                 }
 
-                                                // Requirement 9: Persistent auto-collapsed expandable action steps header + Claude-style "Summary" modal trigger
+                                                // Persistent auto-collapsed expandable action steps header + Summary modal trigger
                                                 if (msg.steps.isNotEmpty()) {
                                                     Spacer(modifier = Modifier.height(6.dp))
                                                     Column(
@@ -3782,7 +3843,7 @@ fun AiChatScreen(
                         }
                     }
 
-                    // Requirement 6: Bottom Floating Rounded Composer Card (matching screenshot structure without copying Claude branding)
+                    // Bottom Floating Rounded Composer Card
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -4155,52 +4216,6 @@ fun AiChatScreen(
                                                 }
                                             }
                                         }
-
-                                        // 1-Tap Large Clipboard Paste Icon-Only Button
-                                        Box(
-                                            modifier = Modifier
-                                                .size(38.dp)
-                                                .clip(CircleShape)
-                                                .background(if (isDarkMode) Color(0xFF28282F) else Color(0xFFEEECE6))
-                                                .border(
-                                                    width = 1.dp,
-                                                    color = if (isDarkMode) Color(0x26FFFFFF) else Color(0x16000000),
-                                                    shape = CircleShape
-                                                )
-                                                .clickable {
-                                                    val sysClip = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                                                    val clipText = sysClip?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
-                                                        ?: clipboard.getText()?.text
-                                                        ?: ""
-                                                    if (clipText.isBlank()) {
-                                                        Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
-                                                    } else if (clipText.length > 4000) {
-                                                        val pasteSid = currentSessionId
-                                                        val label = "Pasted_Text_${clipText.length}_chars.txt"
-                                                        composerFileNameBySession[pasteSid] = label
-                                                        composerContentBySession[pasteSid] = clipText
-                                                        sessionAttachmentNameMap[pasteSid] = label
-                                                        sessionAttachmentTextMap[pasteSid] = clipText
-                                                        uploadProgressBySession[pasteSid] = 1f
-                                                        uploadHeadlineBySession[pasteSid] = "Large Text Pasted (${clipText.length} chars)"
-                                                        uploadDetailBySession[pasteSid] = "100% attached • Ready to send or save to note"
-                                                        val st = uploadStepsFor(pasteSid)
-                                                        st.clear()
-                                                        st.add(AgentStep("Attached ${clipText.length} pasted chars (100% verbatim)", 1))
-                                                        Toast.makeText(context, "Pasted ${clipText.length} chars as full attachment!", Toast.LENGTH_SHORT).show()
-                                                    } else {
-                                                        inputText = if (inputText.isBlank()) clipText else "$inputText\n$clipText"
-                                                    }
-                                                },
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.ContentPaste,
-                                                contentDescription = "Paste Text or Large File Content",
-                                                tint = if (isDarkMode) Color(0xFFD4D4D8) else Color(0xFF27272A),
-                                                modifier = Modifier.size(17.dp)
-                                            )
-                                        }
                                     }
 
                                     // Right controls: Mic (Voice Dictation) + Waveform (Live Voice) or Send / Stop
@@ -4476,7 +4491,7 @@ fun AiChatScreen(
         )
     }
 
-    // Claude-Style "Summary" Modal Sheet for Action Steps (matches Screenshot_20261110_090116.jpg)
+    // Action Steps Summary Modal Sheet
     selectedSummarySteps?.let { stepsList ->
         Dialog(
             onDismissRequest = { selectedSummarySteps = null },
