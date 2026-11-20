@@ -103,6 +103,244 @@ object NoteArtifactCodec {
         return if (isSlides) "Topic Presentation" else "Interactive Page"
     }
 
+    private val VERBATIM_MODIFY_EXCLUDE_REGEX = Regex(
+        "(?i)(\\bredesign\\b|\\bmodify\\b|\\brewrite\\b|\\bedit\\b|\\bchange\\b|\\bupdate\\b|\\bimprove\\b|\\bfix\\b|\\bdebug\\b|\\brefactor\\b|\\bslide\\b|\\bslides\\b|\\bppt\\b|\\bpresentation\\b|\\bsummariz|\\bsummary\\b|\\bexplain\\b|\\bsamjha|\\btranslate\\b|\\badd\\s+(?:a\\s+|new\\s+|some\\s+)?(?:chart|graph|section|button|feature|dark|animation|image|style)|\\bremove\\b|\\bdelete\\b|\\bshorten\\b|\\bshrink\\b|\\bcompact\\b|बदल|सुधार|नया डिज़ाइन|संक्षेप|छोटा)"
+    )
+
+    private val VERBATIM_HTML_CUES = listOf(
+        "html", "एचटीएमएल", "<!doctype", "<html"
+    )
+
+    private val VERBATIM_ARTIFACT_CUES = listOf(
+        "artifact", "artefact", "आर्टिफैक्ट", "आर्टिफैक्", "आर्टिफेक्ट",
+        "render", "रेंडर", "preview", "प्रीव्यू", "webpage", "web page", "page",
+        "पेज", "bana", "banao", "banado", "बना", "create", "make", "build", "run", "dikha", "दिखा", "show"
+    )
+
+    private val VERBATIM_EXTRACT_CUES = listOf(
+        "extract", "एक्सट्रैक्ट", "निकाल", "nikal", "same", "सेम", "exact", "verbatim",
+        "as is", "as-is", "as it is", "sara", "सारा", "poora", "पूरा", "pura", "पूरे",
+        "all ", "full ", "complete ", "copy", "कॉपी", "isi ka", "इसी का", "usi ka", "उसी का",
+        "wahi", "वही", "exactly", "bilkul", "बिल्कुल", "jaisa", "जैसा", "hूbahu", "हूबहू"
+    )
+
+    /**
+     * Returns true when the user asks to extract/copy the HTML from an attached file or note
+     * verbatim and build an HTML artifact of that exact code (without asking to rewrite/redesign it).
+     */
+    fun isVerbatimHtmlExtractRequest(userPrompt: String): Boolean {
+        val raw = userPrompt.trim()
+        if (raw.isEmpty()) return false
+        val lower = raw.lowercase()
+        if (VERBATIM_MODIFY_EXCLUDE_REGEX.containsMatchIn(raw)) return false
+        val mentionsHtml = VERBATIM_HTML_CUES.any { lower.contains(it) }
+        if (!mentionsHtml) return false
+        val mentionsArtifact = VERBATIM_ARTIFACT_CUES.any { lower.contains(it) }
+        val mentionsExtractOrSame = VERBATIM_EXTRACT_CUES.any { lower.contains(it) }
+        return mentionsArtifact && mentionsExtractOrSame
+    }
+
+    /**
+     * Zero-loss local HTML extractor for large attached files (50 KB, 500 KB+):
+     * uses linear index scans (zero regex backtracking) so not a single character is dropped.
+     *
+     * Priority:
+     * 1. Largest fenced ```html ... ``` / ```htm ... ``` block (including unclosed fence at EOF).
+     * 2. Full raw `<!DOCTYPE html` / `<html` ... last `</html>` slice.
+     *    Picks whichever of (1) or (2) preserves more complete HTML.
+     * 3. Fallback: unclosed `<html` / `<!DOCTYPE` or substantial raw HTML fragment (`<head>`, `<body>`,
+     *    `<style>`, `<div`, `<section`, `<main`, `<table`, `<script`) sliced verbatim from earliest
+     *    opening HTML tag to latest closing tag.
+     */
+    fun extractFullHtmlFromSource(sourceText: String): String? {
+        if (sourceText.isBlank()) return null
+
+        // Strip AU Notes webview markers if source came from an already-saved webview note
+        var cleaned = sourceText.trim()
+        if (cleaned.startsWith(WEBVIEW_MARKER, ignoreCase = true)) {
+            cleaned = cleaned.substring(WEBVIEW_MARKER.length).trimStart('\r', '\n')
+            val endMarkerIdx = cleaned.indexOf(ARTIFACT_END_MARKER)
+            if (endMarkerIdx >= 0) {
+                cleaned = cleaned.substring(0, endMarkerIdx).trim()
+            }
+        }
+
+        val candidates = mutableListOf<String>()
+
+        // 1. Linear scan for fenced ```html / ```htm blocks (handles 50 KB - 5 MB without regex stack overflow)
+        val lowerCleaned = cleaned.lowercase()
+        var scanPos = 0
+        while (scanPos < lowerCleaned.length) {
+            val fenceIdx = lowerCleaned.indexOf("```", scanPos)
+            if (fenceIdx < 0) break
+            val afterTicks = fenceIdx + 3
+            val lineEnd = cleaned.indexOf('\n', afterTicks)
+            if (lineEnd < 0) break
+            val langTag = cleaned.substring(afterTicks, lineEnd).trim().lowercase()
+            if (langTag == "html" || langTag == "htm" || langTag == "html_artifact" || langTag.startsWith("html ")) {
+                val contentStart = lineEnd + 1
+                // Find closing ``` on its own line or after a newline
+                var closeIdx = -1
+                var searchClose = contentStart
+                while (searchClose < cleaned.length) {
+                    val nextTicks = cleaned.indexOf("```", searchClose)
+                    if (nextTicks < 0) break
+                    val lineStartCheck = nextTicks == 0 || cleaned[nextTicks - 1] == '\n' || cleaned[nextTicks - 1] == '\r'
+                    if (lineStartCheck) {
+                        closeIdx = nextTicks
+                        break
+                    }
+                    searchClose = nextTicks + 3
+                }
+                val block = if (closeIdx >= contentStart) {
+                    cleaned.substring(contentStart, closeIdx).trim()
+                } else {
+                    cleaned.substring(contentStart).trim()
+                }
+                if (block.length >= 20 && looksLikeHtmlMarkup(block)) {
+                    candidates.add(block)
+                }
+                scanPos = if (closeIdx >= 0) closeIdx + 3 else cleaned.length
+            } else {
+                scanPos = lineEnd + 1
+            }
+        }
+
+        // 2. Full raw HTML document slice: earliest <!DOCTYPE html or <html to LAST </html>
+        val doctypeIdx = findCaseInsensitiveTag(lowerCleaned, "<!doctype html")
+        val htmlOpenIdx = findHtmlOpenTag(lowerCleaned)
+        val docStart = when {
+            doctypeIdx >= 0 && htmlOpenIdx >= 0 -> minOf(doctypeIdx, htmlOpenIdx)
+            doctypeIdx >= 0 -> doctypeIdx
+            htmlOpenIdx >= 0 -> htmlOpenIdx
+            else -> -1
+        }
+        val lastHtmlCloseIdx = lowerCleaned.lastIndexOf("</html>")
+        if (docStart >= 0 && lastHtmlCloseIdx > docStart) {
+            val slice = cleaned.substring(docStart, lastHtmlCloseIdx + "</html>".length).trim()
+            if (slice.length >= 20) {
+                candidates.add(slice)
+            }
+        } else if (docStart >= 0) {
+            // Unclosed <!DOCTYPE / <html document (still preserve 100% verbatim)
+            val tail = cleaned.substring(docStart).trim()
+            if (tail.length >= 40) {
+                candidates.add(tail)
+            }
+        }
+
+        // Choose the most complete candidate (prefer complete </html> documents, then largest length)
+        if (candidates.isNotEmpty()) {
+            val completeDocs = candidates.filter {
+                val l = it.lowercase()
+                (l.contains("<!doctype html") || l.contains("<html")) && l.contains("</html>")
+            }
+            val best = if (completeDocs.isNotEmpty()) {
+                completeDocs.maxByOrNull { it.length }
+            } else {
+                candidates.maxByOrNull { it.length }
+            }
+            if (!best.isNullOrBlank()) return best
+        }
+
+        // 3. Fallback: substantial raw HTML fragment without <html> wrapper (e.g. <style> + <div> + <script>)
+        val fragmentStartTags = listOf("<head", "<body", "<style", "<div", "<section", "<main", "<article", "<header", "<nav", "<table", "<form", "<canvas", "<svg")
+        var earliest = -1
+        for (tag in fragmentStartTags) {
+            val idx = findHtmlTagStart(lowerCleaned, tag)
+            if (idx >= 0 && (earliest < 0 || idx < earliest)) earliest = idx
+        }
+        if (earliest >= 0) {
+            val fragmentEndTags = listOf("</body>", "</script>", "</style>", "</div>", "</section>", "</main>", "</article>", "</table>", "</form>", "</svg>", "</footer>")
+            var latestEnd = -1
+            for (endTag in fragmentEndTags) {
+                val idx = lowerCleaned.lastIndexOf(endTag)
+                if (idx >= 0) {
+                    val endPos = idx + endTag.length
+                    if (endPos > latestEnd) latestEnd = endPos
+                }
+            }
+            if (latestEnd > earliest) {
+                val slice = cleaned.substring(earliest, latestEnd).trim()
+                if (slice.length >= 40 && looksLikeHtmlMarkup(slice)) {
+                    return slice
+                }
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Decides whether `create_html_page` should use the 100% verbatim locally extracted HTML
+     * instead of the model's `html_code` argument.
+     *
+     * Prevents LLM output-token truncation (e.g. 52 KB file -> 12 KB cut-off tool call).
+     */
+    fun shouldUseLocalHtmlInsteadOfModelOutput(
+        localHtml: String?,
+        modelHtml: String,
+        userPrompt: String,
+        explicitFlag: Boolean
+    ): Boolean {
+        if (localHtml.isNullOrBlank()) return false
+        if (explicitFlag) return true
+        if (modelHtml.isBlank()) return true
+        if (isVerbatimHtmlExtractRequest(userPrompt)) return true
+
+        // Automatic Truncation Guard: if the model tried copying the attached HTML verbatim
+        // and got cut off by output token limits (e.g. 52 KB -> 12 KB), recover 100% from local source.
+        val shrinkRequested = Regex("(?i)\\b(shorten|shrink|summarize|summary|brief|compact|minimal|only\\s+section|remove|delete)\\b|छोटा|संक्षेप").containsMatchIn(userPrompt)
+        if (!shrinkRequested && localHtml.length >= modelHtml.length + 1500) {
+            val modelMissingClose = !modelHtml.contains("</html>", ignoreCase = true) &&
+                localHtml.contains("</html>", ignoreCase = true)
+            val normLocalHead = normalizeForPrefixCompare(localHtml.take(1600))
+            val normModelHead = normalizeForPrefixCompare(modelHtml.take(400))
+            val prefixProbe = normModelHead.take(64)
+            val looksLikeSameSource = prefixProbe.length >= 24 && normLocalHead.contains(prefixProbe)
+            if (modelMissingClose || looksLikeSameSource) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun normalizeForPrefixCompare(s: String): String =
+        s.lowercase().replace(Regex("\\s+"), " ").trim()
+
+    private fun findCaseInsensitiveTag(lowerText: String, prefix: String): Int =
+        lowerText.indexOf(prefix)
+
+    private fun findHtmlOpenTag(lowerText: String): Int =
+        findHtmlTagStart(lowerText, "<html")
+
+    private fun findHtmlTagStart(lowerText: String, tagPrefix: String): Int {
+        var pos = 0
+        while (pos < lowerText.length) {
+            val idx = lowerText.indexOf(tagPrefix, pos)
+            if (idx < 0) return -1
+            val afterIdx = idx + tagPrefix.length
+            if (afterIdx >= lowerText.length) return -1
+            val nextCh = lowerText[afterIdx]
+            if (nextCh == '>' || nextCh == ' ' || nextCh == '\t' || nextCh == '\n' || nextCh == '\r' || nextCh == '/') {
+                return idx
+            }
+            pos = afterIdx
+        }
+        return -1
+    }
+
+    private fun looksLikeHtmlMarkup(text: String): Boolean {
+        val lower = text.lowercase()
+        val signals = listOf("<!doctype", "<html", "<head", "<body", "<style", "<script", "<div", "<section", "<main", "<table", "<h1", "<p>", "<p ", "<canvas", "<svg")
+        var hits = 0
+        for (s in signals) {
+            if (lower.contains(s)) hits++
+            if (hits >= 2) return true
+        }
+        return lower.contains("<!doctype html") || (lower.contains("<html") && lower.contains("</html>"))
+    }
+
     /**
      * Splits a note's stored content into:
      *  - `artifacts`: HTML/Slides artifacts to show as clean clickable cards in NoteEditor

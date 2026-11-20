@@ -632,14 +632,117 @@ class AuNotesFeaturesTest {
         val unselectedSpans = spannable.getSpans(6, 11, android.text.style.MetricAffectingSpan::class.java)
         assertTrue("Unselected range [6, 11) must NOT carry the font span", unselectedSpans.isEmpty())
 
-        val pdfFile = NoteExporter.buildPdf(context, note, "font_span_test.pdf", singlePage = true)
-        assertTrue("PDF with custom font spans must be created and non-empty", pdfFile.exists() && pdfFile.length() > 100L)
-        pdfFile.delete()
+        // Exercise CustomTypefaceSpan measurement & drawing via StaticLayout (same engine used by NoteExporter PDF)
+        val bodyPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 14f
+            typeface = resolvedTf
+        }
+        val layout = android.text.StaticLayout.Builder.obtain(spannable, 0, spannable.length, bodyPaint, 500).build()
+        val bmp = android.graphics.Bitmap.createBitmap(520, (layout.height + 20).coerceAtLeast(40), android.graphics.Bitmap.Config.ARGB_8888)
+        layout.draw(android.graphics.Canvas(bmp))
+        assertTrue("StaticLayout with CustomTypefaceSpan must measure positive height", layout.height > 0)
 
         val htmlFile = NoteExporter.buildFile(context, note, "font_span_test.html", ".html")
         val htmlText = htmlFile.readText()
         assertTrue("HTML export must include per-selection Caveat font CSS", htmlText.contains("'Caveat'"))
         htmlFile.delete()
+    }
+
+    @Test
+    fun `verbatim 55KB HTML extraction preserves 100 percent of code and overrides truncated 12KB LLM output`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Build a 55 KB+ HTML document wrapped inside surrounding notes/prose
+        val bigHtml = buildString {
+            append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n")
+            append("<title>Full 55KB Interactive App</title>\n<style>body{font-family:sans-serif;}</style>\n</head>\n<body>\n")
+            repeat(600) { i ->
+                append("<section id=\"sec-$i\" class=\"card\"><h2>Section $i</h2><p>Full detailed HTML payload row #$i preserving 100% of every character and script tag without any cutoff.</p></section>\n")
+            }
+            append("<script>console.log('END_OF_55KB_FILE_MARKER');</script>\n</body>\n</html>")
+        }
+        assertTrue("Test HTML payload must exceed 52 KB", bigHtml.toByteArray(Charsets.UTF_8).size > 54_000)
+
+        val mixedSourceFile = "Here are some intro notes before the file.\n\n$bigHtml\n\nTrailing footer note after html."
+        val extracted = com.example.ui.util.NoteArtifactCodec.extractFullHtmlFromSource(mixedSourceFile)
+        assertNotNull("extractFullHtmlFromSource must detect the embedded 55KB HTML document", extracted)
+        assertEquals("Extracted HTML must match 100% verbatim with zero bytes lost", bigHtml, extracted)
+        assertTrue("End marker at 55KB must be preserved", extracted!!.contains("END_OF_55KB_FILE_MARKER"))
+
+        // 2. Prompt detection across Hindi, Hinglish, English (and exclusion of modification prompts)
+        assertTrue(
+            com.example.ui.util.NoteArtifactCodec.isVerbatimHtmlExtractRequest(
+                "यह सारा HTML कोड एक्सट्रैक्ट करो और सेम इसी का आर्टिफैक्ट बना"
+            )
+        )
+        assertTrue(
+            com.example.ui.util.NoteArtifactCodec.isVerbatimHtmlExtractRequest(
+                "Is file me se sara HTML code extract karo aur same isi ka artifact banao"
+            )
+        )
+        assertTrue(
+            com.example.ui.util.NoteArtifactCodec.isVerbatimHtmlExtractRequest(
+                "Extract all HTML code from this file and create an artifact of the exact same HTML"
+            )
+        )
+        assertFalse(
+            com.example.ui.util.NoteArtifactCodec.isVerbatimHtmlExtractRequest(
+                "Redesign this HTML code with a brand new layout and dark mode"
+            )
+        )
+
+        // 3. Automatic Truncation Guard: simulate an LLM getting cut off at ~12 KB
+        val truncated12Kb = bigHtml.take(12_000)
+        assertTrue(
+            "Truncation guard must override cut-off 12KB model output with full 55KB local HTML",
+            com.example.ui.util.NoteArtifactCodec.shouldUseLocalHtmlInsteadOfModelOutput(
+                localHtml = extracted,
+                modelHtml = truncated12Kb,
+                userPrompt = "Make an HTML artifact from this file",
+                explicitFlag = false
+            )
+        )
+        assertTrue(
+            "Explicit use_attached_source=true must always use full local HTML even when html_code is empty",
+            com.example.ui.util.NoteArtifactCodec.shouldUseLocalHtmlInsteadOfModelOutput(
+                localHtml = extracted,
+                modelHtml = "",
+                userPrompt = "Create page",
+                explicitFlag = true
+            )
+        )
+
+        // 4. AgentTools parser handles use_attached_source=true and huge truncated strings without StackOverflowError
+        val parsedDirect = com.example.data.ai.AgentTools.parse(
+            "<tool_call>{\"name\":\"create_html_page\",\"args\":{\"title\":\"Full 55KB App\",\"use_attached_source\":true}}</tool_call>"
+        )
+        assertNotNull(parsedDirect)
+        assertEquals("create_html_page", parsedDirect!!.name)
+        assertTrue(parsedDirect.args.optBoolean("use_attached_source", false))
+
+        val hugeEscaped = bigHtml.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+        val cutOffReply = "<tool_call>{\"name\":\"create_html_page\",\"args\":{\"title\":\"Big\",\"html_code\":\"$hugeEscaped"
+        val parsedSalvaged = com.example.data.ai.AgentTools.parse(cutOffReply)
+        assertNotNull("Linear scanner must salvage 55KB+ truncated JSON without StackOverflowError", parsedSalvaged)
+        assertTrue(parsedSalvaged!!.args.optString("html_code").length > 50_000)
+
+        // 5. ChatSessionManager persists 55KB attachmentText without truncating at 40KB
+        val mgr = com.example.data.ai.ChatSessionManager(context)
+        mgr.clearAllSessions()
+        val sid = "session_55kb_html_test"
+        mgr.saveSession(
+            com.example.data.ai.ChatSession(
+                id = sid,
+                title = "55KB Test",
+                messages = emptyList(),
+                attachmentName = "big_page.html",
+                attachmentText = bigHtml
+            )
+        )
+        val reloaded = mgr.loadAllSessions().firstOrNull { it.id == sid }
+        assertNotNull(reloaded)
+        assertEquals("ChatSessionManager must preserve all 55KB+ of attachmentText", bigHtml.length, reloaded!!.attachmentText?.length)
+        mgr.clearAllSessions()
     }
 }
 

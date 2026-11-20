@@ -183,7 +183,8 @@ object AgentTools {
             description = "Create a complete, responsive, standalone HTML5 page (NOT for slide decks: use create_html_slides for slides) (with embedded CSS, warm typography styling, interactive JS, and embedded ```json:apex charts or ```mermaid diagrams) and display an interactive HTML Artifact card in chat with full-screen desktop preview and download.",
             params = listOf(
                 AgentTool.Param("title", "STRING", "Title of the HTML artifact or web page", required = true),
-                AgentTool.Param("html_code", "STRING", "Complete standalone <!DOCTYPE html><html>...</html> source code. For real photos use <img data-q=\"specific 3-8 word search query\" alt=\"...\"> (never remote URLs); the app finds and downloads the images before showing the page. For charts and diagrams inside HTML, embed ```json:apex or ```mermaid blocks so the offline ApexCharts & Mermaid engines render them cleanly.", required = true)
+                AgentTool.Param("html_code", "STRING", "Complete standalone <!DOCTYPE html><html>...</html> source code (optional if use_attached_source=true). For real photos use <img data-q=\"specific 3-8 word search query\" alt=\"...\"> (never remote URLs); the app finds and downloads the images before showing the page. For charts and diagrams inside HTML, embed ```json:apex or ```mermaid blocks so the offline ApexCharts & Mermaid engines render them cleanly.", required = false),
+                AgentTool.Param("use_attached_source", "BOOLEAN", "Set true when extracting or rendering HTML verbatim from the user's attached file or attached note. The app extracts 100% of the local HTML directly with zero truncation so you never have to re-type large HTML files.", required = false)
             )
         ),
         AgentTool(
@@ -495,6 +496,7 @@ object AgentTools {
                 [SLIDES & HTML ARTIFACT GENERATION RULES]
                 - Whenever the user wants slides / presentation / PPT / "slides banao" (from an attached file, a note, photos or just a topic) call `create_html_slides`, NOT `create_html_page`. Use `create_slide_deck` if the user asks for the editorial typography deck.
                 - Whenever the user wants an interactive web page, long-form 2000-word visual article, dashboard, calculator, or runnable HTML from code saved in a note, call `create_html_page` with a complete, rich, self-contained `<!DOCTYPE html><html>...</html>` document.
+                - VERBATIM ATTACHED HTML EXTRACTION (ZERO TRUNCATION): Whenever the user attaches a file or note containing HTML and asks to extract ALL of that HTML code and build an artifact of the SAME code, call `create_html_page` with `"use_attached_source": true` (and a clean `title`) instead of re-typing the full HTML inside `html_code` — the app extracts 100% of the source HTML locally without any token-limit cutoff.
                 - SOURCE FIRST: the attached document/note text is already in the message (or read it via `read_note`). Do NOT shrink it to a few generic points. Honor any user instructions on which points to include or skip ("ye points chhor dena").
                 - Size: tiny source 6–8 slides; medium 10–14; long/full context 14–22 (max 24). Roughly one slide per section or idea.
                 - Slide 1 = layout `title`; last slide = `closing` (summary / takeaway). In between mix layouts: `content` (title + 3–5 informative bullets), `stats` for big numbers, `timeline` for dates/steps, `bars` for numeric comparisons, `table` for comparisons, `two_column` for pros/cons or A vs B, `quote` for a quote, `image_right` / `image_left` when a picture helps (avoid `image_full` so images stay cleanly framed and never stretch full-screen over text).
@@ -588,6 +590,7 @@ object AgentTools {
                - When writing code or HTML artifacts (`create_html_page`), build complete, production-quality, rich, interactive, multi-section pages with thorough CSS, clean responsive grids, real JS interactivity, and embedded `<div class="au-apex-mount">` / ` ```json:apex ` charts or ` ```mermaid ` diagrams where appropriate. Never leave `// TODO` or `...` placeholders!
                - When generating Slide Decks (`create_html_slides` or `create_slide_deck`), include AT LEAST 6-10 rich, information-dense slides covering overview, stats, timelines, comparisons, charts/diagrams, and takeaways — never tiny 2-slide stubs unless explicitly requested.
                - When the user asks to save an attached file or large pasted text to a note AS-IS / verbatim, call `save_attached_file_to_note` so not a single character is lost!
+               - When the user asks to extract HTML from an attached file or note and create an HTML artifact of the exact same HTML, call `create_html_page` with `"use_attached_source": true` so 100% of the file is preserved with zero token truncation!
                - Whenever the user asks for detailed notes, an in-depth study guide, a report, or a PDF on any topic (`create_note`, `edit_note`, `edit_current_note`, or `create_pdf_document`), write an **exhaustive, long-form, deeply detailed document** with multiple structured `#`, `##`, `###` sections, complete explanations, historical context, key statistics, real-world examples, Markdown comparison tables (`| Col 1 | Col 2 |`), and `==highlight==` takeaways. NEVER cut short or omit details.
             3. SLIDES IN INTERACTIVE SLIDING HTML ARTIFACT STYLE:
                - Whenever the user asks for slides or a presentation, call `create_html_slides` (or `create_slide_deck` if they ask for editorial typography slides).
@@ -767,8 +770,36 @@ object AgentTools {
     )
 
     private fun extractStringField(body: String, key: String): String? {
-        val m = Regex("\"$key\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)(?:\"|$)").find(body) ?: return null
-        return unescapeJson(m.groupValues[1])
+        val needle = "\"$key\""
+        var pos = 0
+        while (pos < body.length) {
+            val keyIdx = body.indexOf(needle, pos)
+            if (keyIdx < 0) return null
+            var i = keyIdx + needle.length
+            while (i < body.length && body[i].isWhitespace()) i++
+            if (i >= body.length || body[i] != ':') {
+                pos = keyIdx + needle.length
+                continue
+            }
+            i++
+            while (i < body.length && body[i].isWhitespace()) i++
+            if (i >= body.length || body[i] != '"') return null
+            val sb = StringBuilder()
+            var j = i + 1
+            while (j < body.length) {
+                val c = body[j]
+                if (c == '\\' && j + 1 < body.length) {
+                    sb.append(c).append(body[j + 1])
+                    j += 2
+                    continue
+                }
+                if (c == '"') break
+                sb.append(c)
+                j++
+            }
+            return unescapeJson(sb.toString())
+        }
+        return null
     }
 
     private fun salvage(reply: String): ParsedToolCall? {
@@ -781,6 +812,9 @@ object AgentTools {
             extractStringField(body, k)?.let { v -> if (v.isNotEmpty()) args.put(k, v) }
         }
         Regex("\"note_id\"\\s*:\\s*(\\d+)").find(body)?.groupValues?.get(1)?.toLongOrNull()?.let { args.put("note_id", it) }
+        Regex("\"use_attached_source\"\\s*:\\s*(true|false)", RegexOption.IGNORE_CASE).find(body)?.groupValues?.get(1)?.let {
+            args.put("use_attached_source", it.equals("true", ignoreCase = true))
+        }
 
         if (name in setOf("create_note", "edit_note", "edit_current_note", "create_html_page", "create_pdf_document")) {
             val fieldKey = when (name) {
@@ -790,9 +824,14 @@ object AgentTools {
             }
             val salvagedBody = extractStringField(body, fieldKey)?.takeIf { it.isNotBlank() }
                 ?: extractStringField(body, "content")?.takeIf { it.isNotBlank() }
-                ?: return null
-            args.put(fieldKey, salvagedBody)
-            return ParsedToolCall(name = name, args = args, textBefore = if (start > 0) reply.substring(0, start).trim() else "")
+            if (salvagedBody != null) {
+                args.put(fieldKey, salvagedBody)
+                return ParsedToolCall(name = name, args = args, textBefore = if (start > 0) reply.substring(0, start).trim() else "")
+            }
+            if (name == "create_html_page" && args.optBoolean("use_attached_source", false)) {
+                return ParsedToolCall(name = name, args = args, textBefore = if (start > 0) reply.substring(0, start).trim() else "")
+            }
+            return null
         }
 
         val key = listOf("slides_json", "slides", "items", "data").firstOrNull { body.contains("\"$it\"") } ?: return null

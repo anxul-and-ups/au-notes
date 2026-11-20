@@ -312,7 +312,7 @@ CRITICAL OCR MODE (STRICT VERBATIM OUTPUT ONLY):
                         append("Extract ALL text verbatim from these PDF pages in exact reading order. Output ONLY the extracted text without any intro, greeting, or summary.")
                         if (embedded.isNotBlank()) {
                             append("\n\nReference embedded text layer:\n")
-                            append(embedded.take(15_000))
+                            append(embedded.take(120_000))
                         }
                     }
                     val aiResp = runCatching {

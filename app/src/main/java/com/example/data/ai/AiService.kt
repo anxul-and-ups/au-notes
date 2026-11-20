@@ -1227,47 +1227,59 @@ class AiService {
         if (onDelta != null) {
             for (streamUrl in candidateEndpoints) {
                 try {
-                    val streamReqBody = JSONObject().apply {
-                        put("model", model)
-                        put("messages", messages)
-                        if (!isReasoningModel) put("temperature", 0.7)
-                        put("stream", true)
-                    }
-                    client.newCall(buildOpenAiRequest(streamUrl, streamReqBody, acceptStream = true)).execute().use { resp ->
-                        if (resp.code == 404 && streamUrl != candidateEndpoints.last()) {
-                            return@use
+                    val streamCaps: List<Int?> = if (isReasoningModel) listOf(null) else listOf(16384, null)
+                    var shouldTryNextUrl = false
+                    for (cap in streamCaps) {
+                        val streamReqBody = JSONObject().apply {
+                            put("model", model)
+                            put("messages", messages)
+                            if (!isReasoningModel) put("temperature", 0.7)
+                            if (cap != null) put("max_tokens", cap)
+                            put("stream", true)
                         }
-                        val contentType = resp.header("Content-Type").orEmpty().lowercase()
-                        if (resp.isSuccessful && (contentType.contains("event-stream") || contentType.contains("text/plain") || contentType.isBlank())) {
-                            val source = resp.body?.source()
-                            if (source != null) {
-                                val acc = StringBuilder()
-                                val reasoningAcc = StringBuilder()
-                                while (!source.exhausted()) {
-                                    val line = source.readUtf8Line() ?: break
-                                    if (!line.startsWith("data:")) continue
-                                    val data = line.removePrefix("data:").trim()
-                                    if (data.isEmpty() || data == "[DONE]") continue
-                                    val chunk = try { JSONObject(data) } catch (_: Exception) { continue }
-                                    val deltaObj = chunk.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta") ?: continue
-                                    val rChunk = deltaObj.optString("reasoning_content", deltaObj.optString("reasoning", ""))
-                                    if (rChunk.isNotEmpty()) {
-                                        reasoningAcc.append(rChunk)
-                                        onThoughtDelta?.invoke(reasoningAcc.toString())
+                        var retryWithoutCap = false
+                        client.newCall(buildOpenAiRequest(streamUrl, streamReqBody, acceptStream = true)).execute().use { resp ->
+                            if (resp.code == 404 && streamUrl != candidateEndpoints.last()) {
+                                shouldTryNextUrl = true
+                                return@use
+                            }
+                            if ((resp.code == 400 || resp.code == 422) && cap != null) {
+                                retryWithoutCap = true
+                                return@use
+                            }
+                            val contentType = resp.header("Content-Type").orEmpty().lowercase()
+                            if (resp.isSuccessful && (contentType.contains("event-stream") || contentType.contains("text/plain") || contentType.isBlank())) {
+                                val source = resp.body?.source()
+                                if (source != null) {
+                                    val acc = StringBuilder()
+                                    val reasoningAcc = StringBuilder()
+                                    while (!source.exhausted()) {
+                                        val line = source.readUtf8Line() ?: break
+                                        if (!line.startsWith("data:")) continue
+                                        val data = line.removePrefix("data:").trim()
+                                        if (data.isEmpty() || data == "[DONE]") continue
+                                        val chunk = try { JSONObject(data) } catch (_: Exception) { continue }
+                                        val deltaObj = chunk.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta") ?: continue
+                                        val rChunk = deltaObj.optString("reasoning_content", deltaObj.optString("reasoning", ""))
+                                        if (rChunk.isNotEmpty()) {
+                                            reasoningAcc.append(rChunk)
+                                            onThoughtDelta?.invoke(reasoningAcc.toString())
+                                        }
+                                        val cChunk = deltaObj.optString("content", "")
+                                        if (cChunk.isNotEmpty()) {
+                                            acc.append(cChunk)
+                                            val liveClean = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
+                                            if (liveClean.isNotEmpty()) onDelta(liveClean)
+                                        }
                                     }
-                                    val cChunk = deltaObj.optString("content", "")
-                                    if (cChunk.isNotEmpty()) {
-                                        acc.append(cChunk)
-                                        val liveClean = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
-                                        if (liveClean.isNotEmpty()) onDelta(liveClean)
-                                    }
+                                    val finalStreamed = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
+                                    if (finalStreamed.isNotEmpty()) return finalStreamed
                                 }
-                                val finalStreamed = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
-                                if (finalStreamed.isNotEmpty()) return finalStreamed
                             }
                         }
+                        if (shouldTryNextUrl || !retryWithoutCap) break
                     }
-                    break
+                    if (!shouldTryNextUrl) break
                 } catch (_: Exception) {
                     // Fall back to next endpoint or standard JSON completion request below
                 }
@@ -1375,90 +1387,107 @@ class AiService {
             put("content", userPrompt)
         })
 
-        // Fast SSE streaming first when onDelta is supplied
+        // Fast SSE streaming first when onDelta is supplied (try 16384 max_tokens, fall back to 8192 if model caps at 8K)
         if (onDelta != null) {
-            try {
-                val streamBody = JSONObject().apply {
-                    put("model", model)
-                    put("max_tokens", 8192)
-                    put("system", systemPrompt)
-                    put("messages", messages)
-                    put("stream", true)
-                }
-                val streamReq = Request.Builder()
-                    .url("https://api.anthropic.com/v1/messages")
-                    .header("x-api-key", apiKey.trim())
-                    .header("anthropic-version", "2023-06-01")
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "text/event-stream")
-                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
-                    .post(streamBody.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-                client.newCall(streamReq).execute().use { resp ->
-                    val contentType = resp.header("Content-Type").orEmpty().lowercase()
-                    if (resp.isSuccessful && contentType.contains("event-stream")) {
-                        val source = resp.body?.source()
-                        if (source != null) {
-                            val acc = StringBuilder()
-                            val thoughtAcc = StringBuilder()
-                            while (!source.exhausted()) {
-                                val line = source.readUtf8Line() ?: break
-                                if (!line.startsWith("data:")) continue
-                                val data = line.removePrefix("data:").trim()
-                                if (data.isEmpty() || data == "[DONE]") continue
-                                val evt = try { JSONObject(data) } catch (_: Exception) { continue }
-                                if (evt.optString("type") == "content_block_delta") {
-                                    val delta = evt.optJSONObject("delta") ?: continue
-                                    when (delta.optString("type")) {
-                                        "thinking_delta" -> {
-                                            val t = delta.optString("thinking", "")
-                                            if (t.isNotEmpty()) {
-                                                thoughtAcc.append(t)
-                                                onThoughtDelta?.invoke(thoughtAcc.toString())
+            for (maxTok in listOf(16384, 8192)) {
+                try {
+                    val streamBody = JSONObject().apply {
+                        put("model", model)
+                        put("max_tokens", maxTok)
+                        put("system", systemPrompt)
+                        put("messages", messages)
+                        put("stream", true)
+                    }
+                    val streamReq = Request.Builder()
+                        .url("https://api.anthropic.com/v1/messages")
+                        .header("x-api-key", apiKey.trim())
+                        .header("anthropic-version", "2023-06-01")
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "text/event-stream")
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+                        .post(streamBody.toString().toRequestBody("application/json".toMediaType()))
+                        .build()
+                    var retryLowerCap = false
+                    client.newCall(streamReq).execute().use { resp ->
+                        if (resp.code == 400 && maxTok > 8192) {
+                            retryLowerCap = true
+                            return@use
+                        }
+                        val contentType = resp.header("Content-Type").orEmpty().lowercase()
+                        if (resp.isSuccessful && contentType.contains("event-stream")) {
+                            val source = resp.body?.source()
+                            if (source != null) {
+                                val acc = StringBuilder()
+                                val thoughtAcc = StringBuilder()
+                                while (!source.exhausted()) {
+                                    val line = source.readUtf8Line() ?: break
+                                    if (!line.startsWith("data:")) continue
+                                    val data = line.removePrefix("data:").trim()
+                                    if (data.isEmpty() || data == "[DONE]") continue
+                                    val evt = try { JSONObject(data) } catch (_: Exception) { continue }
+                                    if (evt.optString("type") == "content_block_delta") {
+                                        val delta = evt.optJSONObject("delta") ?: continue
+                                        when (delta.optString("type")) {
+                                            "thinking_delta" -> {
+                                                val t = delta.optString("thinking", "")
+                                                if (t.isNotEmpty()) {
+                                                    thoughtAcc.append(t)
+                                                    onThoughtDelta?.invoke(thoughtAcc.toString())
+                                                }
                                             }
-                                        }
-                                        "text_delta" -> {
-                                            val txt = delta.optString("text", "")
-                                            if (txt.isNotEmpty()) {
-                                                acc.append(txt)
-                                                val liveClean = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
-                                                if (liveClean.isNotEmpty()) onDelta(liveClean)
+                                            "text_delta" -> {
+                                                val txt = delta.optString("text", "")
+                                                if (txt.isNotEmpty()) {
+                                                    acc.append(txt)
+                                                    val liveClean = stripAndExtractThinkTags(acc.toString(), onThoughtDelta)
+                                                    if (liveClean.isNotEmpty()) onDelta(liveClean)
+                                                }
                                             }
                                         }
                                     }
                                 }
+                                val finalStreamed = stripAndExtractThinkTags(acc.toString().trim(), onThoughtDelta)
+                                if (finalStreamed.isNotEmpty()) return finalStreamed
                             }
-                            val finalStreamed = stripAndExtractThinkTags(acc.toString().trim(), onThoughtDelta)
-                            if (finalStreamed.isNotEmpty()) return finalStreamed
                         }
                     }
+                    if (!retryLowerCap) break
+                } catch (_: Exception) {
+                    break
                 }
-            } catch (_: Exception) {
-                // Fall back to standard non-streaming request below
             }
         }
 
-        val reqBody = JSONObject().apply {
-            put("model", model)
-            put("max_tokens", 8192)
-            put("system", systemPrompt)
-            put("messages", messages)
+        fun executeAnthropic(maxTok: Int): Pair<Int, String> {
+            val reqBody = JSONObject().apply {
+                put("model", model)
+                put("max_tokens", maxTok)
+                put("system", systemPrompt)
+                put("messages", messages)
+            }
+            val request = Request.Builder()
+                .url("https://api.anthropic.com/v1/messages")
+                .header("x-api-key", apiKey.trim())
+                .header("anthropic-version", "2023-06-01")
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
+                .post(reqBody.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(request).execute().use { resp ->
+                return resp.code to (resp.body?.string() ?: "")
+            }
         }
 
-        val request = Request.Builder()
-            .url("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", apiKey.trim())
-            .header("anthropic-version", "2023-06-01")
-            .header("Content-Type", "application/json")
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AU-Notes/1.0")
-            .post(reqBody.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        client.newCall(request).execute().use { resp ->
-            val body = resp.body?.string() ?: ""
-            if (!resp.isSuccessful) {
-                throw ApiFailure("Anthropic error (HTTP ${resp.code}): ${body.take(200)}", false)
-            }
+        var (code, body) = executeAnthropic(16384)
+        if (code == 400) {
+            val fallback = executeAnthropic(8192)
+            code = fallback.first
+            body = fallback.second
+        }
+        if (code !in 200..299) {
+            throw ApiFailure("Anthropic error (HTTP $code): ${body.take(200)}", false)
+        }
+        run {
             val json = JSONObject(body)
             val contentArr = json.optJSONArray("content") ?: JSONArray()
             val sb = StringBuilder()

@@ -1906,17 +1906,53 @@ fun AiChatScreen(
                 }
             }
             "create_html_page" -> {
-                val htmlCode = args.optString("html_code", "").trim()
+                val rawModelHtml = args.optString("html_code", "").trim()
+                val explicitUseAttached = args.optBoolean("use_attached_source", false)
                 val latestPrompt = messagesFor(targetSessionId).lastOrNull { it.sender == "user" }?.text.orEmpty()
+
+                // Collect candidate local sources (attached file + attached notes + open note) for zero-loss verbatim HTML extraction
+                val localSourceCandidates = buildList<String> {
+                    composerContentBySession[targetSessionId]?.takeIf { it.isNotBlank() }?.let { add(it) }
+                    attachedContent?.takeIf { it.isNotBlank() }?.let { add(it) }
+                    sessionAttachmentTextMap[targetSessionId]?.takeIf { it.isNotBlank() }?.let { add(it) }
+                    sessionAttachmentText?.takeIf { it.isNotBlank() }?.let { add(it) }
+                    attachedNotesFor(targetSessionId).forEach { note ->
+                        if (note.content.isNotBlank()) add(note.content)
+                    }
+                    currentNoteContent?.takeIf { it.isNotBlank() }?.let { add(it) }
+                }.distinct()
+
+                val localExtractedHtml = localSourceCandidates
+                    .mapNotNull { com.example.ui.util.NoteArtifactCodec.extractFullHtmlFromSource(it) }
+                    .maxByOrNull { it.length }
+
+                val useLocalSource = com.example.ui.util.NoteArtifactCodec.shouldUseLocalHtmlInsteadOfModelOutput(
+                    localHtml = localExtractedHtml,
+                    modelHtml = rawModelHtml,
+                    userPrompt = latestPrompt,
+                    explicitFlag = explicitUseAttached
+                )
+                val htmlCode = if (useLocalSource && !localExtractedHtml.isNullOrBlank()) {
+                    localExtractedHtml
+                } else {
+                    rawModelHtml
+                }
+
+                val fallbackFileTitle = (sessionAttachmentNameMap[targetSessionId]
+                    ?: attachedFileName
+                    ?: sessionAttachmentName)
+                    ?.substringBeforeLast('.')
+                    ?.trim()
+                    .orEmpty()
                 val title = com.example.ui.util.NoteArtifactCodec.smartTopicTitle(
-                    providedTitle = args.optString("title", ""),
+                    providedTitle = args.optString("title", "").ifBlank { if (useLocalSource) fallbackFileTitle else "" },
                     htmlOrJson = htmlCode,
                     userPrompt = latestPrompt,
                     isSlides = false
                 )
                 val saveToDownloads = args.optBoolean("save_to_downloads", true)
                 if (htmlCode.isBlank()) {
-                    ToolOutcome("NOT DONE: html_code was empty.")
+                    ToolOutcome("NOT DONE: html_code was empty and no HTML source was found in the attached file/note.")
                 } else {
                     val fullHtmlRaw = if (htmlCode.contains("<html", ignoreCase = true) || htmlCode.contains("<!doctype", ignoreCase = true)) {
                         htmlCode
@@ -1940,7 +1976,13 @@ fun AiChatScreen(
                         </html>
                         """.trimIndent()
                     }
-                    val fullHtml = com.example.data.ai.ArtifactBuilder.harden(fullHtmlRaw)
+                    // When extracting verbatim HTML from the user's attached file/note, preserve 100% of their original
+                    // source code unmodified (WebView preview applies hardening dynamically at render time).
+                    val fullHtml = if (useLocalSource) {
+                        fullHtmlRaw
+                    } else {
+                        com.example.data.ai.ArtifactBuilder.harden(fullHtmlRaw)
+                    }
                     // Download-first: find + download every <img data-q="..."> BEFORE the card is shown
                     val built = com.example.data.ai.ArtifactBuilder.build(context, title, fullHtml) { done, total, label, ok ->
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -1948,10 +1990,23 @@ fun AiChatScreen(
                             stepFinish(ok, targetSessionId)
                         }
                     }
-                    val builtIndex = built.indexFile
-                    val exportHtml = if (builtIndex != null) {
+                    // Persist large HTML (>12 KB) or verbatim extracted HTML to files/artifacts/<ts>/index.html
+                    // so chat history & SharedPreferences never choke on huge Base64 payloads and 0 bytes are lost.
+                    val builtIndex: java.io.File? = built.indexFile ?: if (fullHtml.length > 12_000 || useLocalSource) {
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            com.example.data.ai.ArtifactBuilder.inlineForExport(builtIndex)
+                            runCatching {
+                                val dir = java.io.File(context.filesDir, "artifacts/${System.currentTimeMillis()}").apply { mkdirs() }
+                                java.io.File(dir, "meta.json").writeText(
+                                    org.json.JSONObject().put("title", title).toString(),
+                                    Charsets.UTF_8
+                                )
+                                java.io.File(dir, "index.html").also { it.writeText(fullHtml, Charsets.UTF_8) }
+                            }.getOrNull()
+                        }
+                    } else null
+                    val exportHtml = if (built.indexFile != null) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            com.example.data.ai.ArtifactBuilder.inlineForExport(built.indexFile)
                         }
                     } else fullHtml
                     var savedPath: String? = null
@@ -1975,7 +2030,10 @@ fun AiChatScreen(
                         built.skipped.isEmpty() -> " ${built.loaded}/${built.total} images were found and downloaded."
                         else -> " ${built.loaded}/${built.total} images downloaded; no usable image found for: ${built.skipped.joinToString("; ")}."
                     }
-                    ToolOutcome("DONE: Created interactive HTML page \"$title\"${savedPath?.let { " and saved to $it" }.orEmpty()}.$imgNote An interactive HTML preview card is displayed in the chat.")
+                    val sizeBytes = fullHtml.toByteArray(Charsets.UTF_8).size
+                    val sizeLabel = if (sizeBytes >= 1024) String.format(java.util.Locale.US, "%.1f KB", sizeBytes / 1024.0) else "$sizeBytes B"
+                    val verbatimTag = if (useLocalSource) " (100% verbatim extracted: $sizeLabel / ${fullHtml.length} chars)" else " ($sizeLabel)"
+                    ToolOutcome("DONE: Created interactive HTML page \"$title\"$verbatimTag${savedPath?.let { " and saved to $it" }.orEmpty()}.$imgNote An interactive HTML preview card is displayed in the chat.")
                 }
             }
             "create_html_slides" -> {
@@ -2676,6 +2734,73 @@ fun AiChatScreen(
                     }
                     saveSessionFor(targetSessionId)
                     return@launch
+                }
+
+                // Direct Zero-Loss Verbatim HTML Extraction Fast-Path:
+                // When the user attaches a file/note containing HTML (e.g., 52 KB+) and asks to extract
+                // ALL HTML verbatim into an HTML artifact of the exact same code, extract 100% locally
+                // so LLM output-token caps (4K/8K tokens ≈ 12 KB) can NEVER truncate the file.
+                if ("create_html_page" !in disabledTools &&
+                    com.example.ui.util.NoteArtifactCodec.isVerbatimHtmlExtractRequest(userMsg)
+                ) {
+                    val verbatimCandidateSources = buildList<String> {
+                        if (!docText.isNullOrBlank()) add(docText)
+                        activeAttachedNotes.forEach { n -> if (n.content.isNotBlank()) add(n.content) }
+                        if (!currentNoteContent.isNullOrBlank()) add(currentNoteContent)
+                    }
+                    val directExtractedHtml = verbatimCandidateSources
+                        .mapNotNull { com.example.ui.util.NoteArtifactCodec.extractFullHtmlFromSource(it) }
+                        .maxByOrNull { it.length }
+
+                    if (!directExtractedHtml.isNullOrBlank()) {
+                        val sizeKbStr = String.format(
+                            java.util.Locale.US,
+                            "%.1f KB",
+                            directExtractedHtml.toByteArray(Charsets.UTF_8).size / 1024.0
+                        )
+                        stepRunning("Extracting full HTML verbatim ($sizeKbStr)", targetSessionId)
+                        val derivedTitle = com.example.ui.util.NoteArtifactCodec.smartTopicTitle(
+                            providedTitle = resolvedDocName?.substringBeforeLast('.')
+                                ?: activeAttachedNotes.firstOrNull()?.title,
+                            htmlOrJson = directExtractedHtml,
+                            userPrompt = userMsg,
+                            isSlides = false
+                        )
+                        val toolArgs = org.json.JSONObject().apply {
+                            put("title", derivedTitle)
+                            put("use_attached_source", true)
+                            put("save_to_downloads", true)
+                        }
+                        val out = runTool("create_html_page", toolArgs, targetSessionId)
+                        stepFinish(!toolFailed(out.result), targetSessionId)
+                        val finishedSteps = targetSteps.toList()
+                        targetSteps.clear()
+                        loadingBySession[targetSessionId] = false
+                        val artifactsSuffix = if (targetArtifactBlocks.isNotEmpty()) {
+                            "\n\n" + targetArtifactBlocks.joinToString("\n\n")
+                        } else ""
+                        val isDevanagari = userMsg.any { it in '\u0900'..'\u097F' }
+                        val replyMsg = if (!toolFailed(out.result)) {
+                            val summaryLine = if (isDevanagari) {
+                                "पूरा HTML कोड बिना किसी कटौती के **100% verbatim ($sizeKbStr / ${directExtractedHtml.length} characters)** एक्सट्रैक्ट करके **\"$derivedTitle\"** HTML आर्टिफैक्ट तैयार कर दिया गया है।"
+                            } else {
+                                "Extracted **100% of the HTML code verbatim ($sizeKbStr / ${directExtractedHtml.length} chars)** with zero truncation and created the **\"$derivedTitle\"** HTML artifact."
+                            }
+                            summaryLine + artifactsSuffix
+                        } else {
+                            "Error: ${out.result}"
+                        }
+                        val idx = targetMessages.indexOfFirst { it.id == botMsgId }
+                        if (idx != -1) {
+                            targetMessages[idx] = targetMessages[idx].copy(
+                                text = replyMsg,
+                                noteResults = out.noteResults,
+                                steps = finishedSteps
+                            )
+                        }
+                        saveSessionFor(targetSessionId)
+                        return@launch
+                    }
                 }
 
                 val (key, baseUrl, chosenModel) = when (activeProvider) {

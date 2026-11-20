@@ -121,7 +121,7 @@ class ChatSessionManager(context: Context) {
             obj.put("title", session.title)
             obj.put("timestamp", session.timestamp)
             session.attachmentName?.let { obj.put("attachmentName", it) }
-            session.attachmentText?.let { obj.put("attachmentText", it.take(40_000)) }
+            session.attachmentText?.let { obj.put("attachmentText", it.take(500_000)) }
             session.attachmentUri?.let { obj.put("attachmentUri", it) }
             if (session.attachmentImages.isNotEmpty()) {
                 val imgArr = JSONArray()
