@@ -516,14 +516,132 @@ class AuNotesFeaturesTest {
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithText("Noto Sans Devanagari").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("font_card_noto_sans_devanagari").performClick()
+        composeTestRule.onNodeWithTag("font_card_noto_devanagari").performClick()
         composeTestRule.waitForIdle()
 
-        assertEquals("noto_sans_devanagari", prefs.selectedNoteFontId.value)
+        assertEquals("noto_devanagari", prefs.selectedNoteFontId.value)
 
-        composeTestRule.onNodeWithTag("font_fav_noto_sans_devanagari").performClick()
+        composeTestRule.onNodeWithTag("font_fav_noto_devanagari").performClick()
         composeTestRule.waitForIdle()
-        assertTrue(prefs.favoriteFontIds.value.contains("noto_sans_devanagari"))
+        assertTrue(prefs.favoriteFontIds.value.contains("noto_devanagari"))
+    }
+
+    @Test
+    fun `NoteEditorScreen composes rich note with artifact table checkboxes and triggers save without VerifyError`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = AppDatabase.getInstance(context)
+        val repo = NoteRepository(db.noteDao())
+        val prefs = AppPreferences(context)
+
+        val sampleNote = NoteEntity(
+            id = 55L,
+            title = "Project Alpha Notes",
+            content = """
+                ```html
+                <!-- title:Alpha Preview -->
+                <!DOCTYPE html><html><body><h1>Alpha Preview</h1></body></html>
+                ```
+                
+                [ ] Finish refactor verification
+                Hello world from modular editor
+            """.trimIndent(),
+            tableData = "Metric|Status\nBuild|Green"
+        )
+
+        var savedTitle: String? = null
+        var savedContent: String? = null
+        var navigatedBack = false
+
+        composeTestRule.setContent {
+            com.example.ui.screens.NoteEditorScreen(
+                initialNote = sampleNote,
+                isDarkMode = false,
+                repository = repo,
+                preferences = prefs,
+                onBack = { navigatedBack = true },
+                onSaveNote = { _, title, content, _, _, _, _, _, _, _, _, _, _, _, _, _, _, onSaved ->
+                    savedTitle = title
+                    savedContent = content
+                    onSaved(55L)
+                }
+            )
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Edit Note").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Project Alpha Notes").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Alpha Preview").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("editor_save_button").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals("Project Alpha Notes", savedTitle)
+        assertTrue("Saved content must re-combine artifact cleanly", savedContent?.contains("Alpha Preview") == true)
+        assertTrue("Save button should invoke onBack after saving", navigatedBack)
+    }
+
+    @Test
+    fun `per-selection font spans style only selected text without changing global preference and render in PDF and HTML`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = AppPreferences(context)
+        prefs.setSelectedNoteFontId(com.example.ui.util.CustomFontManager.DEFAULT_FONT_ID)
+
+        // 1. Apply "caveat" font ONLY to "Hello" in "Hello World"
+        val text = "Hello World"
+        val spans = com.example.ui.util.RichTextFormatter.setValueProperty(
+            spans = emptyList(),
+            type = "font",
+            start = 0,
+            end = 5,
+            value = "caveat"
+        )
+        val styled = com.example.ui.util.RichTextFormatter.buildStyledText(
+            text = text,
+            spans = spans,
+            defaultColor = androidx.compose.ui.graphics.Color.Black
+        )
+        assertEquals(1, styled.spanStyles.size)
+        assertEquals(0, styled.spanStyles.first().start)
+        assertEquals(5, styled.spanStyles.first().end)
+        assertNotNull("Selected range must have a FontFamily span", styled.spanStyles.first().item.fontFamily)
+
+        // Global preference must stay System Default (other notes unaffected)
+        assertEquals(
+            com.example.ui.util.CustomFontManager.DEFAULT_FONT_ID,
+            prefs.selectedNoteFontId.value
+        )
+
+        // Clear formatting clears font spans as well
+        val cleared = com.example.ui.util.RichTextFormatter.clearAll(spans, 0, 5)
+        assertTrue("clearAll must also clear font spans", cleared.isEmpty())
+
+        // 2. Verify Typeface resolution & PDF Spannable + PDF/HTML export apply custom font ONLY on [0, 5)
+        val resolvedTf = com.example.ui.util.CustomFontManager.resolveTypeface(context, "caveat")
+        assertNotNull("Bundled Caveat .ttf must resolve to a native Typeface for PDF", resolvedTf)
+
+        val note = NoteEntity(
+            id = 777L,
+            title = "Font Span PDF Test",
+            content = text,
+            styleSpansJson = com.example.ui.util.RichTextFormatter.serializeSpans(spans)
+        )
+        val spannable = NoteExporter.buildSpannable(note, emptyList(), context)
+        val metricSpans = spannable.getSpans(0, 5, android.text.style.MetricAffectingSpan::class.java)
+        assertTrue("Selected range [0, 5) must carry CustomTypefaceSpan for PDF rendering", metricSpans.isNotEmpty())
+        assertEquals(0, spannable.getSpanStart(metricSpans.first()))
+        assertEquals(5, spannable.getSpanEnd(metricSpans.first()))
+        val unselectedSpans = spannable.getSpans(6, 11, android.text.style.MetricAffectingSpan::class.java)
+        assertTrue("Unselected range [6, 11) must NOT carry the font span", unselectedSpans.isEmpty())
+
+        val pdfFile = NoteExporter.buildPdf(context, note, "font_span_test.pdf", singlePage = true)
+        assertTrue("PDF with custom font spans must be created and non-empty", pdfFile.exists() && pdfFile.length() > 100L)
+        pdfFile.delete()
+
+        val htmlFile = NoteExporter.buildFile(context, note, "font_span_test.html", ".html")
+        val htmlText = htmlFile.readText()
+        assertTrue("HTML export must include per-selection Caveat font CSS", htmlText.contains("'Caveat'"))
+        htmlFile.delete()
     }
 }
+
+
 

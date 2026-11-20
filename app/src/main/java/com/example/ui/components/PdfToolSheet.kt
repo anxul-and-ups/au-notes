@@ -79,7 +79,7 @@ fun PdfToolSheet(
     var exporting by remember { mutableStateOf(false) }
     var lastExportedPath by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(singlePage) {
+    LaunchedEffect(singlePage, note) {
         NoteExporter.setPdfOptions("A4", 40f)
         loading = true
         failed = false

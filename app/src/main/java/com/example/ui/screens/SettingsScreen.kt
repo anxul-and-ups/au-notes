@@ -408,7 +408,7 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text("Fonts", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
-                            Text("Active: $activeFontName • Search, Preview & Add .ttf/.otf", fontSize = 11.sp, color = Color(0xFF8B5CF6))
+                            Text("Default: $activeFontName • Search, Preview & Import .ttf/.otf", fontSize = 11.sp, color = Color(0xFF8B5CF6))
                         }
                     }
                     Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color(0xFF8B5CF6), modifier = Modifier.size(20.dp))

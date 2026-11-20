@@ -222,7 +222,7 @@ object RichTextFormatter {
     /** Removes ALL formatting spans in the range (Samsung Notes "clear formatting"). */
     fun clearAll(spans: List<TextSpan>, start: Int, end: Int): List<TextSpan> {
         var result = spans
-        for (t in listOf("bold", "italic", "underline", "strikethrough", "code", "color", "highlight", "fontsize")) {
+        for (t in listOf("bold", "italic", "underline", "strikethrough", "code", "color", "highlight", "fontsize", "font")) {
             result = clearType(result, t, start, end)
         }
         return result
@@ -232,7 +232,8 @@ object RichTextFormatter {
         text: String,
         spans: List<TextSpan>,
         defaultColor: Color,
-        fontSize: Float = 15f
+        fontSize: Float = 15f,
+        importedFonts: List<com.example.data.preferences.ImportedFontEntry> = emptyList()
     ): AnnotatedString {
         return buildAnnotatedString {
             append(text)
@@ -267,6 +268,13 @@ object RichTextFormatter {
                         "fontsize" -> {
                             val size = span.value?.toFloatOrNull()
                             if (size != null && size in 6f..96f) addStyle(SpanStyle(fontSize = size.sp), s, e)
+                        }
+                        "font" -> {
+                            val fontId = span.value
+                            if (!fontId.isNullOrBlank() && fontId != CustomFontManager.DEFAULT_FONT_ID) {
+                                val family = CustomFontManager.resolveFontFamily(fontId, importedFonts)
+                                addStyle(SpanStyle(fontFamily = family), s, e)
+                            }
                         }
                         "color" -> {
                             val color = span.value?.let { hex ->

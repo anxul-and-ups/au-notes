@@ -193,8 +193,8 @@ fun FontsSettingsScreen(
                             color = primaryText
                         )
                         Text(
-                            text = "Applies to Write Mode & Read Mode",
-                            fontSize = 11.5.sp,
+                            text = "Default font for all notes • Use editor toolbar for selected text",
+                            fontSize = 11.sp,
                             color = secondaryText
                         )
                     }
@@ -236,7 +236,38 @@ fun FontsSettingsScreen(
                 }
             }
 
-            Spacer(Modifier.height(14.dp))
+            if (selectedFontId != CustomFontManager.DEFAULT_FONT_ID) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(CrimsonPrimary.copy(alpha = 0.12f))
+                        .border(1.dp, CrimsonPrimary.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Global default: ${CustomFontManager.getFontDisplayName(selectedFontId, importedFonts)}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = primaryText,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = {
+                            preferences.setSelectedNoteFontId(CustomFontManager.DEFAULT_FONT_ID)
+                            Toast.makeText(context, "Reset global font to System Default", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.testTag("reset_global_font_button")
+                    ) {
+                        Text("Reset Default", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
 
             // Search Bar
             OutlinedTextField(

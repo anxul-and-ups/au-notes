@@ -948,13 +948,15 @@ private fun SplitNotePaneCard(
                     .verticalScroll(scrollState)
                     .padding(horizontal = 12.dp, vertical = 10.dp)
             ) {
-                val styledPreview = remember(holder.content.text, holder.spans, inkColor, holder.fontSize) {
+                val importedFonts by preferences.importedFonts.collectAsState()
+                val styledPreview = remember(holder.content.text, holder.spans, inkColor, holder.fontSize, importedFonts) {
                     if (holder.content.text.length <= 25_000 && holder.spans.isNotEmpty()) {
                         RichTextFormatter.buildStyledText(
                             text = holder.content.text,
                             spans = holder.spans,
                             defaultColor = inkColor,
-                            fontSize = holder.fontSize.toFloat()
+                            fontSize = holder.fontSize.toFloat(),
+                            importedFonts = importedFonts
                         )
                     } else null
                 }

@@ -231,6 +231,14 @@ object NoteExporter {
         val text = ImageMarkers.blank(note.content)
         val cuts = (spans.flatMap { listOf(it.start, it.end) } + listOf(0, text.length))
             .map { it.coerceIn(0, text.length) }.distinct().sorted()
+        val ctxForHtml = appContext
+        val importedFontsForHtml = ctxForHtml?.let { ctx ->
+            runCatching { com.example.data.preferences.AppPreferences(ctx).importedFonts.value }.getOrDefault(emptyList())
+        }.orEmpty()
+        val defaultFontIdForHtml = ctxForHtml?.let { ctx ->
+            runCatching { com.example.data.preferences.AppPreferences(ctx).selectedNoteFontId.value }.getOrDefault(CustomFontManager.DEFAULT_FONT_ID)
+        } ?: CustomFontManager.DEFAULT_FONT_ID
+        val bodyFontCss = CustomFontManager.cssFontFamily(defaultFontIdForHtml, importedFontsForHtml) ?: "sans-serif"
         for (i in 0 until cuts.size - 1) {
             val s = cuts[i]; val e = cuts[i + 1]
             if (s >= e) continue
@@ -244,6 +252,14 @@ object NoteExporter {
                     "strikethrough" -> css += "text-decoration:line-through;"
                     "code" -> css += "font-family:monospace;background:#eee;"
                     "color" -> it.value?.let { c -> css += "color:$c;" }
+                    "fontsize" -> it.value?.toFloatOrNull()?.let { sz -> css += "font-size:${sz}px;" }
+                    "highlight" -> {
+                        val hex = (it.value ?: "#FFEB3B").substringBefore('@')
+                        css += "background:$hex;"
+                    }
+                    "font" -> CustomFontManager.cssFontFamily(it.value, importedFontsForHtml)?.let { fam ->
+                        css += "font-family:$fam;"
+                    }
                 }
             }
             val chunk = text.substring(s, e)
@@ -286,7 +302,7 @@ object NoteExporter {
             }
         }
         return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-            "<title>${xmlEscape(note.title)}</title></head><body style=\"font-family:sans-serif;max-width:800px;margin:24px auto;padding:0 12px\">" +
+            "<title>${xmlEscape(note.title)}</title></head><body style=\"font-family:$bodyFontCss;max-width:800px;margin:24px auto;padding:0 12px\">" +
             "<div>$body</div>$slidesEmbed$tbl$imgs</body></html>"
     }
 
@@ -448,11 +464,48 @@ object NoteExporter {
         return out.toString()
     }
 
-    private fun buildSpannable(note: NoteEntity): SpannableStringBuilder {
+    /**
+     * Applies any bundled or imported custom [Typeface] to a text range inside Android's
+     * [StaticLayout] / [PdfDocument] canvas while preserving bold/italic styles.
+     */
+    private class CustomTypefaceSpan(private val customTypeface: Typeface) : android.text.style.MetricAffectingSpan() {
+        override fun updateDrawState(ds: TextPaint) = applyCustomTypeface(ds, customTypeface)
+        override fun updateMeasureState(paint: TextPaint) = applyCustomTypeface(paint, customTypeface)
+
+        private fun applyCustomTypeface(paint: Paint, tf: Typeface) {
+            val oldStyle = paint.typeface?.style ?: Typeface.NORMAL
+            paint.typeface = if (oldStyle != Typeface.NORMAL) {
+                Typeface.create(tf, oldStyle)
+            } else {
+                tf
+            }
+        }
+    }
+
+    internal fun buildSpannable(
+        note: NoteEntity,
+        importedFonts: List<com.example.data.preferences.ImportedFontEntry> = emptyList(),
+        context: Context? = appContext
+    ): SpannableStringBuilder {
         val text = ImageMarkers.blank(note.content)
         val sp = SpannableStringBuilder(text)
         val flag = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-        RichTextFormatter.deserializeSpans(note.styleSpansJson).forEach { span ->
+        val allSpans = RichTextFormatter.deserializeSpans(note.styleSpansJson)
+
+        // Apply custom font spans first so subsequent Bold/Italic StyleSpans combine with the custom Typeface
+        if (context != null) {
+            allSpans.filter { it.type == "font" }.forEach { span ->
+                val s = span.start.coerceIn(0, text.length)
+                val e = span.end.coerceIn(0, text.length)
+                if (s >= e) return@forEach
+                val tf = CustomFontManager.resolveTypeface(context, span.value, importedFonts)
+                if (tf != null) {
+                    sp.setSpan(CustomTypefaceSpan(tf), s, e, flag)
+                }
+            }
+        }
+
+        allSpans.forEach { span ->
             val s = span.start.coerceIn(0, text.length)
             val e = span.end.coerceIn(0, text.length)
             if (s >= e) return@forEach
@@ -609,17 +662,29 @@ object NoteExporter {
         val cw = pager.contentW.toInt()
         val bodyLeft = if (notePageStyle in listOf("ruled", "legal")) MARGIN + 14f else MARGIN
 
+        val ctxForPdf = appContext
+        val prefsForPdf = ctxForPdf?.let { ctx -> runCatching { com.example.data.preferences.AppPreferences(ctx) }.getOrNull() }
+        val importedFontsForPdf = prefsForPdf?.importedFonts?.value.orEmpty()
+        val defaultFontIdForPdf = prefsForPdf?.selectedNoteFontId?.value ?: CustomFontManager.DEFAULT_FONT_ID
+        val defaultPdfTypeface = ctxForPdf?.let { ctx ->
+            CustomFontManager.resolveTypeface(ctx, defaultFontIdForPdf, importedFontsForPdf)
+        }
+
         // Title
         val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AColor.rgb(255, 45, 85); textSize = 22f; typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            color = AColor.rgb(255, 45, 85)
+            textSize = 22f
+            typeface = Typeface.create(defaultPdfTypeface ?: Typeface.DEFAULT, Typeface.BOLD)
         }
         drawLayout(pager, makeLayout(note.title.ifBlank { "Untitled Note" }, titlePaint, (cw - (bodyLeft - MARGIN)).toInt()), bodyLeft)
         pager.y += 10f
 
         // Body — default text is dark on white/tinted paper regardless of app theme,
-        // explicit color spans keep their chosen colors.
+        // explicit color and per-selection font spans keep their chosen styles.
         val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AColor.rgb(25, 25, 25); textSize = note.fontSize.coerceIn(9, 28).toFloat() * 0.8f
+            color = AColor.rgb(25, 25, 25)
+            textSize = note.fontSize.coerceIn(9, 28).toFloat() * 0.8f
+            typeface = defaultPdfTypeface ?: Typeface.DEFAULT
         }
         val allAtts = RichTextFormatter.deserializeAttachments(note.attachmentsJson)
         val placedInline = HashSet<String>()
@@ -660,7 +725,7 @@ object NoteExporter {
 
         val textW = (cw - (bodyLeft - MARGIN)).toInt().coerceAtLeast(120)
         if (cleanedNoteForPdf.content.isNotEmpty()) {
-            val body = buildSpannable(cleanedNoteForPdf)
+            val body = buildSpannable(cleanedNoteForPdf, importedFontsForPdf)
             if (cleanedNoteForPdf.isCodeFormat) body.setSpan(TypefaceSpan("monospace"), 0, body.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
 
             val lines = cleanedNoteForPdf.content.split("\n")

@@ -84,6 +84,7 @@ object CustomFontManager {
     )
 
     private val fontCache = ConcurrentHashMap<String, FontFamily>()
+    private val typefaceCache = ConcurrentHashMap<String, Typeface>()
 
     fun allFonts(imported: List<ImportedFontEntry>): List<AppFontItem> {
         val customItems = imported.map {
@@ -131,6 +132,63 @@ object CustomFontManager {
             }
         }
         return FontFamily.Default
+    }
+
+    /**
+     * Resolves a native Android [Typeface] for PDF (`PdfDocument` / `StaticLayout` / `Canvas`) rendering.
+     * Supports both bundled font resources (`res/font`) and user-imported `.ttf`/`.otf` files.
+     * Returns `null` when [fontId] is blank or [DEFAULT_FONT_ID].
+     */
+    fun resolveTypeface(
+        context: Context,
+        fontId: String?,
+        imported: List<ImportedFontEntry> = emptyList()
+    ): Typeface? {
+        if (fontId.isNullOrBlank() || fontId == DEFAULT_FONT_ID) return null
+        typefaceCache[fontId]?.let { return it }
+
+        val builtIn = builtInFonts.firstOrNull { it.id == fontId }
+        if (builtIn != null) {
+            val tf = when {
+                builtIn.resId != null -> runCatching {
+                    androidx.core.content.res.ResourcesCompat.getFont(context, builtIn.resId)
+                }.getOrNull()
+                else -> null
+            }
+            if (tf != null) {
+                typefaceCache[fontId] = tf
+                return tf
+            }
+            return null
+        }
+
+        val custom = imported.firstOrNull { it.id == fontId }
+        if (custom != null) {
+            val file = File(custom.filePath)
+            if (file.exists() && file.length() > 0L) {
+                val tf = runCatching { Typeface.createFromFile(file) }.getOrNull()
+                if (tf != null) {
+                    typefaceCache[fontId] = tf
+                    return tf
+                }
+            }
+        }
+        return null
+    }
+
+    fun cssFontFamily(fontId: String?, imported: List<ImportedFontEntry> = emptyList()): String? {
+        if (fontId.isNullOrBlank() || fontId == DEFAULT_FONT_ID) return null
+        return when (fontId) {
+            "inter" -> "'Inter', sans-serif"
+            "poppins" -> "'Poppins', sans-serif"
+            "noto_devanagari" -> "'Noto Sans Devanagari', sans-serif"
+            "lora" -> "'Lora', Georgia, serif"
+            "merriweather" -> "'Merriweather', Georgia, serif"
+            "playfair" -> "'Playfair Display', Georgia, serif"
+            "caveat" -> "'Caveat', cursive"
+            "roboto_mono" -> "'Roboto Mono', monospace"
+            else -> imported.firstOrNull { it.id == fontId }?.let { "'${it.name.replace("'", "")}', sans-serif" }
+        }
     }
 
     fun resolveFontFamilyForItem(item: AppFontItem): FontFamily {
@@ -199,6 +257,7 @@ object CustomFontManager {
                 throw IllegalArgumentException("Invalid or unsupported font file.")
             }
             fontCache[fontId] = FontFamily(tf)
+            typefaceCache[fontId] = tf
 
             val entry = ImportedFontEntry(
                 id = fontId,
@@ -225,6 +284,7 @@ object CustomFontManager {
             runCatching { File(target.filePath).delete() }
         }
         fontCache.remove(fontId)
+        typefaceCache.remove(fontId)
         preferences.removeImportedFont(fontId)
         if (preferences.selectedNoteFontId.value == fontId) {
             preferences.setSelectedNoteFontId(DEFAULT_FONT_ID)

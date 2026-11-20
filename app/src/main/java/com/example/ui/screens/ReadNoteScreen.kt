@@ -1001,10 +1001,12 @@ fun ReadNoteScreen(
                                 }
                             }
                         } else if (viewAsFormat == "pdf") {
-                            val pdfPages by produceState<List<android.graphics.Bitmap>?>(initialValue = null, note) {
+                            val pdfPages by produceState<List<android.graphics.Bitmap>?>(
+                                initialValue = null, liveNote, selectedFontId, importedFonts
+                            ) {
                                 value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                     try {
-                                        val tmpPdf = com.example.ui.util.NoteExporter.buildPdf(context, note, "preview_${note.id}.pdf", false)
+                                        val tmpPdf = com.example.ui.util.NoteExporter.buildPdf(context, liveNote, "preview_${liveNote.id}.pdf", false)
                                         val pages = com.example.ui.util.NoteExporter.renderPages(tmpPdf, scale = 1.6f)
                                         tmpPdf.delete()
                                         pages
@@ -1222,7 +1224,7 @@ fun ReadNoteScreen(
                         } else {
                             // Heavy styling of big notes runs on a background thread with loading badge for huge content
                             val styledState = produceState<AnnotatedString?>(
-                                initialValue = null, displayContent, spans, currentFontColor, liveNote.fontSize
+                                initialValue = null, displayContent, spans, currentFontColor, liveNote.fontSize, importedFonts
                             ) {
                                 value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                                     if (spans.isNotEmpty() && displayContent.length <= 35_000) {
@@ -1230,7 +1232,8 @@ fun ReadNoteScreen(
                                             text = displayContent,
                                             spans = spans,
                                             defaultColor = currentFontColor,
-                                            fontSize = liveNote.fontSize.toFloat()
+                                            fontSize = liveNote.fontSize.toFloat(),
+                                            importedFonts = importedFonts
                                         )
                                     } else {
                                         AnnotatedString(displayContent)
