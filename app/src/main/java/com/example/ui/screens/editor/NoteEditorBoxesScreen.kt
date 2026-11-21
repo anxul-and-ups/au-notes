@@ -54,11 +54,89 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.ui.components.ConfigureEdgeToEdgeDialog
 import com.example.ui.theme.CrimsonPrimary
 
+data class MarkdownTableSpan(
+    val start: Int,
+    val end: Int,
+    val lines: List<String>,
+    val lineStarts: List<Int>,
+    val rows: List<List<String>>,
+    val separatorLineIndices: Set<Int>
+)
+
 /**
  * Helper to serialize/parse auto-expanding box grids into clean Markdown pipe-table format
- * so both Write Mode and Read Mode (`ReadMarkdownTableView`) render perfectly aligned boxes.
+ * so both Write Mode and Read Mode render simple, uncolored, cleanly aligned boxes.
  */
 object MarkdownBoxesCodec {
+    private val sepRegex = Regex("^\\|?[\\s:\\-|]+\\|?$")
+
+    fun isSeparatorLine(line: String): Boolean {
+        val t = line.trim()
+        return t.isNotEmpty() && t.contains('-') && sepRegex.matches(t)
+    }
+
+    fun isPipeTableLine(line: String): Boolean {
+        val t = line.trim()
+        return t.length >= 3 && t.startsWith("|") && t.endsWith("|") && t.count { it == '|' } >= 2
+    }
+
+    /** Finds all Markdown pipe-table blocks in a document with exact char offsets for inline Write Mode rendering. */
+    fun findTableBlocks(text: String): List<MarkdownTableSpan> {
+        if (!text.contains("|")) return emptyList()
+        val lines = text.split("\n")
+        val starts = IntArray(lines.size)
+        var acc = 0
+        lines.forEachIndexed { idx, l -> starts[idx] = acc; acc += l.length + 1 }
+
+        val out = mutableListOf<MarkdownTableSpan>()
+        var i = 0
+        while (i < lines.size) {
+            if (isPipeTableLine(lines[i])) {
+                val blockLines = mutableListOf<String>()
+                val blockLineStarts = mutableListOf<Int>()
+                val sepIndices = mutableSetOf<Int>()
+                val startOffset = starts[i]
+                var j = i
+                while (j < lines.size && isPipeTableLine(lines[j])) {
+                    val localIdx = j - i
+                    if (isSeparatorLine(lines[j])) sepIndices.add(localIdx)
+                    blockLines.add(lines[j])
+                    blockLineStarts.add(starts[j])
+                    j++
+                }
+                val endOffset = (starts[j - 1] + lines[j - 1].length).coerceAtMost(text.length)
+                if (blockLines.size >= 2 || sepIndices.isNotEmpty()) {
+                    val parsedRows = blockLines
+                        .filterIndexed { idx, _ -> idx !in sepIndices }
+                        .map { l ->
+                            l.trim().removePrefix("|").removeSuffix("|").split("|").map { it.trim() }
+                        }
+                        .filter { it.isNotEmpty() }
+                    val colCount = parsedRows.maxOfOrNull { it.size } ?: 1
+                    val uniformRows = parsedRows.map { r ->
+                        if (r.size >= colCount) r.take(colCount) else r + List(colCount - r.size) { "" }
+                    }
+                    if (uniformRows.isNotEmpty()) {
+                        out.add(
+                            MarkdownTableSpan(
+                                start = startOffset,
+                                end = endOffset,
+                                lines = blockLines,
+                                lineStarts = blockLineStarts,
+                                rows = uniformRows,
+                                separatorLineIndices = sepIndices
+                            )
+                        )
+                    }
+                }
+                i = j
+            } else {
+                i++
+            }
+        }
+        return out
+    }
+
     fun toMarkdownTable(rows: List<List<String>>): String {
         val cleanRows = rows.filter { row -> row.any { it.isNotBlank() } }
         if (cleanRows.isEmpty()) return ""
@@ -86,29 +164,40 @@ object MarkdownBoxesCodec {
 }
 
 /**
- * Dedicated full-screen Auto-Expanding Boxes Editor (Item 8):
- * Each box starts compact and dynamically expands horizontally (up to 240.dp) and vertically
- * as the user types more text. Tapping Done inserts a clean aligned Markdown box table into the note.
+ * Dedicated full-screen Auto-Expanding Boxes Editor:
+ * Simple, uncolored, clean bordered boxes that start compact and dynamically expand
+ * horizontally and vertically as the user types.
  */
 @Composable
 fun NoteEditorBoxesScreen(
     isDarkMode: Boolean,
+    initialRows: List<List<String>>? = null,
     onDismiss: () -> Unit,
     onInsertBoxesMarkdown: (String) -> Unit
 ) {
-    val rows = remember {
-        mutableStateListOf(
-            mutableStateListOf("", ""),
-            mutableStateListOf("", "")
-        )
+    val rows = remember(initialRows) {
+        mutableStateListOf<androidx.compose.runtime.snapshots.SnapshotStateList<String>>().apply {
+            if (!initialRows.isNullOrEmpty()) {
+                val cols = initialRows.maxOf { it.size }.coerceAtLeast(1)
+                initialRows.forEach { r ->
+                    add(
+                        mutableStateListOf<String>().apply {
+                            for (c in 0 until cols) add(r.getOrElse(c) { "" })
+                        }
+                    )
+                }
+            } else {
+                add(mutableStateListOf("", ""))
+                add(mutableStateListOf("", ""))
+            }
+        }
     }
 
     val bg = if (isDarkMode) Color(0xFF0E1015) else Color(0xFFFAF7F2)
     val surface = if (isDarkMode) Color(0xFF171A22) else Color.White
-    val headerCellBg = if (isDarkMode) Color(0xFF231820) else Color(0xFFFFF1F4)
     val fg = if (isDarkMode) Color(0xFFF4F1EA) else Color(0xFF18181B)
     val sub = if (isDarkMode) Color(0xFF9CA3AF) else Color(0xFF64748B)
-    val border = if (isDarkMode) Color(0xFF2F3544) else Color(0xFFD1D5DB)
+    val border = if (isDarkMode) Color(0xFF3B4354) else Color(0xFFCBD5E1)
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -137,9 +226,14 @@ fun NoteEditorBoxesScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close Boxes Editor", tint = fg)
                     }
                     Column {
-                        Text("Boxes Editor", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = fg)
                         Text(
-                            "Boxes auto-expand as you type",
+                            if (initialRows != null) "Edit Boxes" else "Boxes Editor",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = fg
+                        )
+                        Text(
+                            "Simple boxes that auto-expand as you type",
                             fontSize = 11.5.sp,
                             color = sub
                         )
@@ -157,9 +251,9 @@ fun NoteEditorBoxesScreen(
                         .padding(horizontal = 14.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Check, contentDescription = "Insert boxes", tint = Color.White, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Check, contentDescription = "Save boxes", tint = Color.White, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(5.dp))
-                    Text("Insert", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(if (initialRows != null) "Save" else "Insert", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
             }
 
@@ -194,11 +288,10 @@ fun NoteEditorBoxesScreen(
                 )
             }
 
-            // Auto-expanding box grid
+            // Auto-expanding simple uncolored box grid
             val vScroll = rememberScrollState()
             val hScroll = rememberScrollState()
             val colCount = rows.firstOrNull()?.size ?: 2
-            // Compute shared column widths dynamically from current text so every column stays aligned!
             val colWidthsDp = (0 until colCount).map { c ->
                 val maxChars = rows.maxOfOrNull { it.getOrElse(c) { "" }.length } ?: 0
                 (88 + maxChars * 6).coerceIn(92, 236).dp
@@ -214,15 +307,12 @@ fun NoteEditorBoxesScreen(
             ) {
                 Column(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(10.dp))
                         .background(surface)
-                        .border(1.dp, border, RoundedCornerShape(14.dp))
+                        .border(1.dp, border, RoundedCornerShape(10.dp))
                 ) {
                     rows.forEachIndexed { rIdx, row ->
-                        Row(
-                            modifier = Modifier
-                                .background(if (rIdx == 0) headerCellBg else Color.Transparent)
-                        ) {
+                        Row {
                             for (cIdx in 0 until colCount) {
                                 val cellVal = row.getOrElse(cIdx) { "" }
                                 val colW = colWidthsDp[cIdx]

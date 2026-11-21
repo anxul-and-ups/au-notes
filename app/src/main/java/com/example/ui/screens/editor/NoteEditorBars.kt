@@ -147,21 +147,6 @@ fun NoteEditorTopBar(
                 onClick = { state.titleBarHidden = !state.titleBarHidden }
             )
 
-            if (onOpenInSplitScreen != null) {
-                NeuIconButton(
-                    icon = Icons.Default.Splitscreen,
-                    contentDescription = "Split Screen",
-                    isDarkMode = isDarkMode,
-                    size = 32.dp,
-                    iconSize = 16.dp,
-                    tint = if (isDarkMode) Color.White else Color.Black,
-                    onClick = {
-                        state.performSave(showToast = false, thenNavigateBack = false)
-                        onOpenInSplitScreen(state.currentSnapshotForWindow())
-                    }
-                )
-            }
-
             NeuIconButton(
                 icon = Icons.AutoMirrored.Filled.Undo,
                 contentDescription = "Undo",

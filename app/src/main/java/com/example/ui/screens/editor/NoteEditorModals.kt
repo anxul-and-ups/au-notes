@@ -229,18 +229,34 @@ fun NoteEditorModals(
     if (state.showBoxesEditor) {
         NoteEditorBoxesScreen(
             isDarkMode = isDarkMode,
-            onDismiss = { state.showBoxesEditor = false },
+            initialRows = state.editingBoxInitialRows,
+            onDismiss = {
+                state.showBoxesEditor = false
+                state.editingBoxRange = null
+                state.editingBoxInitialRows = null
+            },
             onInsertBoxesMarkdown = { markdown ->
                 val cur = state.contentValue
-                val pos = cur.selection.max.coerceIn(0, cur.text.length)
-                val prefix = if (pos > 0 && cur.text[pos - 1] != '\n') "\n\n" else if (pos > 0) "\n" else ""
-                val insertStr = "$prefix$markdown\n\n"
-                val newText = cur.text.substring(0, pos) + insertStr + cur.text.substring(pos)
+                val range = state.editingBoxRange
+                val newText: String
+                val newCursor: Int
+                if (range != null && range.first in 0..cur.text.length && range.last in range.first..cur.text.length) {
+                    newText = cur.text.substring(0, range.first) + markdown + cur.text.substring(range.last)
+                    newCursor = (range.first + markdown.length).coerceAtMost(newText.length)
+                } else {
+                    val pos = cur.selection.max.coerceIn(0, cur.text.length)
+                    val prefix = if (pos > 0 && cur.text[pos - 1] != '\n') "\n\n" else if (pos > 0) "\n" else ""
+                    val insertStr = "$prefix$markdown\n\n"
+                    newText = cur.text.substring(0, pos) + insertStr + cur.text.substring(pos)
+                    newCursor = (pos + insertStr.length).coerceAtMost(newText.length)
+                }
                 state.pushUndo()
                 state.spans = RichTextFormatter.adjustSpansForEdit(state.spans, cur.text, newText)
-                state.contentValue = TextFieldValue(newText, TextRange((pos + insertStr.length).coerceAtMost(newText.length)))
+                state.contentValue = TextFieldValue(newText, TextRange(newCursor))
                 state.showBoxesEditor = false
-                Toast.makeText(state.context, "Boxes inserted!", Toast.LENGTH_SHORT).show()
+                state.editingBoxRange = null
+                state.editingBoxInitialRows = null
+                Toast.makeText(state.context, if (range != null) "Boxes updated!" else "Boxes inserted!", Toast.LENGTH_SHORT).show()
             }
         )
     }

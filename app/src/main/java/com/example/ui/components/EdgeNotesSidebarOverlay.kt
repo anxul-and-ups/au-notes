@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -9,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -26,11 +28,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -58,28 +60,41 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.NoteEntity
+import com.example.ui.screens.ReadNoteBlockParser
+import com.example.ui.screens.VirtualizedReadNoteBody
 import com.example.ui.theme.CrimsonPrimary
 import com.example.ui.util.NoteArtifactCodec
+import com.example.ui.util.RichTextFormatter
 import kotlin.math.roundToInt
 
+private const val EDGE_SIDEBAR_PREFS = "au_edge_sidebar_prefs"
+private const val KEY_DOCKED_RIGHT = "edge_docked_right"
+private const val KEY_HANDLE_Y_FRAC = "edge_handle_y_frac"
+
 /**
- * Edge-attached Smart Notes Sidebar + In-App Floating Mini-Window Overlay.
+ * Edge-attached Smart Notes Sidebar + Rich In-App Floating Mini-Window Overlay.
  *
- * Works identically inside NoteEditorScreen (Write Mode) and ReadNoteScreen (Read Mode):
- * - A sleek vertical pill handle stays docked to the right screen edge.
- * - Tapping it slides out an edge-attached panel showing all notes as clean card chips.
- * - Tapping any note chip opens it inside an interactive in-app Floating Mini-Window
- *   that supports drag-to-move, drag-corner-to-resize, Lock/Unlock, and 1-tap clean Split Screen.
+ * Works inside both NoteEditorScreen (Write Mode) and ReadNoteScreen (Read Mode):
+ * - Hold & drag the edge pill handle to move it anywhere vertically or dock it to either the LEFT or RIGHT edge.
+ * - Tap the handle to slide out an edge-attached panel showing all notes as clean card chips.
+ * - Tap any note chip to open it in an interactive Floating Mini-Window with FULL rich rendering
+ *   (Copy Boxes + live preview, Markdown Boxes/Tables, Headings, Checklists, Images, HTML Web Views),
+ *   drag-to-move, drag-corner-to-resize, Lock/Unlock, and 1-tap clean Split Screen.
  */
 @Composable
 fun EdgeNotesSidebarOverlay(
@@ -89,9 +104,25 @@ fun EdgeNotesSidebarOverlay(
     onOpenInSplitScreen: (NoteEntity) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+    val edgePrefs = remember(context) {
+        context.getSharedPreferences(EDGE_SIDEBAR_PREFS, Context.MODE_PRIVATE)
+    }
+
     var isDrawerOpen by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var floatingNote by remember { mutableStateOf<NoteEntity?>(null) }
+
+    var isDockedRight by remember {
+        mutableStateOf(edgePrefs.getBoolean(KEY_DOCKED_RIGHT, true))
+    }
+    var handleYFraction by remember {
+        mutableFloatStateOf(edgePrefs.getFloat(KEY_HANDLE_Y_FRAC, 0.50f).coerceIn(0.12f, 0.86f))
+    }
+    var isDraggingHandle by remember { mutableStateOf(false) }
+    var dragTempX by remember { mutableFloatStateOf(0f) }
+    var dragTempY by remember { mutableFloatStateOf(0f) }
 
     val availableNotes = remember(notes, currentNoteId, searchQuery) {
         val q = searchQuery.trim().lowercase()
@@ -115,27 +146,61 @@ fun EdgeNotesSidebarOverlay(
         val density = LocalDensity.current
         val maxWidthPx = with(density) { maxWidth.toPx() }
         val maxHeightPx = with(density) { maxHeight.toPx() }
+        val pillWidthPx = with(density) { 22.dp.toPx() }
+        val pillHeightPx = with(density) { 68.dp.toPx() }
+        val edgeInsetPx = with(density) { 2.dp.toPx() }
+        val topClampPx = with(density) { 64.dp.toPx() }
+        val bottomClampPx = (maxHeightPx - pillHeightPx - with(density) { 64.dp.toPx() }).coerceAtLeast(topClampPx)
 
-        // 1. In-app Floating Mini-Window (Move, Resize, Lock, Split Screen)
+        // 1. In-app Floating Mini-Window with FULL Rich Rendering (Copy Boxes, Tables, Images, HTML, Checklists)
         floatingNote?.let { note ->
-            val defaultW = with(density) { 290.dp.toPx().coerceAtMost(maxWidthPx - 24f) }
-            val defaultH = with(density) { 340.dp.toPx().coerceAtMost(maxHeightPx - 120f) }
-            val minW = with(density) { 210.dp.toPx() }
-            val minH = with(density) { 190.dp.toPx() }
+            val defaultW = with(density) { 310.dp.toPx().coerceAtMost(maxWidthPx - 20f) }
+            val defaultH = with(density) { 380.dp.toPx().coerceAtMost(maxHeightPx - 110f) }
+            val minW = with(density) { 220.dp.toPx() }
+            val minH = with(density) { 200.dp.toPx() }
 
-            var posX by remember(note.id) { mutableFloatStateOf(((maxWidthPx - defaultW) / 2f).coerceAtLeast(12f)) }
-            var posY by remember(note.id) { mutableFloatStateOf(with(density) { 88.dp.toPx() }) }
+            var posX by remember(note.id) { mutableFloatStateOf(((maxWidthPx - defaultW) / 2f).coerceAtLeast(10f)) }
+            var posY by remember(note.id) { mutableFloatStateOf(with(density) { 82.dp.toPx() }) }
             var winW by remember(note.id) { mutableFloatStateOf(defaultW) }
             var winH by remember(note.id) { mutableFloatStateOf(defaultH) }
             var isLocked by remember(note.id) { mutableStateOf(false) }
 
-            val cleanBody = remember(note.id, note.content) {
-                val split = NoteArtifactCodec.splitNoteContent(note.content, note.title)
-                split.editableText
-                    .replace(Regex("""!\[[^\]]*]\([^)]*\)"""), "[Image]")
-                    .trim()
-                    .ifBlank { if (split.artifacts.isNotEmpty()) "Interactive Web / Slides note (${split.artifacts.size} item)" else "Empty note" }
+            val noteAttachments = remember(note.id, note.attachmentsJson) {
+                RichTextFormatter.deserializeAttachments(note.attachmentsJson)
             }
+            val noteSpans = remember(note.id, note.styleSpansJson) {
+                RichTextFormatter.deserializeSpans(note.styleSpansJson)
+            }
+            val splitNote = remember(note.id, note.content, note.title) {
+                NoteArtifactCodec.splitNoteContent(note.content, note.title)
+            }
+            val isFullWebArtifact = remember(note.content, splitNote) {
+                val t = note.content.trimStart()
+                splitNote.artifacts.size == 1 &&
+                    splitNote.editableText.isBlank() &&
+                    (t.startsWith(NoteArtifactCodec.WEBVIEW_MARKER, ignoreCase = true) ||
+                        t.startsWith("<!DOCTYPE html", ignoreCase = true) ||
+                        t.startsWith("<html", ignoreCase = true) ||
+                        t.startsWith("AUFILE:", ignoreCase = true))
+            }
+            val richBlocks = remember(note.id, note.content, noteAttachments, isFullWebArtifact) {
+                if (isFullWebArtifact) emptyList()
+                else ReadNoteBlockParser.parseBlocks(note.content, noteAttachments)
+            }
+            val styledText = remember(note.id, note.content, noteSpans, primaryText, isFullWebArtifact) {
+                if (isFullWebArtifact) AnnotatedString("")
+                else if (noteSpans.isNotEmpty() && note.content.length <= 35_000) {
+                    RichTextFormatter.buildStyledText(
+                        text = note.content,
+                        spans = noteSpans,
+                        defaultColor = primaryText,
+                        fontSize = note.fontSize.coerceIn(12, 18).toFloat()
+                    )
+                } else {
+                    AnnotatedString(note.content)
+                }
+            }
+            val miniListState = rememberLazyListState()
 
             Surface(
                 modifier = Modifier
@@ -252,21 +317,67 @@ fun EdgeNotesSidebarOverlay(
                             }
                         }
 
-                        // Scrollable Note Content
-                        Column(
+                        // Rich Scrollable Note Content (renders CodeBox + preview, Boxes/Tables, Images, Checklists, WebViews)
+                        Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxWidth()
-                                .verticalScroll(rememberScrollState())
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
                         ) {
-                            Text(
-                                text = cleanBody,
-                                fontSize = 13.5.sp,
-                                lineHeight = 20.sp,
-                                color = primaryText
-                            )
-                            Spacer(Modifier.height(22.dp))
+                            when {
+                                isFullWebArtifact -> {
+                                    val art = splitNote.artifacts.first()
+                                    val renderHtml = remember(art.code, art.kind) {
+                                        if (art.kind == NoteArtifactCodec.ArtifactKind.SLIDES) {
+                                            AgentVisualsParser.parseSlideDeck(art.code)
+                                                ?.let { AgentVisualsParser.buildSlidingHtmlArtifact(it) }
+                                                ?: art.code
+                                        } else art.code
+                                    }
+                                    DirectNoteWebView(
+                                        title = art.title.ifBlank { note.title.ifBlank { "Web Note" } },
+                                        htmlCode = renderHtml,
+                                        isDarkMode = isDarkMode,
+                                        fillViewport = true,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                                richBlocks.isEmpty() -> {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "Empty note",
+                                            fontSize = 12.5.sp,
+                                            color = secondaryText
+                                        )
+                                    }
+                                }
+                                else -> {
+                                    SelectionContainer(modifier = Modifier.fillMaxSize()) {
+                                        VirtualizedReadNoteBody(
+                                            blocks = richBlocks,
+                                            styledText = styledText,
+                                            fontSize = note.fontSize.coerceIn(12, 16),
+                                            lineSpacing = 1.35f,
+                                            fontFamily = FontFamily.Default,
+                                            color = primaryText,
+                                            isDarkMode = isDarkMode,
+                                            savedPageStyle = "standard",
+                                            hasMargin = false,
+                                            paperColor = null,
+                                            lightPaper = !isDarkMode,
+                                            marginLineColor = Color.Transparent,
+                                            searchQuery = "",
+                                            activeMatchIndex = 0,
+                                            matchLocations = emptyList(),
+                                            lazyListState = miniListState,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -306,50 +417,112 @@ fun EdgeNotesSidebarOverlay(
             }
         }
 
-        // 2. Right-Edge Collapsed Vertical Pill Handle
+        // 2. Hold-to-Drag Edge Collapsed Vertical Pill Handle (Left OR Right Edge, any vertical position)
         if (!isDrawerOpen) {
+            val dockedX = if (isDockedRight) {
+                (maxWidthPx - pillWidthPx - edgeInsetPx).coerceAtLeast(0f)
+            } else {
+                edgeInsetPx
+            }
+            val dockedY = (handleYFraction * maxHeightPx - pillHeightPx / 2f).coerceIn(topClampPx, bottomClampPx)
+            val renderX = if (isDraggingHandle) dragTempX else dockedX
+            val renderY = if (isDraggingHandle) dragTempY else dockedY
+
+            val pillShape = when {
+                isDraggingHandle -> RoundedCornerShape(12.dp)
+                isDockedRight -> RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp)
+                else -> RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp)
+            }
+
             Box(
                 modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 2.dp)
-                    .width(20.dp)
+                    .offset { IntOffset(renderX.roundToInt(), renderY.roundToInt()) }
+                    .width(22.dp)
                     .height(68.dp)
-                    .shadow(6.dp, RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp))
-                    .clip(RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp))
+                    .shadow(if (isDraggingHandle) 12.dp else 6.dp, pillShape)
+                    .clip(pillShape)
                     .background(
-                        if (isDarkMode) Color(0xDD252B3B) else Color(0xEEF2EFEA)
+                        if (isDraggingHandle) CrimsonPrimary.copy(alpha = 0.22f)
+                        else if (isDarkMode) Color(0xDD252B3B) else Color(0xEEF2EFEA)
                     )
                     .border(
-                        width = 1.dp,
-                        color = CrimsonPrimary.copy(alpha = 0.4f),
-                        shape = RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp)
+                        width = if (isDraggingHandle) 1.6.dp else 1.dp,
+                        color = if (isDraggingHandle) CrimsonPrimary else CrimsonPrimary.copy(alpha = 0.42f),
+                        shape = pillShape
                     )
-                    .clickable { isDrawerOpen = true }
+                    .pointerInput(maxWidthPx, maxHeightPx, isDockedRight, handleYFraction) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                isDraggingHandle = true
+                                dragTempX = if (isDockedRight) {
+                                    (maxWidthPx - pillWidthPx - edgeInsetPx).coerceAtLeast(0f)
+                                } else {
+                                    edgeInsetPx
+                                }
+                                dragTempY = (handleYFraction * maxHeightPx - pillHeightPx / 2f)
+                                    .coerceIn(topClampPx, bottomClampPx)
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                dragTempX = (dragTempX + dragAmount.x)
+                                    .coerceIn(edgeInsetPx, (maxWidthPx - pillWidthPx - edgeInsetPx).coerceAtLeast(edgeInsetPx))
+                                dragTempY = (dragTempY + dragAmount.y)
+                                    .coerceIn(topClampPx, bottomClampPx)
+                            },
+                            onDragEnd = {
+                                val centerX = dragTempX + pillWidthPx / 2f
+                                val snapRight = centerX >= maxWidthPx / 2f
+                                val newFrac = ((dragTempY + pillHeightPx / 2f) / maxHeightPx.coerceAtLeast(1f))
+                                    .coerceIn(0.12f, 0.86f)
+                                isDockedRight = snapRight
+                                handleYFraction = newFrac
+                                isDraggingHandle = false
+                                edgePrefs.edit()
+                                    .putBoolean(KEY_DOCKED_RIGHT, snapRight)
+                                    .putFloat(KEY_HANDLE_Y_FRAC, newFrac)
+                                    .apply()
+                            },
+                            onDragCancel = {
+                                isDraggingHandle = false
+                            }
+                        )
+                    }
+                    .clickable(enabled = !isDraggingHandle) { isDrawerOpen = true }
                     .testTag("edge_notes_sidebar_handle"),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                    contentDescription = "Open quick notes sidebar",
+                    imageVector = if (isDockedRight) {
+                        Icons.AutoMirrored.Filled.KeyboardArrowLeft
+                    } else {
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight
+                    },
+                    contentDescription = "Open quick notes sidebar (hold and drag to move)",
                     tint = CrimsonPrimary,
                     modifier = Modifier.size(16.dp)
                 )
             }
         }
 
-        // 3. Edge-Attached Expanded Notes Drawer (Card Chips)
+        // 3. Edge-Attached Expanded Notes Drawer (Opens from Left OR Right edge depending on where handle is docked)
+        val drawerMaxH = with(density) { 440.dp.toPx().coerceAtMost(maxHeightPx - 120f) }
+        val drawerTopPx = (handleYFraction * maxHeightPx - drawerMaxH / 2f)
+            .coerceIn(with(density) { 56.dp.toPx() }, (maxHeightPx - drawerMaxH - with(density) { 48.dp.toPx() }).coerceAtLeast(with(density) { 56.dp.toPx() }))
+
         AnimatedVisibility(
             visible = isDrawerOpen,
-            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
-            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+            enter = slideInHorizontally(initialOffsetX = { if (isDockedRight) it else -it }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { if (isDockedRight) it else -it }) + fadeOut(),
             modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 6.dp)
+                .align(if (isDockedRight) Alignment.TopEnd else Alignment.TopStart)
+                .offset { IntOffset(0, drawerTopPx.roundToInt()) }
+                .padding(horizontal = 6.dp)
         ) {
             Surface(
                 modifier = Modifier
-                    .width(172.dp)
-                    .heightIn(min = 240.dp, max = 460.dp)
+                    .width(178.dp)
+                    .heightIn(min = 220.dp, max = 440.dp)
                     .shadow(14.dp, RoundedCornerShape(22.dp))
                     .clip(RoundedCornerShape(22.dp))
                     .border(1.dp, borderCol, RoundedCornerShape(22.dp))
@@ -384,7 +557,11 @@ fun EdgeNotesSidebarOverlay(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                imageVector = if (isDockedRight) {
+                                    Icons.AutoMirrored.Filled.KeyboardArrowRight
+                                } else {
+                                    Icons.AutoMirrored.Filled.KeyboardArrowLeft
+                                },
                                 contentDescription = "Collapse sidebar",
                                 tint = primaryText,
                                 modifier = Modifier.size(16.dp)

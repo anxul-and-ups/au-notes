@@ -377,9 +377,7 @@ fun AlignedMarkdownTableView(
     val (rows, colCount) = remember(tableLines) { ReadNoteBlockParser.parseTableRows(tableLines) }
     if (rows.isEmpty() || colCount == 0) return
 
-    val borderColor = if (isDarkMode) Color(0xFF3B4354) else Color(0xFFCBD5E1)
-    val headerBg = if (isDarkMode) Color(0xFF202531) else Color(0xFFE6EDF5)
-    val altRowBg = if (isDarkMode) Color(0x14FFFFFF) else Color(0x08000000)
+    val borderColor = if (isDarkMode) Color(0xFF475569) else Color(0xFFCBD5E1)
     val textColor = if (isDarkMode) Color.White else Color(0xFF111827)
 
     // Compute uniform width per column based on longest content in that column
@@ -406,15 +404,7 @@ fun AlignedMarkdownTableView(
                     HorizontalDivider(thickness = 0.8.dp, color = borderColor)
                 }
                 Row(
-                    modifier = Modifier
-                        .height(IntrinsicSize.Min)
-                        .background(
-                            when {
-                                rowIndex == 0 -> headerBg
-                                rowIndex % 2 == 0 -> altRowBg
-                                else -> Color.Transparent
-                            }
-                        )
+                    modifier = Modifier.height(IntrinsicSize.Min)
                 ) {
                     cells.forEachIndexed { colIndex, cell ->
                         if (colIndex > 0) {

@@ -475,19 +475,6 @@ fun ReadNoteScreen(
                         }
                     }
 
-                    if (onOpenInSplitScreen != null) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        NeuIconButton(
-                            icon = Icons.Default.Splitscreen,
-                            contentDescription = "Split Screen",
-                            isDarkMode = isDarkMode,
-                            size = 34.dp,
-                            iconSize = 16.dp,
-                            tint = if (isDarkMode) Color.White else Color.Black,
-                            onClick = { onOpenInSplitScreen(note) }
-                        )
-                    }
-
                     Spacer(modifier = Modifier.width(4.dp))
 
                     // Info (i): writing time, lines, words, letters
@@ -1533,6 +1520,7 @@ fun ReadNoteScreen(
                     }
                 }
             }
+            } // end main vertical Column inside outer Box
 
             if (allActiveNotes.isNotEmpty()) {
                 EdgeNotesSidebarOverlay(
@@ -1549,7 +1537,6 @@ fun ReadNoteScreen(
                 )
             }
         }
-    }
     }
 
     if (showCategoryEditDialog) {

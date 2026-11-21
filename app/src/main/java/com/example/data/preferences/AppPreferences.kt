@@ -667,8 +667,8 @@ class AppPreferences(context: Context) {
         _themePanelLocked.value = value
     }
 
-    // Dedicated Web Search Mode toggle (SEARCH ON / OFF)
-    private val _searchModeEnabled = MutableStateFlow(prefs.getBoolean("agent_search_mode", false))
+    // Live Web Search stays enabled by default (sidebar toggle removed, capability preserved)
+    private val _searchModeEnabled = MutableStateFlow(prefs.getBoolean("agent_search_mode", true))
     val searchModeEnabled: StateFlow<Boolean> = _searchModeEnabled.asStateFlow()
     fun setSearchModeEnabled(enabled: Boolean) {
         _searchModeEnabled.value = enabled

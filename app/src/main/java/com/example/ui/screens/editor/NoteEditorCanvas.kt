@@ -581,6 +581,33 @@ private fun EditorTextFieldWithOverlays(
                         }
                     }
                 }
+                if (raw.contains("|")) {
+                    MarkdownBoxesCodec.findTableBlocks(raw).forEach { tbl ->
+                        tbl.lines.forEachIndexed { localIdx, lineStr ->
+                            val lineStart = tbl.lineStarts[localIdx]
+                            val lineEnd = (lineStart + lineStr.length).coerceAtMost(raw.length)
+                            if (localIdx in tbl.separatorLineIndices) {
+                                if (lineStart < lineEnd) {
+                                    addStyle(SpanStyle(color = Color.Transparent, fontSize = 5.sp), lineStart, lineEnd)
+                                }
+                            } else {
+                                // Hide raw pipe symbols so drawBehind renders crisp simple box grid lines instead
+                                lineStr.forEachIndexed { cIdx, ch ->
+                                    if (ch == '|') {
+                                        val off = lineStart + cIdx
+                                        if (off in 0 until raw.length) {
+                                            addStyle(SpanStyle(color = Color.Transparent), off, off + 1)
+                                        }
+                                    }
+                                }
+                                // Make header row (first non-separator row) slightly bold while keeping simple uncolored look
+                                if (localIdx == 0 && lineStart < lineEnd) {
+                                    addStyle(SpanStyle(fontWeight = FontWeight.SemiBold), lineStart, lineEnd)
+                                }
+                            }
+                        }
+                    }
+                }
             }
             TransformedText(finalStyled, OffsetMapping.Identity)
         }
@@ -589,6 +616,10 @@ private fun EditorTextFieldWithOverlays(
     val memoizedFences = remember(state.contentValue.text) {
         val raw = state.contentValue.text
         if (raw.contains("```")) CodeFences.find(raw) else emptyList()
+    }
+    val memoizedTableBlocks = remember(state.contentValue.text) {
+        val raw = state.contentValue.text
+        if (raw.contains("|")) MarkdownBoxesCodec.findTableBlocks(raw) else emptyList()
     }
 
     Box(
@@ -658,7 +689,89 @@ private fun EditorTextFieldWithOverlays(
                     }
                     val layout = state.textLayout ?: return@drawBehind
                     val full = state.contentValue.text
-                    if (layout.layoutInput.text.length != full.length || memoizedFences.isEmpty()) return@drawBehind
+                    if (layout.layoutInput.text.length != full.length) return@drawBehind
+
+                    // Draw simple, uncolored bordered boxes for Markdown pipe-tables inline
+                    if (memoizedTableBlocks.isNotEmpty()) {
+                        val simpleBorder = if (isDarkMode) Color(0xFF475569) else Color(0xFFCBD5E1)
+                        val strokePx = 1.dp.toPx()
+                        val thinStrokePx = 0.85.dp.toPx()
+                        val cornerPx = 8.dp.toPx()
+                        val padX = 4.dp.toPx()
+                        val padY = 4.dp.toPx()
+                        val boxLeft = -padX
+                        val boxWidth = size.width + padX * 2f
+
+                        memoizedTableBlocks.forEach { tbl ->
+                            val safeStart = tbl.start.coerceIn(0, (full.length - 1).coerceAtLeast(0))
+                            val safeEnd = (tbl.end - 1).coerceIn(safeStart, (full.length - 1).coerceAtLeast(0))
+                            val firstVisLine = layout.getLineForOffset(safeStart)
+                            val lastVisLine = layout.getLineForOffset(safeEnd)
+                            val boxTop = layout.getLineTop(firstVisLine) - padY
+                            val boxBottom = layout.getLineBottom(lastVisLine) + padY
+                            val boxHeight = (boxBottom - boxTop).coerceAtLeast(28.dp.toPx())
+
+                            // Outer simple rounded border (NO background fill color)
+                            drawRoundRect(
+                                color = simpleBorder,
+                                topLeft = Offset(boxLeft, boxTop),
+                                size = Size(boxWidth, boxHeight),
+                                cornerRadius = CornerRadius(cornerPx),
+                                style = Stroke(width = strokePx)
+                            )
+
+                            // Row horizontal dividers + inner vertical cell dividers
+                            tbl.lines.forEachIndexed { localIdx, lineStr ->
+                                val ls = tbl.lineStarts[localIdx].coerceIn(0, (full.length - 1).coerceAtLeast(0))
+                                val le = (tbl.lineStarts[localIdx] + lineStr.length - 1).coerceIn(ls, (full.length - 1).coerceAtLeast(0))
+                                val visTopLine = layout.getLineForOffset(ls)
+                                val visBotLine = layout.getLineForOffset(le)
+                                val rowTop = layout.getLineTop(visTopLine)
+                                val rowBot = layout.getLineBottom(visBotLine)
+
+                                if (localIdx in tbl.separatorLineIndices) {
+                                    val midY = (rowTop + rowBot) / 2f
+                                    drawLine(
+                                        color = simpleBorder,
+                                        start = Offset(boxLeft, midY),
+                                        end = Offset(boxLeft + boxWidth, midY),
+                                        strokeWidth = strokePx
+                                    )
+                                } else {
+                                    // Draw divider below data rows (except last row or row directly before a separator line)
+                                    val nextIsSep = (localIdx + 1) in tbl.separatorLineIndices
+                                    if (localIdx < tbl.lines.lastIndex && !nextIsSep) {
+                                        drawLine(
+                                            color = simpleBorder.copy(alpha = 0.75f),
+                                            start = Offset(boxLeft, rowBot),
+                                            end = Offset(boxLeft + boxWidth, rowBot),
+                                            strokeWidth = thinStrokePx
+                                        )
+                                    }
+                                    // Vertical dividers at inner '|' characters on this row
+                                    val pipeIndices = lineStr.indices.filter { lineStr[it] == '|' }
+                                    if (pipeIndices.size > 2) {
+                                        val segTop = if (localIdx == 0) boxTop else rowTop
+                                        val segBot = if (localIdx == tbl.lines.lastIndex) boxBottom else rowBot
+                                        for (pIdx in 1 until pipeIndices.lastIndex) {
+                                            val absOff = tbl.lineStarts[localIdx] + pipeIndices[pIdx]
+                                            if (absOff in 0 until full.length) {
+                                                val bx = layout.getBoundingBox(absOff).center.x
+                                                drawLine(
+                                                    color = simpleBorder.copy(alpha = 0.85f),
+                                                    start = Offset(bx, segTop),
+                                                    end = Offset(bx, segBot),
+                                                    strokeWidth = thinStrokePx
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (memoizedFences.isEmpty()) return@drawBehind
                     val boxBg = if (isDarkMode) Color(0xFF1B1F27) else Color(0xFFF1F3F7)
                     val headerBg = if (isDarkMode) Color(0xFF262B35) else Color(0xFFE2E6EE)
                     val borderColor = if (isDarkMode) Color(0xFF333B48) else Color(0xFFD0D7DE)
@@ -712,6 +825,7 @@ private fun EditorTextFieldWithOverlays(
         InlineImagesOverlay(state = state)
         CheckboxesOverlay(state = state, isDarkMode = isDarkMode)
         CodeFenceHeadersOverlay(state = state, isDarkMode = isDarkMode)
+        MarkdownBoxesOverlay(state = state, tableBlocks = memoizedTableBlocks, isDarkMode = isDarkMode)
     }
 }
 
@@ -1059,6 +1173,54 @@ private fun CodeFenceHeadersOverlay(
                     modifier = Modifier.fillMaxWidth().height(bodyHDp.coerceIn(220.dp, 420.dp))
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun MarkdownBoxesOverlay(
+    state: NoteEditorState,
+    tableBlocks: List<MarkdownTableSpan>,
+    isDarkMode: Boolean
+) {
+    val activeLayout = if (state.textLayout != null && state.textLayout!!.layoutInput.text.length == state.contentValue.text.length) {
+        state.textLayout
+    } else state.stableTextLayout
+
+    val layout = activeLayout ?: return
+    if (tableBlocks.isEmpty() || state.fieldWidthPx <= 0f) return
+    val maxOffset = (layout.layoutInput.text.length - 1).coerceAtLeast(0)
+    val btnSizePx = with(state.density) { 24.dp.toPx() }
+    val borderCol = if (isDarkMode) Color(0xFF475569) else Color(0xFFCBD5E1)
+    val chipBg = if (isDarkMode) Color(0xFF1A1F2A) else Color(0xFFFAF8F5)
+    val iconTint = if (isDarkMode) Color(0xFFE2E8F0) else Color(0xFF475569)
+
+    tableBlocks.forEach { tbl ->
+        val safeStart = tbl.start.coerceIn(0, maxOffset)
+        val firstLine = layout.getLineForOffset(safeStart)
+        val topPx = layout.getLineTop(firstLine) - with(state.density) { 12.dp.toPx() }
+        val rightX = (state.fieldWidthPx - btnSizePx - with(state.density) { 2.dp.toPx() }).coerceAtLeast(0f)
+
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(rightX.roundToInt(), topPx.roundToInt()) }
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(chipBg)
+                .border(0.9.dp, borderCol, CircleShape)
+                .clickable {
+                    state.editingBoxRange = tbl.start..tbl.end
+                    state.editingBoxInitialRows = tbl.rows
+                    state.showBoxesEditor = true
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Edit,
+                contentDescription = "Edit boxes",
+                tint = iconTint,
+                modifier = Modifier.size(13.dp)
+            )
         }
     }
 }

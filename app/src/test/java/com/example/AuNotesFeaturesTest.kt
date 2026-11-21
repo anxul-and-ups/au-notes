@@ -1032,6 +1032,73 @@ class AuNotesFeaturesTest {
         assertTrue(restoredArtFile!!.readText().contains("Restored!"))
         restoredArtFile.delete()
     }
+
+    @Test
+    fun `ReadNoteScreen renders body and boxes cleanly with EdgeNotesSidebarOverlay and unified agent prompt`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = AppPreferences(context)
+        val boxNoteContent = """
+            | HI | this is anshul yadav from nagla bhood |
+            | --- | --- |
+            | jjje | jjjjejkekejje |
+
+            | EXAMPLA | examaple | |
+            | --- | --- | --- |
+            | | aaaaaaaaaaaa | |
+        """.trimIndent()
+
+        // 1. Verify MarkdownBoxesCodec detects both tables accurately for Write Mode inline box rendering
+        val detectedBoxes = com.example.ui.screens.editor.MarkdownBoxesCodec.findTableBlocks(boxNoteContent)
+        assertEquals("Both Markdown boxes must be detected for Write Mode rendering", 2, detectedBoxes.size)
+        assertEquals("HI", detectedBoxes[0].rows[0][0])
+        assertEquals("EXAMPLA", detectedBoxes[1].rows[0][0])
+
+        // 2. Verify ReadNoteScreen actually renders the action bar and note body when allActiveNotes is non-empty
+        // (regression test for EdgeNotesSidebarOverlay collapsing the weight(1f) Column to 0px!)
+        val primaryNote = NoteEntity(
+            id = 9901L,
+            title = "Untitled Note (16)",
+            content = boxNoteContent,
+            category = "General"
+        )
+        val otherNote = NoteEntity(
+            id = 9902L,
+            title = "Other Reference Note",
+            content = "Reference content"
+        )
+        composeTestRule.setContent {
+            com.example.ui.screens.ReadNoteScreen(
+                note = primaryNote,
+                isDarkMode = false,
+                preferences = prefs,
+                onBack = {},
+                onEditNote = {},
+                onDeleteNote = {},
+                onToggleLock = { _, _ -> },
+                allActiveNotes = listOf(primaryNote, otherNote)
+            )
+        }
+        composeTestRule.onNodeWithText("Untitled Note (16)").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Export").assertIsDisplayed()
+        composeTestRule.onNodeWithText("HI").assertIsDisplayed()
+        composeTestRule.onNodeWithText("EXAMPLA").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("edge_notes_sidebar_handle").assertIsDisplayed()
+
+        // 3. Verify AgentTools system prompt explicitly removes Chat/Work mode & preserves Live Web Search
+        val sysPrompt = AgentTools.buildSystemPrompt(
+            userName = "Anshul",
+            enabled = AgentTools.ALL,
+            openNoteContext = null,
+            notesIndex = "",
+            sessionNotes = "",
+            memory = emptyList(),
+            workMode = true,
+            searchModeEnabled = true
+        )
+        assertTrue(sysPrompt.contains("NO SEPARATE CHAT MODE OR WORK MODE"))
+        assertTrue(sysPrompt.contains("LIVE WEB SEARCH"))
+        assertFalse(sysPrompt.contains("CURRENT MODE: CHAT"))
+    }
 }
 
 

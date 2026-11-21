@@ -597,9 +597,8 @@ fun AiChatScreen(
     var attachedImageUri: Uri? by sessionProp(composerImageUriBySession, null)
     var attachedPdfImages: List<String>? by sessionProp(composerPdfImagesBySession, null)
 
-    // Work Mode toggle, Search Mode toggle
-    var isWorkMode by remember { mutableStateOf(true) }
-    val searchModeEnabled by preferences.searchModeEnabled.collectAsState()
+    // Unified Agent Mode (no separate Chat/Work modes); Live Web Search remains active whenever web_search tool is enabled
+    val searchModeEnabled = "web_search" !in disabledTools
     var selectedSummarySteps by remember { mutableStateOf<List<AgentStep>?>(null) }
     var isDetectingSidebarModels by remember { mutableStateOf(false) }
     var sidebarApiError by remember { mutableStateOf<String?>(null) }
@@ -2081,18 +2080,6 @@ fun AiChatScreen(
                     (lowerMsg.contains("laga") || lowerMsg.contains("daal") || lowerMsg.contains("add") || lowerMsg.contains("insert") || lowerMsg.contains("paste") || lowerMsg.contains("chipka"))
 
                 if (wantsImageInNote) {
-                    if (!isWorkMode && !voiceManager.isVoiceModeActive) {
-                        val finishedSteps = targetSteps.toList()
-                        targetSteps.clear()
-                        loadingBySession[targetSessionId] = false
-                        val replyMsg = "You are currently in **Chat Mode** (for Q&A and note/document summaries). Please switch to **Work Mode** at the top to add or edit images in your notes."
-                        val idx = targetMessages.indexOfFirst { it.id == botMsgId }
-                        if (idx != -1) {
-                            targetMessages[idx] = targetMessages[idx].copy(text = replyMsg, steps = finishedSteps)
-                        }
-                        saveSessionFor(targetSessionId)
-                        return@launch
-                    }
                     stepRunning("Inserting image into note", targetSessionId)
                     val out = insertImageIntoTargetNote(
                         sourceUri = currentImgUri ?: sessionAttachmentUriMap[targetSessionId],
@@ -2215,7 +2202,6 @@ fun AiChatScreen(
                 } catch (e: Exception) { "" }
                 val sessionText = sessionNotes.joinToString("\n") { "id=${it.first} | ${it.second}" }
                 val memoryFacts = if (preferences.memoryEnabled.value) preferences.agentMemory.value else emptyList()
-                val effectiveWorkMode = isWorkMode || voiceManager.isVoiceModeActive
                 val system = if (isDirectOcrTurn) {
                     com.example.ui.util.DocumentOcrHelper.VERBATIM_OCR_SYSTEM_PROMPT
                 } else {
@@ -2227,7 +2213,7 @@ fun AiChatScreen(
                         sessionNotes = sessionText,
                         memory = memoryFacts,
                         spoken = voiceManager.isVoiceModeActive,
-                        workMode = effectiveWorkMode,
+                        workMode = true,
                         searchModeEnabled = searchModeEnabled,
                         attachmentContext = if (!docText.isNullOrBlank()) null else buildAttachmentContextString(),
                         recentChatTranscript = null,
@@ -2619,7 +2605,7 @@ fun AiChatScreen(
                         )
                     }
 
-                    // Top Header Bar with prominent Chat Mode / Work Mode Switcher at the top
+                    // Top Header Bar (Unified AU Agent — no separate Chat/Work mode switcher)
                     val isCurrentlyOnline = remember(isOpen, messages.size) {
                         com.example.data.ai.ApiConnectivityChecker.isOnline(context)
                     }
@@ -2643,74 +2629,23 @@ fun AiChatScreen(
                             )
                         }
 
-                        // Center: Top Segmented Mode Switcher (Chat Mode vs Work Mode)
+                        // Center: Clean Unified AU Agent Title
                         Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(22.dp))
-                                .background(if (isDarkMode) Color(0xFF1A1A20) else Color(0xFFEBE8E0))
-                                .border(
-                                    1.dp,
-                                    if (isDarkMode) Color(0x26FFFFFF) else Color(0x18000000),
-                                    RoundedCornerShape(22.dp)
-                                )
-                                .padding(3.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            // Chat Mode Pill
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(18.dp))
-                                    .background(
-                                        if (!isWorkMode) {
-                                            if (isDarkMode) Color(0xFF2C2C35) else Color.White
-                                        } else Color.Transparent
-                                    )
-                                    .clickable {
-                                        if (isWorkMode) {
-                                            isWorkMode = false
-                                            Toast.makeText(context, "Chat Mode: Chats & Note/Document Summaries", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                    .padding(horizontal = 13.dp, vertical = 6.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "Chat",
-                                    fontSize = 12.sp,
-                                    fontWeight = if (!isWorkMode) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (!isWorkMode) {
-                                        if (isDarkMode) Color.White else Color(0xFF18181B)
-                                    } else {
-                                        if (isDarkMode) Color(0xFF9CA3AF) else Color(0xFF6B7280)
-                                    }
-                                )
-                            }
-
-                            // Work Mode Pill
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(18.dp))
-                                    .background(
-                                        if (isWorkMode) Color(0xFFD97757) else Color.Transparent
-                                    )
-                                    .clickable {
-                                        if (!isWorkMode) {
-                                            isWorkMode = true
-                                            Toast.makeText(context, "Work Mode ON: Create & Edit Notes, Slides & Graphs", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                    .padding(horizontal = 13.dp, vertical = 6.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "Work Mode",
-                                    fontSize = 12.sp,
-                                    fontWeight = if (isWorkMode) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isWorkMode) Color.White else {
-                                        if (isDarkMode) Color(0xFF9CA3AF) else Color(0xFF6B7280)
-                                    }
-                                )
-                            }
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isCurrentlyOnline) Color(0xFF22C55E) else Color(0xFFF59E0B))
+                            )
+                            Text(
+                                text = "AU Agent",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isDarkMode) Color.White else Color(0xFF18181B)
+                            )
                         }
 
                         // Right: New Chat + Close
@@ -2806,21 +2741,12 @@ fun AiChatScreen(
                             else -> "Good evening"
                         }
                         val displayName = userName.trim().ifBlank { "Friend" }
-                        val starterChips = if (isWorkMode) {
-                            listOf(
-                                "Create Rich Note" to "Create a detailed structured note on Python programming with tables and code blocks",
-                                "Edit Open Note" to "Format, structure, and improve the note currently open on my screen",
-                                "Create Slides" to "@ask:slides",
-                                "Create MD" to "@ask:md"
-                            )
-                        } else {
-                            listOf(
-                                "Summarize My Notes" to "Read my recent notes and give me a concise summary",
-                                "Document Summary" to "Provide a detailed overview, summary, and key takeaways of my attached document",
-                                "Explain a Topic" to "Explain Quantum Computing in simple, easy-to-understand terms",
-                                "Milk Accounting" to "Show this month's Milk Accounting summary and total balance"
-                            )
-                        }
+                        val starterChips = listOf(
+                            "Create Rich Note" to "Create a detailed structured note on Python programming with tables and code blocks",
+                            "Edit Open Note" to "Format, structure, and improve the note currently open on my screen",
+                            "Create Slides" to "@ask:slides",
+                            "Create MD" to "@ask:md"
+                        )
 
                         Column(
                             modifier = Modifier
@@ -2829,47 +2755,8 @@ fun AiChatScreen(
                                 .verticalScroll(rememberScrollState())
                                 .padding(horizontal = 20.dp, vertical = 12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.SpaceBetween
+                            verticalArrangement = Arrangement.Center
                         ) {
-                            // Upper Mode Status Banner (fills upper screen space cleanly)
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(
-                                        if (isWorkMode) Color(0xFFD97757).copy(alpha = 0.12f)
-                                        else (if (isDarkMode) Color(0xFF18181E) else Color(0xFFF1EFEA))
-                                    )
-                                    .border(
-                                        0.8.dp,
-                                        if (isWorkMode) Color(0xFFD97757).copy(alpha = 0.35f)
-                                        else (if (isDarkMode) Color(0x22FFFFFF) else Color(0x14000000)),
-                                        RoundedCornerShape(16.dp)
-                                    )
-                                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = if (isWorkMode) "Work Mode Active" else "Chat Mode Active",
-                                        fontSize = 12.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isWorkMode) Color(0xFFD97757) else (if (isDarkMode) Color(0xFFE4E4E7) else Color(0xFF18181B))
-                                    )
-                                    Spacer(Modifier.height(2.dp))
-                                    Text(
-                                        text = if (isWorkMode) {
-                                            "Full access to create/edit notes, insert images & graphs, make slides & .md files"
-                                        } else {
-                                            "Chat & get summaries of notes/documents • Switch to Work Mode above to edit or create notes"
-                                        },
-                                        fontSize = 11.sp,
-                                        lineHeight = 14.sp,
-                                        color = if (isDarkMode) Color(0xFFA1A1AA) else Color(0xFF52525B)
-                                    )
-                                }
-                            }
 
                             // Center Sketch-style AU Notes icon & Serif Time-of-Day Greeting
                             Column(
@@ -3142,34 +3029,6 @@ fun AiChatScreen(
                                                         }
                                                     }
                                                 )
-
-                                                // One-tap button to switch to Work Mode when the bot informs the user that Chat Mode is active
-                                                if (!isWorkMode && msg.text.contains("Work Mode", ignoreCase = true)) {
-                                                    Spacer(modifier = Modifier.height(10.dp))
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .clip(RoundedCornerShape(14.dp))
-                                                            .background(Color(0xFFD97757))
-                                                            .clickable {
-                                                                isWorkMode = true
-                                                                Toast.makeText(
-                                                                    context,
-                                                                    "Switched to Work Mode — you can now create & edit notes!",
-                                                                    Toast.LENGTH_SHORT
-                                                                ).show()
-                                                            }
-                                                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = "Switch to Work Mode",
-                                                            fontSize = 12.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            color = Color.White
-                                                        )
-                                                    }
-                                                }
 
                                                 // Note search results — tap to pick which one you meant.
                                                 msg.noteResults?.let { results ->
@@ -4650,48 +4509,12 @@ fun AiChatScreen(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Text(
-                            text = "AGENT MODES & TOOLS",
+                            text = "AGENT TOOLS",
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 0.8.sp,
                             color = secondaryInk
                         )
-
-                        // SEARCH Mode row
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Live Web Search Mode", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = primaryInk)
-                                Text("Fetch live web & news citations when ON", fontSize = 10.5.sp, color = secondaryInk)
-                            }
-                            androidx.compose.material3.Switch(
-                                checked = searchModeEnabled,
-                                onCheckedChange = { preferences.setSearchModeEnabled(it) }
-                            )
-                        }
-
-                        HorizontalDivider(color = cardBorder)
-
-                        // Work Mode row
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Autonomous Work Mode", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = primaryInk)
-                                Text("Create PDFs, HTML, slides, charts & notes", fontSize = 10.5.sp, color = secondaryInk)
-                            }
-                            androidx.compose.material3.Switch(
-                                checked = isWorkMode,
-                                onCheckedChange = { isWorkMode = it }
-                            )
-                        }
-
-                        HorizontalDivider(color = cardBorder)
 
                         // Configure Agent Tools row
                         Row(
@@ -4969,46 +4792,6 @@ fun AiChatScreen(
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                         Spacer(Modifier.weight(1f))
-
-                        // Top Bar Chat / Work Mode Toggle Pill
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(if (isLightOrbBg) Color(0xFF1D2340).copy(alpha = 0.08f) else Color.White.copy(alpha = 0.10f))
-                                .padding(2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(if (!isWorkMode) Color(0xFFD97757) else Color.Transparent)
-                                    .clickable { isWorkMode = false }
-                                    .padding(horizontal = 9.dp, vertical = 5.dp)
-                            ) {
-                                Text(
-                                    text = "Chat",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (!isWorkMode) Color.White else orbSubFg
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(if (isWorkMode) Color(0xFFD97757) else Color.Transparent)
-                                    .clickable { isWorkMode = true }
-                                    .padding(horizontal = 9.dp, vertical = 5.dp)
-                            ) {
-                                Text(
-                                    text = "Work",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isWorkMode) Color.White else orbSubFg
-                                )
-                            }
-                        }
-
-                        Spacer(Modifier.width(4.dp))
                         IconButton(
                             onClick = {
                                 showVoiceOverlay = false

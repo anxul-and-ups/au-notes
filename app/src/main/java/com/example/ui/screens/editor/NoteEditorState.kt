@@ -173,6 +173,8 @@ class NoteEditorState(
     var toolbarHidden by mutableStateOf(false)
     var showTableFullscreen by mutableStateOf(false)
     var showBoxesEditor by mutableStateOf(false)
+    var editingBoxRange by mutableStateOf<IntRange?>(null)
+    var editingBoxInitialRows by mutableStateOf<List<List<String>>?>(null)
     var showCodeInputModal by mutableStateOf(false)
     var maximizedCodeFence by mutableStateOf<CodeFence?>(null)
     var previewingCodeFenceStarts by mutableStateOf<Set<Int>>(emptySet())
