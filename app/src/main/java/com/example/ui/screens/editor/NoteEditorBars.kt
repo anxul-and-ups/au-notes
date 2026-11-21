@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.FormatItalic
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatStrikethrough
 import androidx.compose.material.icons.filled.FormatUnderlined
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Highlight
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -541,7 +543,21 @@ fun NoteEditorBottomToolbar(
                         idleTint = idleTint
                     ) { state.insertCodeBox() }
 
+                    EditorTool(
+                        icon = Icons.Default.Code,
+                        label = "Coding (HTML/JS/CSS)",
+                        active = state.showCodeInputModal || state.embeddedArtifacts.isNotEmpty(),
+                        idleTint = idleTint
+                    ) { state.showCodeInputModal = true }
+
                     ToolDivider(isDarkMode)
+
+                    EditorTool(
+                        icon = Icons.Default.GridView,
+                        label = "Boxes",
+                        active = state.showBoxesEditor,
+                        idleTint = idleTint
+                    ) { state.showBoxesEditor = true }
 
                     EditorTool(
                         painter = painterResource(R.drawable.ic_insert_table),
@@ -578,31 +594,11 @@ fun NoteEditorBottomToolbar(
                     ToolDivider(isDarkMode)
 
                     EditorTool(
-                        icon = Icons.Default.FontDownload,
-                        label = "Fonts",
-                        active = qFontId != null,
-                        idleTint = idleTint
-                    ) {
-                        state.showFontPickerSheet = true
-                    }
-
-                    ToolDivider(isDarkMode)
-
-                    EditorTool(
                         icon = Icons.Default.PictureAsPdf,
                         label = "PDF",
                         active = false,
                         idleTint = idleTint
                     ) { state.showPdfMode = true }
-
-                    ToolDivider(isDarkMode)
-
-                    EditorTool(
-                        icon = Icons.Default.Visibility,
-                        label = "Hide toolbar",
-                        active = false,
-                        idleTint = idleTint
-                    ) { state.toolbarHidden = true }
                 }
             }
         }

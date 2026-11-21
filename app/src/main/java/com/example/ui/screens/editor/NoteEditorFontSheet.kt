@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -35,21 +36,23 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -59,11 +62,9 @@ import com.example.ui.util.AppFontItem
 import com.example.ui.util.CustomFontManager
 
 /**
- * In-editor per-selection Font Picker sheet.
- *
- * Applies the selected font strictly to the highlighted text range (or upcoming typing at the
- * cursor when nothing is selected) via `"font"` rich-text spans — never modifying the global
- * `selectedNoteFontId` preference, so unselected text and all other notes stay untouched.
+ * Compact in-editor per-selection Font Picker sheet with async IO font loading.
+ * Applies the selected font strictly to the highlighted text range (or upcoming typing)
+ * via `"font"` rich-text spans without altering the global default font.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -80,10 +81,13 @@ fun FontPickerBottomSheet(
     val selectedSnippet = remember(state.contentValue.text, sel) {
         if (hasSelection) {
             state.contentValue.text
-                .substring(sel.min.coerceIn(0, state.contentValue.text.length), sel.max.coerceIn(0, state.contentValue.text.length))
+                .substring(
+                    sel.min.coerceIn(0, state.contentValue.text.length),
+                    sel.max.coerceIn(0, state.contentValue.text.length)
+                )
                 .replace('\n', ' ')
                 .trim()
-                .take(70)
+                .take(56)
         } else ""
     }
     val activeSelectionFontId = state.currentSelectionFontId() ?: CustomFontManager.DEFAULT_FONT_ID
@@ -100,7 +104,7 @@ fun FontPickerBottomSheet(
                 state.applyOrSetFont(item.id)
                 Toast.makeText(
                     state.context,
-                    if (hasSelection) "Applied ${item.name} to selected text" else "Next typed text: ${item.name}",
+                    if (hasSelection) "Applied ${item.name} to selection" else "Next text: ${item.name}",
                     Toast.LENGTH_SHORT
                 ).show()
                 state.showFontPickerSheet = false
@@ -133,10 +137,11 @@ fun FontPickerBottomSheet(
             )
     }
 
-    val sheetBg = if (isDarkMode) Color(0xFF1A1E29) else Color(0xFFF6F7FB)
-    val cardBg = if (isDarkMode) Color(0xFF232837) else Color.White
+    val sheetBg = if (isDarkMode) Color(0xFF171B26) else Color(0xFFF6F7FB)
+    val cardBg = if (isDarkMode) Color(0xFF212636) else Color.White
+    val cardBorder = if (isDarkMode) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.07f)
     val primaryText = if (isDarkMode) Color.White else Color(0xFF111827)
-    val secondaryText = if (isDarkMode) Color.White.copy(alpha = 0.65f) else Color(0xFF6B7280)
+    val secondaryText = if (isDarkMode) Color.White.copy(alpha = 0.62f) else Color(0xFF6B7280)
 
     ModalBottomSheet(
         onDismissRequest = { state.showFontPickerSheet = false },
@@ -147,10 +152,10 @@ fun FontPickerBottomSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 18.dp)
+                .padding(horizontal = 14.dp)
+                .padding(bottom = 14.dp)
         ) {
-            // Header
+            // Compact Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -159,17 +164,17 @@ fun FontPickerBottomSheet(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Font Style",
-                        fontSize = 20.sp,
+                        fontSize = 16.5.sp,
                         fontWeight = FontWeight.Bold,
                         color = primaryText
                     )
                     Text(
                         text = if (hasSelection) {
-                            "Applies only to selected text (${sel.max - sel.min} chars)"
+                            "Selected text (${sel.max - sel.min} chars)"
                         } else {
-                            "Applies to next typed text • Other notes unaffected"
+                            "Applies to next typed text"
                         },
-                        fontSize = 11.5.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                         color = CrimsonPrimary
                     )
@@ -177,11 +182,11 @@ fun FontPickerBottomSheet(
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Row(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .background(CrimsonPrimary)
                             .clickable {
                                 fontImportLauncher.launch(
@@ -195,72 +200,96 @@ fun FontPickerBottomSheet(
                                 )
                             }
                             .testTag("editor_font_import_button")
-                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                            .padding(horizontal = 9.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
                             contentDescription = "Import font file",
                             tint = Color.White,
-                            modifier = Modifier.size(15.dp)
+                            modifier = Modifier.size(14.dp)
                         )
-                        Spacer(Modifier.width(3.dp))
+                        Spacer(Modifier.width(2.dp))
                         Text(
-                            text = "Import",
+                            text = "Add",
                             color = Color.White,
-                            fontSize = 11.5.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    IconButton(onClick = { state.showFontPickerSheet = false }) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", tint = primaryText)
+                    IconButton(
+                        onClick = { state.showFontPickerSheet = false },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = primaryText,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
 
-            // Search Input
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = {
-                    Text(
-                        text = "Search fonts (e.g. Caveat, Serif, Devanagari)...",
-                        fontSize = 13.sp,
-                        color = secondaryText
-                    )
-                },
-                leadingIcon = {
-                    Icon(Icons.Default.Search, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(18.dp))
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = "" }) {
-                            Icon(Icons.Default.Close, contentDescription = "Clear search", tint = secondaryText, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = CrimsonPrimary,
-                    unfocusedBorderColor = if (isDarkMode) Color.White.copy(alpha = 0.16f) else Color.Black.copy(alpha = 0.14f),
-                    focusedContainerColor = cardBg,
-                    unfocusedContainerColor = cardBg,
-                    focusedTextColor = primaryText,
-                    unfocusedTextColor = primaryText
-                ),
+            // Compact Search Field
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("editor_font_search_input")
-            )
+                    .height(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(cardBg)
+                    .border(1.dp, cardBorder, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Search,
+                    contentDescription = null,
+                    tint = CrimsonPrimary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Box(modifier = Modifier.weight(1f)) {
+                    if (searchQuery.isEmpty()) {
+                        Text(
+                            text = "Search fonts...",
+                            fontSize = 12.sp,
+                            color = secondaryText
+                        )
+                    }
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        singleLine = true,
+                        textStyle = TextStyle(color = primaryText, fontSize = 12.sp),
+                        cursorBrush = SolidColor(CrimsonPrimary),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("editor_font_search_input")
+                    )
+                }
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(
+                        onClick = { searchQuery = "" },
+                        modifier = Modifier.size(26.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Clear search",
+                            tint = secondaryText,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(7.dp))
 
             // Filter Chips
             LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 val tabs = listOf(
@@ -272,19 +301,19 @@ fun FontPickerBottomSheet(
                     val selected = activeFilter == label
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(8.dp))
                             .background(if (selected) CrimsonPrimary else cardBg)
                             .border(
                                 width = 1.dp,
-                                color = if (selected) CrimsonPrimary else Color.Gray.copy(alpha = 0.25f),
-                                shape = RoundedCornerShape(10.dp)
+                                color = if (selected) CrimsonPrimary else cardBorder,
+                                shape = RoundedCornerShape(8.dp)
                             )
                             .clickable { activeFilter = label }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Text(
                             text = "$label ($count)",
-                            fontSize = 11.5.sp,
+                            fontSize = 11.sp,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                             color = if (selected) Color.White else primaryText
                         )
@@ -292,98 +321,101 @@ fun FontPickerBottomSheet(
                 }
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
 
-            // Font List with Live Preview
-            val previewCopy = selectedSnippet.ifBlank { "The quick brown fox • नमस्ते दुनिया 123" }
+            // Compact Async Font List
+            val previewCopy = selectedSnippet.ifBlank { "Aa Bb Cc • नमस्ते 123" }
 
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 220.dp, max = 410.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 8.dp)
+                    .heightIn(min = 200.dp, max = 380.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+                contentPadding = PaddingValues(bottom = 6.dp)
             ) {
                 items(filteredFonts, key = { it.id }) { fontItem ->
                     val isSelected = fontItem.id == activeSelectionFontId
                     val isFav = fontItem.id in favoriteFontIds
-                    val previewFamily = remember(fontItem.id, fontItem.filePath) {
-                        CustomFontManager.resolveFontFamilyForItem(fontItem)
+                    val previewFamily by produceState(
+                        initialValue = CustomFontManager.peekCachedFontFamily(fontItem.id) ?: FontFamily.Default,
+                        fontItem.id,
+                        fontItem.filePath
+                    ) {
+                        value = CustomFontManager.resolveFontFamilyAsync(fontItem)
                     }
+
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(11.dp))
                             .background(
-                                if (isSelected) CrimsonPrimary.copy(alpha = if (isDarkMode) 0.20f else 0.11f)
+                                if (isSelected) CrimsonPrimary.copy(alpha = if (isDarkMode) 0.18f else 0.09f)
                                 else cardBg
                             )
                             .border(
-                                width = if (isSelected) 1.5.dp else 1.dp,
-                                color = if (isSelected) CrimsonPrimary else Color.Gray.copy(alpha = 0.18f),
-                                shape = RoundedCornerShape(14.dp)
+                                width = if (isSelected) 1.2.dp else 0.8.dp,
+                                color = if (isSelected) CrimsonPrimary else cardBorder,
+                                shape = RoundedCornerShape(11.dp)
                             )
                             .clickable {
                                 state.applyOrSetFont(fontItem.id)
                                 state.showFontPickerSheet = false
                             }
                             .testTag("editor_font_option_${fontItem.id}")
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
                                 Text(
                                     text = if (fontItem.id == CustomFontManager.DEFAULT_FONT_ID) "Default (Reset)" else fontItem.name,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
                                     color = if (isSelected) CrimsonPrimary else primaryText,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
                                 )
                                 Text(
                                     text = fontItem.category,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 9.5.sp,
                                     color = secondaryText,
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(if (isDarkMode) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.05f))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(if (isDarkMode) Color.White.copy(alpha = 0.07f) else Color.Black.copy(alpha = 0.05f))
+                                        .padding(horizontal = 5.dp, vertical = 1.dp)
                                 )
                             }
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(2.dp))
                             Text(
                                 text = previewCopy,
                                 fontFamily = previewFamily,
-                                fontSize = 15.sp,
-                                color = primaryText.copy(alpha = 0.88f),
+                                fontSize = 13.5.sp,
+                                color = primaryText.copy(alpha = 0.85f),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
 
-                        Spacer(Modifier.width(8.dp))
-
                         IconButton(
                             onClick = { state.preferences.toggleFavoriteFont(fontItem.id) },
-                            modifier = Modifier.size(34.dp)
+                            modifier = Modifier.size(30.dp)
                         ) {
                             Icon(
                                 imageVector = if (isFav) Icons.Filled.Star else Icons.Outlined.StarBorder,
-                                contentDescription = if (isFav) "Remove favorite" else "Add favorite",
+                                contentDescription = if (isFav) "Remove favorite" else "Favorite",
                                 tint = if (isFav) Color(0xFFF59E0B) else secondaryText,
-                                modifier = Modifier.size(19.dp)
+                                modifier = Modifier.size(16.dp)
                             )
                         }
 
                         if (isSelected) {
                             Box(
                                 modifier = Modifier
-                                    .size(24.dp)
+                                    .size(20.dp)
                                     .clip(CircleShape)
                                     .background(CrimsonPrimary),
                                 contentAlignment = Alignment.Center
@@ -392,7 +424,7 @@ fun FontPickerBottomSheet(
                                     imageVector = Icons.Default.Check,
                                     contentDescription = "Selected font",
                                     tint = Color.White,
-                                    modifier = Modifier.size(14.dp)
+                                    modifier = Modifier.size(12.dp)
                                 )
                             }
                         }

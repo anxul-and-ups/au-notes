@@ -137,6 +137,7 @@ class AppPreferences(context: Context) {
         prefs.edit().putString("custom_folders", updated.joinToString("||")).apply()
         _customFolders.value = updated
         if (name !in _trashedFolders.value) persistTrashedFolders(_trashedFolders.value + name)
+        recordFolderTrashed(name)
         // A deleted folder can't stay hidden or locked either
         if (_hiddenFolders.value.contains(name)) {
             val updatedHidden = _hiddenFolders.value - name
@@ -147,6 +148,7 @@ class AppPreferences(context: Context) {
 
     fun restoreTrashedFolder(name: String) {
         persistTrashedFolders(_trashedFolders.value - name)
+        clearFolderTrashed(name)
         if (name !in _customFolders.value) {
             val updated = _customFolders.value + name
             prefs.edit().putString("custom_folders", updated.joinToString("||")).apply()
@@ -156,6 +158,7 @@ class AppPreferences(context: Context) {
 
     fun deleteTrashedFolderForever(name: String) {
         persistTrashedFolders(_trashedFolders.value - name)
+        clearFolderTrashed(name)
         if (_lockedFolders.value.contains(name)) {
             val cur = _lockedFolders.value - name
             prefs.edit().putStringSet("locked_folders", cur).apply()
@@ -723,6 +726,117 @@ class AppPreferences(context: Context) {
         if (fontId in _favoriteFontIds.value) {
             toggleFavoriteFont(fontId)
         }
+    }
+
+    // ---- Multi-folder membership (notes can belong to extra folders while staying in All Notes) ----
+    private fun loadNoteExtraFolders(): Map<Long, Set<String>> {
+        val raw = prefs.getString("note_extra_folders", "") ?: ""
+        if (raw.isBlank()) return emptyMap()
+        return raw.split("~~").mapNotNull { row ->
+            val idx = row.indexOf('|')
+            if (idx <= 0) return@mapNotNull null
+            val id = row.substring(0, idx).toLongOrNull() ?: return@mapNotNull null
+            val folders = row.substring(idx + 1).split(";;").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+            if (folders.isEmpty()) null else id to folders
+        }.toMap()
+    }
+
+    private val _noteExtraFolders = MutableStateFlow(loadNoteExtraFolders())
+    val noteExtraFolders: StateFlow<Map<Long, Set<String>>> = _noteExtraFolders.asStateFlow()
+
+    private fun persistNoteExtraFolders(map: Map<Long, Set<String>>) {
+        val raw = map.entries
+            .filter { it.value.isNotEmpty() }
+            .joinToString("~~") { "${it.key}|${it.value.joinToString(";;")}" }
+        prefs.edit().putString("note_extra_folders", raw).apply()
+    }
+
+    fun addNoteToFolder(noteId: Long, folderName: String) {
+        val clean = folderName.trim()
+        if (noteId <= 0L || clean.isBlank() || clean == "All Notes") return
+        val cur = _noteExtraFolders.value[noteId].orEmpty()
+        val updated = _noteExtraFolders.value + (noteId to (cur + clean))
+        _noteExtraFolders.value = updated
+        persistNoteExtraFolders(updated)
+    }
+
+    fun removeNoteFromFolder(noteId: Long, folderName: String) {
+        val clean = folderName.trim()
+        if (noteId <= 0L || clean.isBlank()) return
+        val cur = _noteExtraFolders.value[noteId] ?: return
+        val next = cur - clean
+        val updated = if (next.isEmpty()) _noteExtraFolders.value - noteId else _noteExtraFolders.value + (noteId to next)
+        _noteExtraFolders.value = updated
+        persistNoteExtraFolders(updated)
+    }
+
+    // ---- Editable per-note Category Pill colors (Read Mode category badge customization) ----
+    private fun loadNoteCategoryColors(): Map<Long, String> {
+        val raw = prefs.getString("note_category_colors", "") ?: ""
+        if (raw.isBlank()) return emptyMap()
+        return raw.split(",").mapNotNull { entry ->
+            val p = entry.split(":")
+            if (p.size == 2) {
+                val id = p[0].toLongOrNull() ?: return@mapNotNull null
+                id to p[1]
+            } else null
+        }.toMap()
+    }
+
+    private val _noteCategoryColors = MutableStateFlow(loadNoteCategoryColors())
+    val noteCategoryColors: StateFlow<Map<Long, String>> = _noteCategoryColors.asStateFlow()
+
+    fun setNoteCategoryColor(noteId: Long, hexColor: String) {
+        if (noteId <= 0L) return
+        val clean = hexColor.trim()
+        val updated = if (clean.isBlank()) _noteCategoryColors.value - noteId else _noteCategoryColors.value + (noteId to clean)
+        _noteCategoryColors.value = updated
+        prefs.edit().putString("note_category_colors", updated.entries.joinToString(",") { "${it.key}:${it.value}" }).apply()
+    }
+
+    // ---- Per-item Recycle Bin deletion timestamps (independent 30-day countdown per item) ----
+    private val _trashedNoteTimestamps = MutableStateFlow(loadLongMap("trashed_note_timestamps"))
+    val trashedNoteTimestamps: StateFlow<Map<Long, Long>> = _trashedNoteTimestamps.asStateFlow()
+
+    fun recordNoteTrashed(noteId: Long, deletedAtMs: Long = System.currentTimeMillis()) {
+        if (noteId <= 0L) return
+        val updated = _trashedNoteTimestamps.value + (noteId to deletedAtMs)
+        _trashedNoteTimestamps.value = updated
+        saveLongMap("trashed_note_timestamps", updated)
+    }
+
+    fun clearNoteTrashed(noteId: Long) {
+        val updated = _trashedNoteTimestamps.value - noteId
+        _trashedNoteTimestamps.value = updated
+        saveLongMap("trashed_note_timestamps", updated)
+    }
+
+    private fun loadFolderTrashTimestamps(): Map<String, Long> {
+        val raw = prefs.getString("trashed_folder_timestamps", "") ?: ""
+        if (raw.isBlank()) return emptyMap()
+        return raw.split("~~").mapNotNull { row ->
+            val i = row.lastIndexOf('|')
+            if (i <= 0) null else {
+                val ts = row.substring(i + 1).toLongOrNull() ?: return@mapNotNull null
+                row.substring(0, i) to ts
+            }
+        }.toMap()
+    }
+
+    private val _trashedFolderTimestamps = MutableStateFlow(loadFolderTrashTimestamps())
+    val trashedFolderTimestamps: StateFlow<Map<String, Long>> = _trashedFolderTimestamps.asStateFlow()
+
+    fun recordFolderTrashed(folderName: String, deletedAtMs: Long = System.currentTimeMillis()) {
+        if (folderName.isBlank()) return
+        val updated = _trashedFolderTimestamps.value + (folderName to deletedAtMs)
+        _trashedFolderTimestamps.value = updated
+        prefs.edit().putString("trashed_folder_timestamps", updated.entries.joinToString("~~") { "${it.key}|${it.value}" }).apply()
+    }
+
+    fun clearFolderTrashed(folderName: String) {
+        val updated = _trashedFolderTimestamps.value - folderName
+        _trashedFolderTimestamps.value = updated
+        prefs.edit().putString("trashed_folder_timestamps", updated.entries.joinToString("~~") { "${it.key}|${it.value}" }).apply()
     }
 
     fun getEffectiveApiKey(): String {

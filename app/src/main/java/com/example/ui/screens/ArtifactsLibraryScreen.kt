@@ -350,14 +350,14 @@ fun ArtifactsLibraryScreen(
         }
     }
 
-    // Permanent Delete Confirmation
+    // Move to Recycle Bin Confirmation (restorable for 30 days)
     deleteConfirmItem?.let { target ->
         AlertDialog(
             onDismissRequest = { deleteConfirmItem = null },
-            title = { Text("Delete Permanently?") },
+            title = { Text("Move to Recycle Bin?") },
             text = {
                 Text(
-                    "\"${target.title}\" will be completely deleted from storage and removed from every chat session in your history. This cannot be undone."
+                    "\"${target.title}\" will be moved to Recycle Bin (HTML & Slides) and automatically deleted after 30 days. You can restore it anytime before then."
                 )
             },
             confirmButton = {
@@ -366,16 +366,17 @@ fun ArtifactsLibraryScreen(
                         deleteConfirmItem = null
                         scope.launch {
                             withContext(Dispatchers.IO) {
+                                com.example.data.documents.TrashBinManager.trashArtifact(context, target)
                                 ArtifactsLibrary.deleteArtifactPermanently(context, target)
                             }
                             itemsList = itemsList.filterNot { it.uid == target.uid }
                             onArtifactsPurged()
-                            Toast.makeText(context, "Deleted permanently everywhere", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Moved to Recycle Bin", Toast.LENGTH_SHORT).show()
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444))
                 ) {
-                    Text("Delete Forever", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Move to Bin", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {

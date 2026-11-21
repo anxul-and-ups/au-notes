@@ -1341,6 +1341,38 @@ fun AiChatScreen(
         val args = com.example.data.ai.ToolArgs.normalize(name, rawArgs)
         if (name in disabledTools) return ToolOutcome("Tool '$name' is switched off by the user.")
         val systemFolders = listOf("All Notes", "Favorites", "APIs Keys", "Code", "Media", "Personal")
+        fun buildToolCtx(): AiToolExecutionContext = AiToolExecutionContext(
+            context = context,
+            repository = repository,
+            preferences = preferences,
+            milkRepository = milkRepository,
+            targetSessionId = targetSessionId,
+            systemFolders = systemFolders,
+            currentNoteId = currentNoteId,
+            currentNoteTitle = currentNoteTitle,
+            currentNoteContent = currentNoteContent,
+            fallbackAttachedText = (composerContentBySession[targetSessionId] ?: sessionAttachmentTextMap[targetSessionId]).orEmpty(),
+            attachedFileName = attachedFileName,
+            sessionAttachmentName = sessionAttachmentName,
+            sessionAttachmentNameForSession = sessionAttachmentNameMap[targetSessionId],
+            attachedContent = attachedContent,
+            sessionAttachmentTextForSession = sessionAttachmentTextMap[targetSessionId],
+            sessionAttachmentText = sessionAttachmentText,
+            attachedNotesInSession = attachedNotesFor(targetSessionId).ifEmpty { sessionAttachedNotesMap[targetSessionId].orEmpty() },
+            sessionNotes = sessionNotes.toList(),
+            latestUserPrompt = messagesFor(targetSessionId).lastOrNull { it.sender == "user" }?.text.orEmpty(),
+            targetArtifactBlocks = targetArtifactBlocks,
+            agentVisible = ::agentVisible,
+            trackNote = ::trackNote,
+            stepRunning = ::stepRunning,
+            stepFinish = ::stepFinish,
+            onUpdateCurrentNoteEntity = onUpdateCurrentNoteEntity,
+            onApplyAgentNoteToEditor = onApplyAgentNoteToEditor,
+            onModifyCurrentNote = onModifyCurrentNote,
+            insertMarkdownBlock = { lang, body, defTitle, nId, tTitle, cap ->
+                insertMarkdownBlockIntoTargetNote(lang, body, defTitle, nId, tTitle, cap)
+            }
+        )
         return when (name) {
             "search_notes" -> {
                 val q = args.optString("query", "").trim()
@@ -1415,158 +1447,8 @@ fun AiChatScreen(
                     ToolOutcome("Created note id=$newId title=\"${rich.title}\" (${rich.content.length} chars).", noteResults = saved?.let { listOf(it) })
                 }
             }
-            "edit_note" -> {
-                val reqId = args.optLong("note_id", args.optLong("id", -1L))
-                val reqTitle = args.optString("title", "").trim()
-                var target = if (reqId > 0) repository.getNoteByIdOnce(reqId) else null
-                if (target == null || !agentVisible(target)) {
-                    val allVisible = try { repository.allActiveNotes.first().filter { agentVisible(it) } } catch (_: Exception) { emptyList() }
-                    if (reqTitle.isNotBlank()) {
-                        target = allVisible.firstOrNull { it.title.equals(reqTitle, ignoreCase = true) }
-                            ?: allVisible.firstOrNull { it.title.contains(reqTitle, ignoreCase = true) }
-                    }
-                    if (target == null) {
-                        val attachedInSession = attachedNotesFor(targetSessionId).firstOrNull()
-                            ?: sessionAttachedNotesMap[targetSessionId]?.firstOrNull()
-                        if (attachedInSession != null) {
-                            target = repository.getNoteByIdOnce(attachedInSession.id) ?: attachedInSession
-                        }
-                    }
-                    if (target == null && currentNoteId != null && currentNoteId > 0) {
-                        target = repository.getNoteByIdOnce(currentNoteId)
-                    }
-                    if (target == null && !currentNoteTitle.isNullOrBlank()) {
-                        target = allVisible.firstOrNull { it.title.equals(currentNoteTitle.trim(), ignoreCase = true) }
-                    }
-                    if (target == null && sessionNotes.isNotEmpty()) {
-                        target = repository.getNoteByIdOnce(sessionNotes.first().first)
-                    }
-                }
-                val fallbackAttached = (composerContentBySession[targetSessionId] ?: sessionAttachmentTextMap[targetSessionId]).orEmpty()
-                val rawNewContent = sequenceOf(
-                    args.optString("new_content", ""),
-                    args.optString("content", ""),
-                    args.optString("body", ""),
-                    args.optString("text", ""),
-                    args.optString("markdown", ""),
-                    args.optString("code", "")
-                ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
-                val newContent = if (rawNewContent.isBlank() && fallbackAttached.isNotBlank()) fallbackAttached else rawNewContent
-                val append = args.optString("mode", "replace").equals("append", true)
-                when {
-                    target == null || !agentVisible(target) -> ToolOutcome("Note not found or not accessible. Pass a valid note_id or title, or use search_notes first.")
-                    newContent.isBlank() -> ToolOutcome("NOT DONE: new_content was empty. Call edit_note again with the full content inside 'new_content'.")
-                    else -> {
-                        val rich = NoteAgentFormatter.convertToRichNote(newContent, defaultTitle = target.title)
-                        val updated = if (append) {
-                            val shift = target.content.length + 2
-                            val oldSpans = RichTextFormatter.deserializeSpans(target.styleSpansJson)
-                            val newSpans = RichTextFormatter.deserializeSpans(rich.styleSpansJson)
-                                .map { it.copy(start = it.start + shift, end = it.end + shift) }
-                            target.copy(
-                                content = target.content + "\n\n" + rich.content,
-                                styleSpansJson = RichTextFormatter.serializeSpans(oldSpans + newSpans),
-                                tableData = target.tableData.ifBlank { rich.tableData },
-                                updatedAt = System.currentTimeMillis()
-                            )
-                        } else {
-                            target.copy(
-                                content = rich.content,
-                                tableData = rich.tableData,
-                                styleSpansJson = rich.styleSpansJson,
-                                updatedAt = System.currentTimeMillis()
-                            )
-                        }
-                        repository.saveNote(updated)
-                        trackNote(updated)
-                        onUpdateCurrentNoteEntity?.invoke(updated)
-                        if (currentNoteId == updated.id || currentNoteTitle.equals(target.title, ignoreCase = true)) {
-                            val spans = RichTextFormatter.deserializeSpans(updated.styleSpansJson)
-                            if (onApplyAgentNoteToEditor != null) onApplyAgentNoteToEditor.invoke(updated.content, updated.tableData, spans)
-                            else onModifyCurrentNote?.invoke(updated.content)
-                        }
-                        ToolOutcome("Note \"${target.title}\" updated (${if (append) "appended" else "replaced"}, ${updated.content.length} chars).", noteResults = listOf(updated))
-                    }
-                }
-            }
-            "edit_current_note" -> {
-                val newContent = sequenceOf(
-                    args.optString("new_content", ""),
-                    args.optString("content", ""),
-                    args.optString("body", ""),
-                    args.optString("text", ""),
-                    args.optString("markdown", ""),
-                    args.optString("code", ""),
-                    (composerContentBySession[targetSessionId] ?: sessionAttachmentTextMap[targetSessionId]).orEmpty()
-                ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
-                val append = args.optString("mode", "replace").equals("append", true)
-                if (newContent.isBlank()) {
-                    ToolOutcome("new_content was empty — ask the user what to change.")
-                } else {
-                    val reqId = args.optLong("note_id", args.optLong("id", -1L))
-                    val reqTitle = args.optString("title", "").trim()
-                    val allVisible = try { repository.allActiveNotes.first().filter { agentVisible(it) } } catch (_: Exception) { emptyList() }
-                    var target: NoteEntity? = if (reqId > 0) repository.getNoteByIdOnce(reqId) else null
-                    if (target == null && currentNoteId != null && currentNoteId > 0) {
-                        target = repository.getNoteByIdOnce(currentNoteId)
-                    }
-                    if (target == null && reqTitle.isNotBlank()) {
-                        target = allVisible.firstOrNull { it.title.equals(reqTitle, ignoreCase = true) }
-                            ?: allVisible.firstOrNull { it.title.contains(reqTitle, ignoreCase = true) }
-                    }
-                    if (target == null && !currentNoteTitle.isNullOrBlank()) {
-                        target = allVisible.firstOrNull { it.title.equals(currentNoteTitle.trim(), ignoreCase = true) }
-                    }
-                    if (target == null) {
-                        val attachedInSession = attachedNotesFor(targetSessionId).firstOrNull()
-                            ?: sessionAttachedNotesMap[targetSessionId]?.firstOrNull()
-                        if (attachedInSession != null) {
-                            target = repository.getNoteByIdOnce(attachedInSession.id) ?: attachedInSession
-                        }
-                    }
-                    if (target == null && sessionNotes.isNotEmpty()) {
-                        target = repository.getNoteByIdOnce(sessionNotes.first().first)
-                    }
-                    val rich = NoteAgentFormatter.convertToRichNote(newContent, defaultTitle = target?.title ?: currentNoteTitle ?: "Note")
-                    var savedList: List<NoteEntity>? = null
-                    if (target != null && agentVisible(target)) {
-                        val updated = if (append) {
-                            val shift = target.content.length + 2
-                            val oldSpans = RichTextFormatter.deserializeSpans(target.styleSpansJson)
-                            val newSpans = RichTextFormatter.deserializeSpans(rich.styleSpansJson)
-                                .map { it.copy(start = it.start + shift, end = it.end + shift) }
-                            target.copy(
-                                content = target.content + "\n\n" + rich.content,
-                                styleSpansJson = RichTextFormatter.serializeSpans(oldSpans + newSpans),
-                                tableData = target.tableData.ifBlank { rich.tableData },
-                                updatedAt = System.currentTimeMillis()
-                            )
-                        } else {
-                            target.copy(
-                                content = rich.content,
-                                tableData = rich.tableData,
-                                styleSpansJson = rich.styleSpansJson,
-                                updatedAt = System.currentTimeMillis()
-                            )
-                        }
-                        repository.saveNote(updated)
-                        trackNote(updated)
-                        onUpdateCurrentNoteEntity?.invoke(updated)
-                        savedList = listOf(updated)
-                    }
-                    if (onApplyAgentNoteToEditor != null) {
-                        onApplyAgentNoteToEditor.invoke(rich.content, rich.tableData, RichTextFormatter.deserializeSpans(rich.styleSpansJson))
-                        ToolOutcome("The open note was updated and saved (${rich.content.length} chars).", noteResults = savedList)
-                    } else if (onModifyCurrentNote != null) {
-                        onModifyCurrentNote.invoke(rich.content)
-                        ToolOutcome("The open note was updated and saved (${rich.content.length} chars).", noteResults = savedList)
-                    } else if (savedList != null) {
-                        ToolOutcome("Note \"${savedList.first().title}\" was updated and saved (${rich.content.length} chars).", noteResults = savedList)
-                    } else {
-                        ToolOutcome("No note is open right now.")
-                    }
-                }
-            }
+            "edit_note" -> runEditNoteTool(buildToolCtx(), args)
+            "edit_current_note" -> runEditCurrentNoteTool(buildToolCtx(), args)
             "move_note_to_folder" -> {
                 val note = repository.getNoteByIdOnce(args.optLong("note_id", -1L))
                 val folder = args.optString("folder", "")
@@ -1665,87 +1547,8 @@ fun AiChatScreen(
                 if (currentNoteTitle.isNullOrBlank() && currentNoteContent.isNullOrBlank()) "No note is open on screen."
                 else "Title: ${currentNoteTitle.orEmpty()}\n\n${currentNoteContent.orEmpty()}"
             )
-            "get_milk_summary" -> {
-                if (milkRepository == null) {
-                    ToolOutcome("Milk Accounting database is not available.")
-                } else {
-                    val cal = Calendar.getInstance()
-                    val year = args.optInt("year", cal.get(Calendar.YEAR))
-                    val month = args.optInt("month", cal.get(Calendar.MONTH) + 1)
-                    val records = try {
-                        milkRepository.getRecordsForMonth(year, month).first()
-                    } catch (e: Exception) {
-                        emptyList()
-                    }
-                    var totalQty = 0.0
-                    var totalAmt = 0.0
-                    var maxQty = 0.0
-                    var maxQtyDay = 0
-                    var maxAmt = 0.0
-                    var maxAmtDay = 0
-                    val zeroDays = mutableListOf<Int>()
-                    val testCal = Calendar.getInstance().apply { set(year, month - 1, 1) }
-                    val daysInMonth = testCal.getActualMaximum(Calendar.DAY_OF_MONTH)
-                    for (day in 1..daysInMonth) {
-                        val rec = records.find { it.dayOfMonth == day }
-                        val dayQty = (rec?.morningQty ?: 0.0) + (rec?.eveningQty ?: 0.0)
-                        val dayAmt = (rec?.morningAmount ?: 0.0) + (rec?.eveningAmount ?: 0.0)
-                        totalQty += dayQty
-                        totalAmt += dayAmt
-                        if (dayQty > maxQty) {
-                            maxQty = dayQty
-                            maxQtyDay = day
-                        }
-                        if (dayAmt > maxAmt) {
-                            maxAmt = dayAmt
-                            maxAmtDay = day
-                        }
-                        if (dayQty == 0.0) {
-                            zeroDays.add(day)
-                        }
-                    }
-                    val monthName = java.text.DateFormatSymbols().months.getOrNull(month - 1) ?: "$month"
-                    val summary = "Milk Dairy Summary for $monthName $year:\n" +
-                        "- Total Milk: ${String.format(java.util.Locale.US, "%.2f", totalQty)} KG\n" +
-                        "- Total Amount: ₹${String.format(java.util.Locale.US, "%.2f", totalAmt)}\n" +
-                        "- Peak Delivery Day: ${if (maxQtyDay > 0) "Day $maxQtyDay with ${String.format(java.util.Locale.US, "%.2f", maxQty)} KG" else "None"}\n" +
-                        "- Highest Earnings Day: ${if (maxAmtDay > 0) "Day $maxAmtDay with ₹${String.format(java.util.Locale.US, "%.2f", maxAmt)}" else "None"}\n" +
-                        "- Days Without Milk Delivery: ${if (zeroDays.isEmpty()) "None (Milk delivered every day)" else zeroDays.joinToString(", ") { "Day $it" }}\n" +
-                        "- Total Recorded Entries in Database: ${records.size}"
-                    ToolOutcome(summary)
-                }
-            }
-            "save_milk_entry" -> {
-                if (milkRepository == null) {
-                    ToolOutcome("Milk Accounting database is not available.")
-                } else {
-                    val cal = Calendar.getInstance()
-                    val year = args.optInt("year", cal.get(Calendar.YEAR))
-                    val month = args.optInt("month", cal.get(Calendar.MONTH) + 1)
-                    val day = args.optInt("day", cal.get(Calendar.DAY_OF_MONTH))
-                    val morningQty = args.optDouble("morning_qty", 0.0)
-                    val morningRate = args.optDouble("morning_rate", 0.0)
-                    val morningAmt = args.optDouble("morning_amount", if (morningRate > 0) morningQty * morningRate else 0.0)
-                    val eveningQty = args.optDouble("evening_qty", 0.0)
-                    val eveningRate = args.optDouble("evening_rate", 0.0)
-                    val eveningAmt = args.optDouble("evening_amount", if (eveningRate > 0) eveningQty * eveningRate else 0.0)
-
-                    val dateStr = String.format(java.util.Locale.US, "%04d-%02d-%02d", year, month, day)
-                    val entity = com.example.data.model.MilkRecordEntity(
-                        date = dateStr,
-                        year = year,
-                        month = month,
-                        dayOfMonth = day,
-                        morningQty = if (morningQty > 0) morningQty else null,
-                        morningAmount = if (morningAmt > 0) morningAmt else null,
-                        eveningQty = if (eveningQty > 0) eveningQty else null,
-                        eveningAmount = if (eveningAmt > 0) eveningAmt else null,
-                        updatedAt = System.currentTimeMillis()
-                    )
-                    milkRepository.saveRecord(entity)
-                    ToolOutcome("Successfully saved milk entry for Day $day/$month/$year: Morning ${morningQty}KG (₹$morningAmt), Evening ${eveningQty}KG (₹$eveningAmt).")
-                }
-            }
+            "get_milk_summary" -> runMilkSummaryTool(milkRepository, args)
+            "save_milk_entry" -> runSaveMilkEntryTool(milkRepository, args)
             "insert_image_to_note" -> {
                 val noteIdArg = args.optLong("note_id", args.optLong("id", -1L))
                 val titleArg = args.optString("title", "").trim()
@@ -1805,48 +1608,7 @@ fun AiChatScreen(
                     }
                 }
             }
-            "make_graphs_for_note" -> {
-                val noteIdArg = args.optLong("note_id", -1L).takeIf { it > 0 }
-                val titleArg = args.optString("title", "Data Analysis Graph").trim().ifBlank { "Data Analysis Graph" }
-                val chartType = args.optString("chart_type", "bar").trim().lowercase().ifBlank { "bar" }
-                val dataSummary = args.optString("data_summary", "").trim().ifBlank { currentNoteContent.orEmpty().take(600) }
-                val numberPairs = Regex("([A-Za-z][A-Za-z0-9 _/-]{1,22})\\s*[:=-]\\s*(\\d+(?:\\.\\d+)?)")
-                    .findAll(dataSummary)
-                    .map { it.groupValues[1].trim() to (it.groupValues[2].toDoubleOrNull() ?: 0.0) }
-                    .toList()
-                if (numberPairs.isEmpty()) {
-                    ToolOutcome("NOT DONE: No numeric data points were found in data_summary. Supply explicit label:value pairs (e.g., \"Jan: 120, Feb: 185\") before generating a chart.")
-                } else {
-                    val itemsArr = org.json.JSONArray()
-                    val labelsArr = org.json.JSONArray()
-                    val valuesArr = org.json.JSONArray()
-                    numberPairs.take(8).forEachIndexed { idx, (lbl, v) ->
-                        labelsArr.put(lbl)
-                        valuesArr.put(v)
-                        itemsArr.put(org.json.JSONObject().apply {
-                            put("label", lbl)
-                            put("value", v)
-                            put("icon", if (idx == 0) "sparkle" else "chart")
-                        })
-                    }
-                    val chartJson = org.json.JSONObject().apply {
-                        put("type", if (chartType in setOf("bar", "pie", "line", "blocks", "timeline", "pyramid")) chartType else "bar")
-                        put("title", titleArg)
-                        put("labels", labelsArr)
-                        put("values", valuesArr)
-                        put("items", itemsArr)
-                    }
-                    targetArtifactBlocks.add("\n```chart\n${chartJson.toString(2)}\n```\n")
-                    insertMarkdownBlockIntoTargetNote(
-                        fenceLang = "chart",
-                        blockBody = chartJson.toString(2),
-                        defaultTitle = titleArg,
-                        targetNoteId = noteIdArg,
-                        targetTitle = titleArg,
-                        caption = "### $titleArg"
-                    )
-                }
-            }
+            "make_graphs_for_note" -> runMakeGraphsForNoteTool(buildToolCtx(), args)
             "web_search" -> {
                 val query = args.optString("query", "").trim()
                 if (query.isBlank()) {
@@ -1862,395 +1624,12 @@ fun AiChatScreen(
                     ToolOutcome(outcome.formattedContext)
                 }
             }
-            "create_pdf_document" -> {
-                val title = args.optString("title", "Document").trim().ifBlank { "Document" }
-                val content = args.optString("content", "").trim()
-                val category = args.optString("category", "General").trim().ifBlank { "General" }
-                val openAfter = args.optBoolean("open_after", true)
-                if (content.isBlank()) {
-                    ToolOutcome("NOT DONE: PDF content was empty.")
-                } else {
-                    val rich = NoteAgentFormatter.convertToRichNote(content, defaultTitle = title, forcedCategory = category)
-                    val noteToExport = if (openAfter) {
-                        val newId = repository.saveNote(rich)
-                        val savedNote = repository.getNoteByIdOnce(newId) ?: rich.copy(id = newId)
-                        trackNote(savedNote)
-                        savedNote
-                    } else {
-                        rich
-                    }
-                    val safeBase = title.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").trim().take(60).ifBlank { "document" }
-                    val fileName = "$safeBase.pdf"
-                    val exportPair = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        try {
-                            val f = com.example.ui.util.NoteExporter.buildFile(context, noteToExport, fileName, ".pdf")
-                            val saved = com.example.ui.util.NoteExporter.saveToDevice(context, f, fileName, com.example.ui.util.NoteExporter.mimeFor(".pdf"))
-                            f to saved
-                        } catch (e: Throwable) {
-                            null
-                        }
-                    }
-                    if (exportPair != null) {
-                        val (pdfFile, savedDevice) = exportPair
-                        val displayWhere = savedDevice?.displayPath ?: pdfFile.absolutePath
-                        val cleanTitle = title.replace("|", "-").replace("]", ")")
-                        val cleanSummary = "Saved to $displayWhere".replace("|", "-").replace("]", ")")
-                        targetArtifactBlocks.add("[pdf_artifact:$cleanTitle|${pdfFile.absolutePath}|$cleanSummary]")
-                        ToolOutcome(
-                            "DONE: Created PDF document \"$title\" and exported to $displayWhere. An interactive PDF card has been added to the chat.",
-                            noteResults = if (openAfter) listOf(noteToExport) else null
-                        )
-                    } else {
-                        ToolOutcome("FAILED: Could not generate PDF file.")
-                    }
-                }
-            }
-            "create_html_page" -> {
-                val rawModelHtml = args.optString("html_code", "").trim()
-                val explicitUseAttached = args.optBoolean("use_attached_source", false)
-                val latestPrompt = messagesFor(targetSessionId).lastOrNull { it.sender == "user" }?.text.orEmpty()
-
-                // Collect candidate local sources (attached file + attached notes + open note) for zero-loss verbatim HTML extraction
-                val localSourceCandidates = buildList<String> {
-                    composerContentBySession[targetSessionId]?.takeIf { it.isNotBlank() }?.let { add(it) }
-                    attachedContent?.takeIf { it.isNotBlank() }?.let { add(it) }
-                    sessionAttachmentTextMap[targetSessionId]?.takeIf { it.isNotBlank() }?.let { add(it) }
-                    sessionAttachmentText?.takeIf { it.isNotBlank() }?.let { add(it) }
-                    attachedNotesFor(targetSessionId).forEach { note ->
-                        if (note.content.isNotBlank()) add(note.content)
-                    }
-                    currentNoteContent?.takeIf { it.isNotBlank() }?.let { add(it) }
-                }.distinct()
-
-                val localExtractedHtml = localSourceCandidates
-                    .mapNotNull { com.example.ui.util.NoteArtifactCodec.extractFullHtmlFromSource(it) }
-                    .maxByOrNull { it.length }
-
-                val useLocalSource = com.example.ui.util.NoteArtifactCodec.shouldUseLocalHtmlInsteadOfModelOutput(
-                    localHtml = localExtractedHtml,
-                    modelHtml = rawModelHtml,
-                    userPrompt = latestPrompt,
-                    explicitFlag = explicitUseAttached
-                )
-                val htmlCode = if (useLocalSource && !localExtractedHtml.isNullOrBlank()) {
-                    localExtractedHtml
-                } else {
-                    rawModelHtml
-                }
-
-                val fallbackFileTitle = (sessionAttachmentNameMap[targetSessionId]
-                    ?: attachedFileName
-                    ?: sessionAttachmentName)
-                    ?.substringBeforeLast('.')
-                    ?.trim()
-                    .orEmpty()
-                val title = com.example.ui.util.NoteArtifactCodec.smartTopicTitle(
-                    providedTitle = args.optString("title", "").ifBlank { if (useLocalSource) fallbackFileTitle else "" },
-                    htmlOrJson = htmlCode,
-                    userPrompt = latestPrompt,
-                    isSlides = false
-                )
-                val saveToDownloads = args.optBoolean("save_to_downloads", true)
-                if (htmlCode.isBlank()) {
-                    ToolOutcome("NOT DONE: html_code was empty and no HTML source was found in the attached file/note.")
-                } else {
-                    val fullHtmlRaw = if (htmlCode.contains("<html", ignoreCase = true) || htmlCode.contains("<!doctype", ignoreCase = true)) {
-                        htmlCode
-                    } else {
-                        """
-                        <!DOCTYPE html>
-                        <html lang="en">
-                        <head>
-                        <meta charset="UTF-8" />
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                        <title>$title</title>
-                        <style>
-                          body { background:#EFECE4; color:#18181B; font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif; margin:0; padding:24px; line-height:1.6; }
-                          h1, h2, h3 { color:#18181B; letter-spacing:-0.02em; }
-                          .card { background:#E5E0D5; border:2.5px solid #18181B; padding:18px; margin-bottom:16px; }
-                        </style>
-                        </head>
-                        <body>
-                        $htmlCode
-                        </body>
-                        </html>
-                        """.trimIndent()
-                    }
-                    // When extracting verbatim HTML from the user's attached file/note, preserve 100% of their original
-                    // source code unmodified (WebView preview applies hardening dynamically at render time).
-                    val fullHtml = if (useLocalSource) {
-                        fullHtmlRaw
-                    } else {
-                        com.example.data.ai.ArtifactBuilder.harden(fullHtmlRaw)
-                    }
-                    // Download-first: find + download every <img data-q="..."> BEFORE the card is shown
-                    val built = com.example.data.ai.ArtifactBuilder.build(context, title, fullHtml) { done, total, label, ok ->
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            stepRunning((if (ok) "Downloaded image $done/$total" else "No image found $done/$total") + " — " + label.take(40), targetSessionId)
-                            stepFinish(ok, targetSessionId)
-                        }
-                    }
-                    // Persist large HTML (>12 KB) or verbatim extracted HTML to files/artifacts/<ts>/index.html
-                    // so chat history & SharedPreferences never choke on huge Base64 payloads and 0 bytes are lost.
-                    val builtIndex: java.io.File? = built.indexFile ?: if (fullHtml.length > 12_000 || useLocalSource) {
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            runCatching {
-                                val dir = java.io.File(context.filesDir, "artifacts/${System.currentTimeMillis()}").apply { mkdirs() }
-                                java.io.File(dir, "meta.json").writeText(
-                                    org.json.JSONObject().put("title", title).toString(),
-                                    Charsets.UTF_8
-                                )
-                                java.io.File(dir, "index.html").also { it.writeText(fullHtml, Charsets.UTF_8) }
-                            }.getOrNull()
-                        }
-                    } else null
-                    val exportHtml = if (built.indexFile != null) {
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            com.example.data.ai.ArtifactBuilder.inlineForExport(built.indexFile)
-                        }
-                    } else fullHtml
-                    var savedPath: String? = null
-                    if (saveToDownloads) {
-                        val safeBase = title.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").trim().take(60).ifBlank { "page" }
-                        val fileName = "$safeBase.html"
-                        savedPath = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            try {
-                                val tempFile = java.io.File(context.cacheDir, fileName)
-                                tempFile.writeText(exportHtml, Charsets.UTF_8)
-                                com.example.ui.util.NoteExporter.saveToDevice(context, tempFile, fileName, "text/html")?.displayPath
-                            } catch (_: Throwable) { null }
-                        }
-                    }
-                    val cardPayload = if (builtIndex != null) "AUFILE:" + builtIndex.absolutePath else fullHtml
-                    val b64 = android.util.Base64.encodeToString(cardPayload.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
-                    val cleanTitle = title.replace("|", "-").replace("]", ")")
-                    targetArtifactBlocks.add("[html_artifact:$cleanTitle|$b64]")
-                    val imgNote = when {
-                        built.total == 0 -> ""
-                        built.skipped.isEmpty() -> " ${built.loaded}/${built.total} images were found and downloaded."
-                        else -> " ${built.loaded}/${built.total} images downloaded; no usable image found for: ${built.skipped.joinToString("; ")}."
-                    }
-                    val sizeBytes = fullHtml.toByteArray(Charsets.UTF_8).size
-                    val sizeLabel = if (sizeBytes >= 1024) String.format(java.util.Locale.US, "%.1f KB", sizeBytes / 1024.0) else "$sizeBytes B"
-                    val verbatimTag = if (useLocalSource) " (100% verbatim extracted: $sizeLabel / ${fullHtml.length} chars)" else " ($sizeLabel)"
-                    ToolOutcome("DONE: Created interactive HTML page \"$title\"$verbatimTag${savedPath?.let { " and saved to $it" }.orEmpty()}.$imgNote An interactive HTML preview card is displayed in the chat.")
-                }
-            }
-            "create_html_slides" -> {
-                val slidesArr = args.optJSONArray("slides") ?: org.json.JSONArray()
-                val latestPrompt = messagesFor(targetSessionId).lastOrNull { it.sender == "user" }?.text.orEmpty()
-                val title = com.example.ui.util.NoteArtifactCodec.smartTopicTitle(
-                    providedTitle = args.optString("title", ""),
-                    htmlOrJson = slidesArr.toString(),
-                    userPrompt = latestPrompt,
-                    isSlides = true
-                )
-                if (slidesArr.length() == 0) {
-                    ToolOutcome("NOT DONE: no valid slides were received. Call create_html_slides again with slides_json written as a valid inline JSON array. Do NOT paste the JSON in chat.")
-                } else {
-                    val fullHtml = com.example.data.ai.HtmlSlides.build(
-                        title, slidesArr, args.optString("theme", "paper"), args.optString("accent_color", "")
-                    )
-                    val built = com.example.data.ai.ArtifactBuilder.build(context, title, fullHtml) { done, total, label, ok ->
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            stepRunning((if (ok) "Image ready $done/$total" else "No image found $done/$total") + " — " + label.take(40), targetSessionId)
-                            stepFinish(ok, targetSessionId)
-                        }
-                    }
-                    val builtIndex = built.indexFile
-                    val exportHtml = if (builtIndex != null) {
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            com.example.data.ai.ArtifactBuilder.inlineForExport(builtIndex)
-                        }
-                    } else fullHtml
-                    val safeBase = title.replace(Regex("[^\\p{L}\\p{N} ._-]"), "_").trim().take(60).ifBlank { "slides" }
-                    val fileName = "$safeBase.html"
-                    val savedPath = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        try {
-                            val tempFile = java.io.File(context.cacheDir, fileName)
-                            tempFile.writeText(exportHtml, Charsets.UTF_8)
-                            com.example.ui.util.NoteExporter.saveToDevice(context, tempFile, fileName, "text/html")?.displayPath
-                        } catch (_: Throwable) { null }
-                    }
-                    val cardPayload = if (builtIndex != null) "AUFILE:" + builtIndex.absolutePath else fullHtml
-                    val b64 = android.util.Base64.encodeToString(cardPayload.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
-                    targetArtifactBlocks.add("[html_artifact:${title.replace("|", "-").replace("]", ")")}|$b64]")
-                    val imgNote = when {
-                        built.total == 0 -> " No images were used."
-                        built.skipped.isEmpty() -> " ${built.loaded}/${built.total} images placed."
-                        else -> " ${built.loaded}/${built.total} images placed; skipped: ${built.skipped.joinToString("; ")}."
-                    }
-                    ToolOutcome("DONE: Created a ${slidesArr.length()}-slide swipeable HTML deck \"$title\"${savedPath?.let { " (saved to $it)" }.orEmpty()}.$imgNote The slide deck card is displayed in the chat.")
-                }
-            }
-            "create_slide_deck" -> {
-                val slidesArr = args.optJSONArray("slides") ?: org.json.JSONArray()
-                val latestPrompt = messagesFor(targetSessionId).lastOrNull { it.sender == "user" }?.text.orEmpty()
-                val title = com.example.ui.util.NoteArtifactCodec.smartTopicTitle(
-                    providedTitle = args.optString("title", ""),
-                    htmlOrJson = slidesArr.toString(),
-                    userPrompt = latestPrompt,
-                    isSlides = true
-                )
-                val theme = args.optString("theme", "orange").trim().ifBlank { "orange" }
-                val noteIdArg = args.optLong("note_id", -1L).takeIf { it > 0 }
-                val addToNote = args.optBoolean("add_to_note", false) || noteIdArg != null
-                if (slidesArr.length() == 0) {
-                    ToolOutcome("NOT DONE: slides array was empty.")
-                } else {
-                    val deckIn = args.opt("slides_json") as? org.json.JSONObject
-                    val deckJson = org.json.JSONObject(deckIn?.toString() ?: "{}").apply {
-                        put("title", title)
-                        if (!has("theme")) put("theme", theme)
-                        args.optString("accent_color", "").trim().takeIf { it.isNotBlank() }?.let { put("accentColorHex", it) }
-                        put("slides", slidesArr)
-                    }
-                    targetArtifactBlocks.add("\n```slides\n${deckJson.toString(2)}\n```\n")
-                    if (addToNote) {
-                        val out = insertMarkdownBlockIntoTargetNote(
-                            fenceLang = "slides",
-                            blockBody = deckJson.toString(2),
-                            defaultTitle = title,
-                            targetNoteId = noteIdArg,
-                            targetTitle = title,
-                            caption = "### $title"
-                        )
-                        ToolOutcome(
-                            "DONE: Created interactive HTML sliding presentation \"$title\" (${slidesArr.length()} slides) and embedded it live into the note.",
-                            noteResults = out.noteResults
-                        )
-                    } else {
-                        ToolOutcome("DONE: Created interactive HTML sliding presentation \"$title\" (${slidesArr.length()} slides). The interactive sliding HTML card is displayed in chat.")
-                    }
-                }
-            }
-            "add_chart", "update_chart" -> {
-                val type = args.optString("type", "bar").trim().lowercase()
-                val title = args.optString("title", "Data Overview").trim().ifBlank { "Data Overview" }
-                val subtitle = args.optString("subtitle", "").trim()
-                val unit = args.optString("unit", "").trim()
-                val noteIdArg = args.optLong("note_id", -1L).takeIf { it > 0 }
-                val addToNote = args.optBoolean("add_to_note", false) || noteIdArg != null
-                val seriesArr = args.optJSONArray("series")
-                val categoriesArr = args.optJSONArray("categories") ?: args.optJSONArray("labels")
-                val itemsArr = args.optJSONArray("items") ?: args.optJSONArray("data") ?: org.json.JSONArray()
-                val validTypes = setOf("bar", "pie", "line", "area", "donut", "radar", "column", "table", "blocks", "timeline", "pyramid")
-                if (type !in validTypes) {
-                    ToolOutcome("NOT DONE: Invalid chart type '$type'. Must be one of: bar, line, area, pie, donut, radar, table, blocks, timeline, pyramid.")
-                } else if (itemsArr.length() == 0 && (seriesArr == null || seriesArr.length() == 0)) {
-                    ToolOutcome("NOT DONE: Chart items or series array cannot be empty.")
-                } else {
-                    val labels = org.json.JSONArray()
-                    val values = org.json.JSONArray()
-                    val normalizedItems = org.json.JSONArray()
-                    if (itemsArr.length() > 0) {
-                        for (i in 0 until itemsArr.length()) {
-                            val obj = itemsArr.optJSONObject(i) ?: continue
-                            val lbl = obj.optString("label", "Item ${i + 1}").trim()
-                            val v = obj.optDouble("value", 0.0).let { if (it.isNaN() || it < 0.0) 0.0 else it }
-                            labels.put(lbl)
-                            values.put(v)
-                            normalizedItems.put(org.json.JSONObject().apply {
-                                put("label", lbl)
-                                put("value", v)
-                                val icon = obj.optString("icon", "").trim()
-                                if (icon.isNotBlank()) put("icon", icon)
-                                val color = obj.optString("color", "").trim()
-                                if (color.isNotBlank()) put("color", color)
-                                val desc = obj.optString("description", obj.optString("subtitle", "")).trim()
-                                if (desc.isNotBlank()) {
-                                    put("description", desc)
-                                    put("subtitle", desc)
-                                }
-                            })
-                        }
-                    } else if (seriesArr != null && seriesArr.length() > 0) {
-                        val firstSeries = seriesArr.optJSONObject(0)?.optJSONArray("data") ?: org.json.JSONArray()
-                        for (i in 0 until firstSeries.length()) {
-                            val lbl = categoriesArr?.optString(i)?.takeIf { it.isNotBlank() } ?: "Item ${i + 1}"
-                            val v = firstSeries.optDouble(i, 0.0).let { if (it.isNaN()) 0.0 else it }
-                            labels.put(lbl)
-                            values.put(v)
-                            normalizedItems.put(org.json.JSONObject().apply {
-                                put("label", lbl)
-                                put("value", v)
-                            })
-                        }
-                    }
-                    val chartJson = org.json.JSONObject().apply {
-                        put("type", type)
-                        put("title", title)
-                        if (subtitle.isNotBlank()) put("subtitle", subtitle)
-                        if (unit.isNotBlank()) put("unit", unit)
-                        if (categoriesArr != null) put("categories", categoriesArr) else put("categories", labels)
-                        if (seriesArr != null) {
-                            put("series", seriesArr)
-                        } else {
-                            put("series", org.json.JSONArray().put(org.json.JSONObject().apply {
-                                put("name", title)
-                                put("data", values)
-                            }))
-                        }
-                        put("labels", labels)
-                        put("values", values)
-                        put("items", normalizedItems)
-                    }
-                    targetArtifactBlocks.add("\n```json:apex\n${chartJson.toString(2)}\n```\n")
-                    var noteOut: ToolOutcome? = null
-                    if (addToNote) {
-                        noteOut = insertMarkdownBlockIntoTargetNote(
-                            fenceLang = "json:apex",
-                            blockBody = chartJson.toString(2),
-                            defaultTitle = title,
-                            targetNoteId = noteIdArg,
-                            targetTitle = title,
-                            caption = "### $title"
-                        )
-                    }
-                    ToolOutcome(
-                        "DONE: Rendered interactive ApexCharts $type chart \"$title\" (${normalizedItems.length()} data points) in chat${if (noteOut != null) " and embedded live inside the note" else ""}.",
-                        noteResults = noteOut?.noteResults
-                    )
-                }
-            }
-            "save_attached_file_to_note" -> {
-                val reqTitle = args.optString("title", "").trim()
-                val rawBody = sequenceOf(
-                    args.optString("content", ""),
-                    attachedContent.orEmpty(),
-                    sessionAttachmentTextMap[targetSessionId].orEmpty(),
-                    sessionAttachmentText.orEmpty()
-                ).firstOrNull { it.isNotBlank() }.orEmpty()
-                val folderArg = args.optString("folder", "All Notes").trim().ifBlank { "All Notes" }
-                val categoryArg = args.optString("category", "").trim()
-                if (rawBody.isBlank()) {
-                    ToolOutcome("NOT DONE: No attached document or text was found to save.")
-                } else {
-                    val resolvedTitle = reqTitle.ifBlank {
-                        sessionAttachmentNameMap[targetSessionId]
-                            ?: attachedFileName
-                            ?: sessionAttachmentName
-                            ?: "Saved Document"
-                    }.substringBeforeLast('.').ifBlank { "Saved Document" }
-                    val resolvedCategory = categoryArg.ifBlank {
-                        com.example.data.model.AutoClassifier.detectCategory(resolvedTitle, rawBody)
-                    }
-                    val folderMatch = (systemFolders + preferences.customFolders.value).find { it.equals(folderArg, true) } ?: "All Notes"
-                    val entity = NoteEntity(
-                        title = resolvedTitle,
-                        content = rawBody,
-                        category = resolvedCategory,
-                        folder = folderMatch,
-                        originalFolder = folderMatch,
-                        isCodeFormat = resolvedCategory == "Code"
-                    )
-                    val newId = repository.saveNote(entity)
-                    val saved = repository.getNoteByIdOnce(newId) ?: entity.copy(id = newId)
-                    trackNote(saved)
-                    onUpdateCurrentNoteEntity?.invoke(saved)
-                    ToolOutcome("DONE: Saved full content (${rawBody.length} chars) verbatim into note \"$resolvedTitle\" (id=$newId, folder=$folderMatch).", noteResults = listOf(saved))
-                }
-            }
+            "create_pdf_document" -> runCreatePdfDocumentTool(buildToolCtx(), args)
+            "create_html_page" -> runCreateHtmlPageTool(buildToolCtx(), args)
+            "create_html_slides" -> runCreateHtmlSlidesTool(buildToolCtx(), args)
+            "create_slide_deck" -> runCreateSlideDeckTool(buildToolCtx(), args)
+            "add_chart", "update_chart" -> runAddOrUpdateChartTool(buildToolCtx(), args)
+            "save_attached_file_to_note" -> runSaveAttachedFileToNoteTool(buildToolCtx(), args)
             else -> ToolOutcome("Unknown tool '$name'.")
         }
     }

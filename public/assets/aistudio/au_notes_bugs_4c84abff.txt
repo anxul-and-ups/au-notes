@@ -1,0 +1,67 @@
+au notes bugs
+==================
+wtf is going on 4 months se jyda ho gaye is app per kaam karte hue but ye abhi proper bugs free nahi ho paya
+
+
+
+abhi page per jo text hai vo upar niche ho rha hai pdf generate karne per and ab pdf me images bhi render nahi ho rhe ye chal kya rha hai 
+
+
+aur jo maine note ke andar web ka bola tha  vo feature bhi ekdam bakwas kar diya 
+matlab full me to dikhta hi nahi hai and pata nahi kya autozoom hote chala jata hai pata scroll hota hai kya and agar scroll karo to 2 fingers se pata nahi kaise scroll hota hai 
+jaisa maine kaha tha y vaisa work nahi kar rha 
+
+
+and agent bhi sahi nahi chal rha dekho agar me agent ko koi bhi note edit karne ko kahu to vo pura note starting se na likhe bas use edit kar jo part user ne use bataya hai bas vahi part search kare and usi part ko edit karde 
+
+and jo notewriter ke andar copy box wala option hai use aur upgrade kar uske andar aisa karde ki 
+agar user ne html js css ya jo bhi code dala hai and agar us code ka priveiw hota hai to aisa ho jaye 
+us per ek eye wala icon aur banade jisse code ka preview usi box me mil sake and jo upar full screen ka icon hai us  copy box me us per tap karne per vo full box me show hone lag jaye 
+
+and ye preview writemode and readmode dono me show hona chahiye 
+
+and us toolbar me jo eye wala option hai  jisse toolbar hide ho jata hai use remove karde qki uski koi bhi jarurat nahi hai down button se toolbar niche collapse ho jata hai 
+
+and us toolbar me ek aur feature add kar jis per coding ka icon bana hua ho aur jisme code enter karne ka option ho jis me user uska html js css ka code paste kare jisse noteviewer me preveiw mil sake 
+then done karne per vo box ka screen samne se hat jaye and jo pages ke barabar me fonts ka option hai use vha se remove kardo bcs uske upar already ek aur fonts ka option hai and 
+
+aur jo fonts screen hai matlab jaha per sare fonts set hain  vo bhaut bikhra hua lag rha hai ise fix karo chije choti karo and kaafi sahi and clean ui rakho understandable 
+
+and kisi bhi note me export karte time title export nahi hoga 
+
+
+
+and bade fonts load karne per abhi bhi app lag kar jata hai and bade notes chote notes ki tarah smoothly scroll nahi hote lag feel hota hai  
+
+and isme other options bhi add kar dekh maine tujhe ek screenshot send Kiya hai use dekhh 
+
+is screenshot me jaha per The "4 known problems in the current app (must be fixed, in this order)"
+
+ye spec.md claude ne ready Kiya hai and image me tum dekh hi sakte ho ki kis type se boxes create ho chuke even app me aise boxes create karne ka koi feature hai hi nahi and editor mode  me tum dekh sakte ho ki isme bas kuch stars and commas type likha hua hai jissse ye preveiw mil rha hai and ye feature mujhe bhaut acha laga se ek boxes ke icon ka toolbar me ek feature add kar jo ek new screen me open hota hai ekdam table wale option ki tarah 
+and jaha per bhi box add kar chota box hi generrate ho and ham uske andar jitna likhte jaye vo utna hi bada hota jaye 
+
+
+and jo split screen ka option hai use bhi upgrade karo use aisa karo jaise maine ek aur screenshot send Kiya hai tumhe jiske and ek side shortcut ke andar apps show ho rhe hain to vaise hi side me se sare notes nikle small view me phone se hi attatched rahne chahiye and note per tap karne per vo small window me open ho app me hi 
+then resize move and lock vagiara bhi kiya ja sake use and ek aur option ho jisse normall ekdam clean view me split screen me laya ja sake us note ko 
+ye sam scheej note writer and note viewer dono me honi chahiye
+and us side bar ke andar note ekdam card chip ke andar clean way me show hone chhaiye 
+
+
+
+and ek aur feature add kar jisse aisa ho ki 
+like main screen per ham single ya multiple notes select karrte hain to ek aur feature daal usme add to folder ka iska icon sahi rakhna and isse aisa ho sake vo notes other folder me bhi ja sake and jis folder me hain uske andar notes select karne per remove from this folder aise option bhi ho 
+lekin remove wala option all notes ke folder ke andar na ho 
+
+and my documents ke andar export ka option bhi rakho like multiple select karne se multiple bhi delete ho sake and export karne per vo zip me bhi export ho sake and zip ka name default per my documents hi rahega 
+
+and jo recycle bin hai uske andar bhi add karo my documents folder and html and slides ka folder jiske andar delete hue jayge and 30 hote hi recycle bin empty matlab sare notes nahi like koi note abhi delete Kiya and recycle bin ke aaj 30 days ho gaye to sare notes nahi har deleted notes per apna day likha hua hoga ki ye kab delete ho jayga bas 
+
+
+and jo readmode me title ke niche ye general vagiara likha hua hota hai to is per tap karke iska name  edit kiya ja sake and iska color vaigara bhi change Kiya ja sake 
+
+and search bar pr tap karte hi koi bhi remove ka option nahi ata jisse search bar se bahar nikle cursor hat jaye uske liye 
+kisi note me enter karna padta hai tab ye hat tah hai 
+
+and jo deepsearch hai use aisa karo ki agar deepsearch karke user kuch search kar rha hai to vo word vhan per highlight hona chahiye 
+
+and noteviewer me search bar work hi nahi kar rha ek hi jagah atkaa hu rhta hai auto scroll  jaisi koi cheej hi nahi hai 

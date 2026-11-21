@@ -113,21 +113,26 @@ object AgentTools {
             id = "edit_note",
             group = "Notes",
             label = "Edit a note",
-            description = "Replace or append content to an existing note by its note_id OR by its title/name (or defaults to the attached/open note).",
+            description = "Edit an existing note by note_id OR title. ALWAYS use mode='patch' with find_text + replace_text when editing only a specific sentence, section, or paragraph (NEVER rewrite the entire note). Use mode='append' to add at the end, or mode='replace' ONLY when rewriting the entire note.",
             params = listOf(
                 AgentTool.Param("note_id", "INTEGER", "Numeric id of the note to edit (optional if title is provided or a note is attached/open)", required = false),
                 AgentTool.Param("title", "STRING", "Title or name of the note to edit (optional if note_id is provided)", required = false),
-                AgentTool.Param("new_content", "STRING", "The new or appended content for the note", required = true),
-                AgentTool.Param("mode", "STRING", "replace | append (default replace)", required = false)
+                AgentTool.Param("mode", "STRING", "patch (PREFERRED for partial edits) | append | replace", required = false),
+                AgentTool.Param("find_text", "STRING", "Exact existing text snippet in the note to locate and replace when mode='patch'", required = false),
+                AgentTool.Param("replace_text", "STRING", "Replacement text for ONLY the matched find_text snippet when mode='patch'", required = false),
+                AgentTool.Param("new_content", "STRING", "Content to append or full replacement body (only for mode='append' or mode='replace')", required = false)
             )
         ),
         AgentTool(
             id = "edit_current_note",
             group = "Notes",
             label = "Edit currently open or attached note",
-            description = "Update the content of the note currently open on the screen behind the chat (or the note attached in chat).",
+            description = "Update the note currently open on screen or attached in chat. ALWAYS use mode='patch' with find_text + replace_text for partial edits so untouched sections stay 100% intact.",
             params = listOf(
-                AgentTool.Param("new_content", "STRING", "Complete updated content for the open/attached note", required = true),
+                AgentTool.Param("mode", "STRING", "patch (PREFERRED for partial edits) | append | replace", required = false),
+                AgentTool.Param("find_text", "STRING", "Exact existing snippet to locate and replace when mode='patch'", required = false),
+                AgentTool.Param("replace_text", "STRING", "Replacement text for ONLY find_text when mode='patch'", required = false),
+                AgentTool.Param("new_content", "STRING", "Content for append/replace mode", required = false),
                 AgentTool.Param("title", "STRING", "Optional title of the note if multiple notes are referenced", required = false)
             )
         ),
@@ -475,8 +480,9 @@ object AgentTools {
 
             [TOOL USE, NOTE CODE READING & CHART DATA RULES]
             - If the user asks you to save, create, write, format, organise or move something, DO it with tools; don't only describe it. Plan silently (folder, title, content, formatting), call the tools, then confirm in 1–3 lines what was done and where.
-            - CRITICAL NOTE CREATION RULE (`create_note` / `edit_note`):
-              • Whenever you call `create_note` or `edit_note`, you MUST provide the complete, rich body text inside the `"content"` parameter! NEVER call `create_note` with only a `"title"` and an empty `"content"`.
+            - CRITICAL NOTE CREATION & SURGICAL EDITING RULE (`create_note` / `edit_note` / `edit_current_note`):
+              • Whenever you call `create_note`, you MUST provide the complete, rich body text inside `"content"`.
+              • SURGICAL PARTIAL EDITING (MANDATORY): Whenever the user asks to edit, fix, change, or update ANY specific part, line, paragraph, heading, or section of an existing note, you MUST NEVER rewrite the whole note from scratch! First read the note if needed (`read_note`), locate the exact existing part, and call `edit_note` or `edit_current_note` with `"mode": "patch"`, `"find_text": "<exact snippet from note>"`, and `"replace_text": "<updated snippet>"` so ONLY that part is modified and the rest of the note remains 100% intact! Use `"mode": "replace"` ONLY if the user explicitly asks to rewrite/replace the entire note.
             - READING NOTES & SAVED CODE:
               • If the user attached a note in chat (shown under `[Attached Note(s) from User]`) or refers to a note ("is note me ye code saved hai iska use karke slide deck ya html artifact ready kar"), read the entire note content and code carefully. If the note is not yet attached, call `read_note` (using `note_id` or `title`) or `search_notes` first, then immediately call `create_html_page`, `create_html_slides`, or `create_slide_deck` using that exact code/content!
             - STRICT USER FILTERING ON ATTACHED PDFs / IMAGES / NOTES:
@@ -808,7 +814,7 @@ object AgentTools {
         val name = Regex("\"(?:name|tool_name|tool)\"\\s*:\\s*\"([A-Za-z0-9_]+)\"").find(body)?.groupValues?.get(1) ?: return null
         if (name !in SALVAGE_TOOLS) return null
         val args = JSONObject()
-        for (k in listOf("title", "theme", "accent_color", "type", "chart_type", "unit", "subtitle", "category", "folder", "mode")) {
+        for (k in listOf("title", "theme", "accent_color", "type", "chart_type", "unit", "subtitle", "category", "folder", "mode", "find_text", "replace_text")) {
             extractStringField(body, k)?.let { v -> if (v.isNotEmpty()) args.put(k, v) }
         }
         Regex("\"note_id\"\\s*:\\s*(\\d+)").find(body)?.groupValues?.get(1)?.toLongOrNull()?.let { args.put("note_id", it) }
@@ -817,6 +823,9 @@ object AgentTools {
         }
 
         if (name in setOf("create_note", "edit_note", "edit_current_note", "create_html_page", "create_pdf_document")) {
+            if ((name == "edit_note" || name == "edit_current_note") && args.optString("find_text").isNotBlank()) {
+                return ParsedToolCall(name = name, args = args, textBefore = if (start > 0) reply.substring(0, start).trim() else "")
+            }
             val fieldKey = when (name) {
                 "create_html_page" -> "html_code"
                 "edit_note", "edit_current_note" -> "new_content"

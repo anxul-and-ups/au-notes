@@ -12,11 +12,13 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import com.example.data.model.NoteEntity
 import com.example.data.preferences.AppPreferences
 import com.example.data.repository.NoteRepository
+import com.example.ui.components.EdgeNotesSidebarOverlay
 import com.example.ui.components.NoteBackground
 import com.example.ui.screens.editor.NoteEditorBodyArea
 import com.example.ui.screens.editor.NoteEditorBottomToolbar
@@ -34,9 +36,11 @@ fun NoteEditorScreen(
     repository: NoteRepository,
     preferences: AppPreferences,
     onBack: () -> Unit,
+    allActiveNotes: List<NoteEntity> = emptyList(),
     onOpenTableEditor: (initialTableData: String, onResult: (String) -> Unit) -> Unit = { _, _ -> },
     onOpenFontsSettings: () -> Unit = {},
     onOpenInSplitScreen: ((NoteEntity?) -> Unit)? = null,
+    onOpenInSplitScreenPair: ((NoteEntity, NoteEntity) -> Unit)? = null,
     onOpenInSmallWindow: ((NoteEntity?) -> Unit)? = null,
     onSaveNote: (
         id: Long,
@@ -64,8 +68,13 @@ fun NoteEditorScreen(
     val customFoldersList by preferences.customFolders.collectAsState()
     val hiddenFoldersSet by preferences.hiddenFolders.collectAsState()
 
-    val activeNoteFontFamily = remember(selectedFontId, importedFonts) {
-        CustomFontManager.resolveFontFamily(selectedFontId, importedFonts)
+    val activeNoteFontFamily by produceState(
+        initialValue = CustomFontManager.peekCachedFontFamily(selectedFontId) ?: FontFamily.Default,
+        selectedFontId,
+        importedFonts
+    ) {
+        val target = CustomFontManager.allFonts(importedFonts).firstOrNull { it.id == selectedFontId }
+        value = if (target != null) CustomFontManager.resolveFontFamilyAsync(target) else FontFamily.Default
     }
 
     val state = rememberNoteEditorState(
@@ -87,6 +96,8 @@ fun NoteEditorScreen(
 
     BackHandler {
         when {
+            state.showBoxesEditor -> state.showBoxesEditor = false
+            state.showCodeInputModal -> state.showCodeInputModal = false
             state.editingArtifact != null -> state.editingArtifact = null
             state.maximizedCodeFence != null -> state.maximizedCodeFence = null
             state.showImageEditModal != null -> state.showImageEditModal = null
@@ -127,6 +138,8 @@ fun NoteEditorScreen(
                     },
                     onEscape = {
                         when {
+                            state.showBoxesEditor -> state.showBoxesEditor = false
+                            state.showCodeInputModal -> state.showCodeInputModal = false
                             state.showPageSheet -> state.showPageSheet = false
                             state.showFontPickerSheet -> state.showFontPickerSheet = false
                             state.showFormatSheet -> state.showFormatSheet = false
@@ -163,6 +176,23 @@ fun NoteEditorScreen(
                     importedFonts = importedFonts,
                     isDarkMode = isDarkMode,
                     onPickImage = { imagePickerLauncher.launch("image/*") }
+                )
+            }
+
+            if (allActiveNotes.isNotEmpty() && !state.showBoxesEditor && !state.showCodeInputModal && !state.showPdfMode) {
+                EdgeNotesSidebarOverlay(
+                    notes = allActiveNotes,
+                    currentNoteId = state.currentNoteId,
+                    isDarkMode = isDarkMode,
+                    onOpenInSplitScreen = { picked ->
+                        state.performSave(showToast = false, thenNavigateBack = false)
+                        val primary = state.currentSnapshotForWindow()
+                        if (onOpenInSplitScreenPair != null) {
+                            onOpenInSplitScreenPair(primary, picked)
+                        } else {
+                            onOpenInSplitScreen?.invoke(picked)
+                        }
+                    }
                 )
             }
 

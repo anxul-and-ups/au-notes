@@ -132,6 +132,10 @@ import com.example.ui.util.CustomFontManager
 import com.example.ui.util.NoteArtifactCodec
 import com.example.ui.util.handleHardwareShortcuts
 
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.platform.testTag
+import com.example.ui.components.EdgeNotesSidebarOverlay
+
 @Composable
 fun ReadNoteScreen(
     note: NoteEntity,
@@ -142,8 +146,11 @@ fun ReadNoteScreen(
     onDeleteNote: (Long) -> Unit,
     onToggleLock: (Long, Boolean) -> Unit,
     onOpenInSplitScreen: ((NoteEntity) -> Unit)? = null,
+    onOpenInSplitScreenPair: ((NoteEntity, NoteEntity) -> Unit)? = null,
     onOpenInSmallWindow: ((NoteEntity) -> Unit)? = null,
-    onUpdateNoteContent: ((NoteEntity) -> Unit)? = null
+    onUpdateNoteContent: ((NoteEntity) -> Unit)? = null,
+    initialSearchQuery: String = "",
+    allActiveNotes: List<NoteEntity> = emptyList()
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -155,8 +162,14 @@ fun ReadNoteScreen(
 
     val selectedFontId by preferences.selectedNoteFontId.collectAsState()
     val importedFonts by preferences.importedFonts.collectAsState()
-    val activeNoteFontFamily = remember(selectedFontId, importedFonts) {
-        CustomFontManager.resolveFontFamily(selectedFontId, importedFonts)
+    val noteCategoryColors by preferences.noteCategoryColors.collectAsState()
+    val activeNoteFontFamily by produceState(
+        initialValue = CustomFontManager.peekCachedFontFamily(selectedFontId) ?: FontFamily.Default,
+        selectedFontId,
+        importedFonts
+    ) {
+        val target = CustomFontManager.allFonts(importedFonts).firstOrNull { it.id == selectedFontId }
+        value = if (target != null) CustomFontManager.resolveFontFamilyAsync(target) else FontFamily.Default
     }
 
     androidx.activity.compose.BackHandler {
@@ -179,9 +192,10 @@ fun ReadNoteScreen(
     var pdfAttachmentToView by remember { mutableStateOf<Uri?>(null) }
     var showAlarmDialog by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
-    var showInNoteSearch by remember { mutableStateOf(false) }
-    var inNoteSearchQuery by remember { mutableStateOf("") }
-    var inNoteMatchIndex by remember { mutableIntStateOf(0) }
+    var showCategoryEditDialog by remember { mutableStateOf(false) }
+    var showInNoteSearch by remember(note.id, initialSearchQuery) { mutableStateOf(initialSearchQuery.isNotBlank()) }
+    var inNoteSearchQuery by remember(note.id, initialSearchQuery) { mutableStateOf(initialSearchQuery) }
+    var inNoteMatchIndex by remember(note.id, initialSearchQuery) { mutableIntStateOf(0) }
     val noteAlarms by preferences.noteAlarms.collectAsState()
     val activeAlarm = noteAlarms[note.id]
     val noteReaderVoiceMode by preferences.noteReaderVoiceMode.collectAsState()
@@ -421,7 +435,7 @@ fun ReadNoteScreen(
 
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = note.title.ifBlank { "Untitled Note" },
+                            text = liveNote.title.ifBlank { "Untitled Note" },
                             fontSize = 17.sp,
                             lineHeight = 21.sp,
                             fontWeight = FontWeight.ExtraBold,
@@ -429,10 +443,30 @@ fun ReadNoteScreen(
                             maxLines = 2,
                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                         )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(note.category, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = CrimsonPrimary)
+                        val categoryHex = noteCategoryColors[liveNote.id]
+                        val categoryAccent = parseHexColorOrDefault(categoryHex, CrimsonPrimary)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 2.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(categoryAccent.copy(alpha = if (isDarkMode) 0.22f else 0.13f))
+                                    .border(0.7.dp, categoryAccent.copy(alpha = 0.45f), RoundedCornerShape(6.dp))
+                                    .clickable { showCategoryEditDialog = true }
+                                    .testTag("read_category_pill")
+                                    .padding(horizontal = 6.dp, vertical = 1.5.dp)
+                            ) {
+                                Text(
+                                    text = liveNote.category.ifBlank { "General" },
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = categoryAccent
+                                )
+                            }
                             Text(
-                                text = "  •  " + dateFormatter.format(Date(note.updatedAt)),
+                                text = "  •  " + dateFormatter.format(Date(liveNote.updatedAt)),
                                 fontSize = 10.sp,
                                 color = if (isDarkMode) Color.White.copy(.55f) else Color.Gray,
                                 maxLines = 1,
@@ -814,13 +848,73 @@ fun ReadNoteScreen(
                             }
                         }
 
-                        // Chrome-style In-Note Find Bar
-                        val plainSearchable = remember(note.content) { com.example.ui.util.ImageMarkers.strip(note.content) }
+                        // Pre-compute content & virtualized blocks for 60fps large-note scrolling & exact search auto-scroll
+                        val displayContent = if (liveNote.category == "API" && preferences.blurApis.value && !revealApi) {
+                            AutoClassifier.maskApiKey(liveNote.content)
+                        } else {
+                            liveNote.content
+                        }
+
+                        val splitNote = remember(displayContent, liveNote.title) {
+                            NoteArtifactCodec.splitNoteContent(displayContent, liveNote.title)
+                        }
+                        val hasTopArtifacts = splitNote.artifacts.isNotEmpty() &&
+                            (displayContent.trimStart().startsWith(NoteArtifactCodec.WEBVIEW_MARKER, ignoreCase = true) ||
+                                displayContent.trimStart().startsWith("<!DOCTYPE html", ignoreCase = true) ||
+                                displayContent.trimStart().startsWith("<html", ignoreCase = true) ||
+                                displayContent.trimStart().startsWith("AUFILE:", ignoreCase = true))
+
+                        val isPureCodeNote = (liveNote.category == "Code" || liveNote.isCodeFormat) &&
+                            !com.example.data.model.AutoClassifier.hasRichStructure(
+                                liveNote.content,
+                                liveNote.tableData,
+                                liveNote.styleSpansJson,
+                                liveNote.attachmentsJson
+                            )
+
+                        val hasPositionedSideImages = remember(displayContent, allAttachments) {
+                            val ids = Regex("(?m)^\\[img:([A-Za-z0-9]{4,32})]$")
+                                .findAll(displayContent)
+                                .map { it.groupValues[1] }
+                                .toSet()
+                            allAttachments.any { it.id in ids && (it.posX > 4f || it.posY != 0f || it.widthFraction < 0.90f) }
+                        }
+
+                        val useVirtualizedRichBody = viewAsFormat == "normal" &&
+                            !hasTopArtifacts &&
+                            !isPureCodeNote &&
+                            !hasPositionedSideImages
+
+                        val virtualizedBlocks = remember(displayContent, allAttachments, useVirtualizedRichBody) {
+                            if (useVirtualizedRichBody) {
+                                ReadNoteBlockParser.parseBlocks(displayContent, allAttachments)
+                            } else emptyList()
+                        }
+
+                        val virtualMatchLocations = remember(virtualizedBlocks, inNoteSearchQuery, useVirtualizedRichBody) {
+                            if (useVirtualizedRichBody) {
+                                ReadNoteBlockParser.findMatchLocations(virtualizedBlocks, inNoteSearchQuery)
+                            } else emptyList()
+                        }
+
+                        val plainSearchable = remember(liveNote.content) { com.example.ui.util.ImageMarkers.strip(liveNote.content) }
                         val matchRanges = remember(plainSearchable, inNoteSearchQuery) {
                             val q = inNoteSearchQuery.trim()
                             if (q.isEmpty()) emptyList()
                             else Regex(Regex.escape(q), RegexOption.IGNORE_CASE).findAll(plainSearchable).map { it.range }.toList()
                         }
+                        val activeMatchCount = if (useVirtualizedRichBody) virtualMatchLocations.size else matchRanges.size
+
+                        // Auto-scroll fallback for non-virtualized scroll views (md / txt / positioned-image notes)
+                        androidx.compose.runtime.LaunchedEffect(inNoteSearchQuery, inNoteMatchIndex, useVirtualizedRichBody, matchRanges.size) {
+                            if (!useVirtualizedRichBody && matchRanges.isNotEmpty() && plainSearchable.isNotEmpty()) {
+                                val idx = inNoteMatchIndex.mod(matchRanges.size)
+                                val ratio = matchRanges[idx].first.toFloat() / plainSearchable.length.coerceAtLeast(1).toFloat()
+                                val targetPx = (bodyScrollState.maxValue * ratio).roundToInt().coerceIn(0, bodyScrollState.maxValue)
+                                bodyScrollState.animateScrollTo(targetPx)
+                            }
+                        }
+
                         if (showInNoteSearch) {
                             Spacer(modifier = Modifier.height(6.dp))
                             GlassCard(
@@ -849,35 +943,43 @@ fun ReadNoteScreen(
                                         },
                                         placeholder = { Text("Find in note...", fontSize = 12.sp) },
                                         singleLine = true,
-                                        modifier = Modifier.weight(1f).heightIn(min = 42.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 42.dp)
+                                            .testTag("read_in_note_search_input"),
                                         colors = OutlinedTextFieldDefaults.colors(
                                             focusedBorderColor = CrimsonPrimary,
                                             unfocusedBorderColor = Color.Gray.copy(alpha = 0.3f)
                                         )
                                     )
                                     Text(
-                                        text = if (matchRanges.isEmpty()) "0/0" else "${(inNoteMatchIndex % matchRanges.size) + 1}/${matchRanges.size}",
+                                        text = if (activeMatchCount == 0) "0/0" else "${(inNoteMatchIndex.mod(activeMatchCount)) + 1}/$activeMatchCount",
                                         fontSize = 11.5.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (matchRanges.isEmpty() && inNoteSearchQuery.isNotBlank()) Color(0xFFEF4444) else CrimsonPrimary
+                                        color = if (activeMatchCount == 0 && inNoteSearchQuery.isNotBlank()) Color(0xFFEF4444) else CrimsonPrimary,
+                                        modifier = Modifier.testTag("read_in_note_search_count")
                                     )
                                     IconButton(
                                         onClick = {
-                                            if (matchRanges.isNotEmpty()) {
-                                                inNoteMatchIndex = (inNoteMatchIndex - 1 + matchRanges.size) % matchRanges.size
+                                            if (activeMatchCount > 0) {
+                                                inNoteMatchIndex = (inNoteMatchIndex - 1 + activeMatchCount) % activeMatchCount
                                             }
                                         },
-                                        modifier = Modifier.size(28.dp)
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .testTag("read_in_note_search_prev")
                                     ) {
                                         Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Previous Match", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(18.dp))
                                     }
                                     IconButton(
                                         onClick = {
-                                            if (matchRanges.isNotEmpty()) {
-                                                inNoteMatchIndex = (inNoteMatchIndex + 1) % matchRanges.size
+                                            if (activeMatchCount > 0) {
+                                                inNoteMatchIndex = (inNoteMatchIndex + 1) % activeMatchCount
                                             }
                                         },
-                                        modifier = Modifier.size(28.dp)
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .testTag("read_in_note_search_next")
                                     ) {
                                         Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next Match", tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(18.dp))
                                     }
@@ -887,7 +989,9 @@ fun ReadNoteScreen(
                                             inNoteSearchQuery = ""
                                             inNoteMatchIndex = 0
                                         },
-                                        modifier = Modifier.size(28.dp)
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .testTag("read_in_note_search_close")
                                     ) {
                                         Icon(Icons.Default.Close, contentDescription = "Close Search", tint = Color.Gray, modifier = Modifier.size(16.dp))
                                     }
@@ -895,6 +999,178 @@ fun ReadNoteScreen(
                             }
                         }
 
+                        // Content Area with PAGE PAPER + DAY MODE CONTRAST FIX
+                        val baseDefaultColor = if (lightPaper) Color(0xFF111111) else if (isDarkMode) Color.White.copy(0.92f) else Color(0xFF111111)
+                        val currentFontColor = run {
+                            val parsed = try { Color(android.graphics.Color.parseColor(liveNote.fontColorHex)) } catch (e: Exception) { null }
+                            when {
+                                parsed == null -> baseDefaultColor
+                                lightPaper && parsed.luminance() > 0.85f -> Color(0xFF111111)
+                                !lightPaper && isDarkMode && parsed.luminance() < 0.12f -> baseDefaultColor
+                                !lightPaper && !isDarkMode && parsed.luminance() > 0.88f -> baseDefaultColor
+                                else -> parsed
+                            }
+                        }
+
+                        val inlineImgIds = remember(liveNote.content) {
+                            Regex("(?m)^\\[img:([A-Za-z0-9]{4,32})]$").findAll(liveNote.content).map { it.groupValues[1] }.toSet()
+                        }
+                        val headerAttachments = remember(attachments, inlineImgIds) {
+                            attachments.filterNot { it.id in inlineImgIds }
+                        }
+
+                        if (viewAsFormat == "normal" && hasTopArtifacts && splitNote.editableText.isBlank() && splitNote.artifacts.size == 1) {
+                            // Full-viewport interactive HTML / Slides view — fills remaining screen cleanly with 1-finger touch scroll
+                            val art = splitNote.artifacts.first()
+                            val renderHtml = remember(art.code, art.kind) {
+                                if (art.kind == NoteArtifactCodec.ArtifactKind.SLIDES) {
+                                    com.example.ui.components.AgentVisualsParser.parseSlideDeck(art.code)
+                                        ?.let { com.example.ui.components.AgentVisualsParser.buildSlidingHtmlArtifact(it) }
+                                        ?: art.code
+                                } else art.code
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .padding(top = 6.dp)
+                            ) {
+                                com.example.ui.components.DirectNoteWebView(
+                                    title = art.title.ifBlank { liveNote.title.ifBlank { "Interactive Web View" } },
+                                    htmlCode = renderHtml,
+                                    isDarkMode = isDarkMode,
+                                    fillViewport = true,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        } else if (useVirtualizedRichBody) {
+                            // Fast Virtualized LazyColumn for 60fps large-note scrolling & exact search auto-scroll
+                            val lazyBodyState = rememberLazyListState()
+                            val styledState = produceState<AnnotatedString?>(
+                                initialValue = null, displayContent, spans, currentFontColor, liveNote.fontSize, importedFonts
+                            ) {
+                                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                    if (spans.isNotEmpty() && displayContent.length <= 35_000) {
+                                        RichTextFormatter.buildStyledText(
+                                            text = displayContent,
+                                            spans = spans,
+                                            defaultColor = currentFontColor,
+                                            fontSize = liveNote.fontSize.toFloat(),
+                                            importedFonts = importedFonts
+                                        )
+                                    } else {
+                                        AnnotatedString(displayContent)
+                                    }
+                                }
+                            }
+                            val styledText = styledState.value ?: remember(displayContent) { AnnotatedString(displayContent) }
+
+                            androidx.compose.foundation.text.selection.SelectionContainer(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                            ) {
+                                VirtualizedReadNoteBody(
+                                    blocks = virtualizedBlocks,
+                                    styledText = styledText,
+                                    fontSize = liveNote.fontSize,
+                                    lineSpacing = savedLineSpacing,
+                                    fontFamily = activeNoteFontFamily,
+                                    color = currentFontColor,
+                                    isDarkMode = isDarkMode && !lightPaper,
+                                    savedPageStyle = savedPageStyle,
+                                    hasMargin = hasMargin,
+                                    paperColor = paperColor,
+                                    lightPaper = lightPaper,
+                                    marginLineColor = marginLineColor,
+                                    searchQuery = inNoteSearchQuery,
+                                    activeMatchIndex = inNoteMatchIndex,
+                                    matchLocations = virtualMatchLocations,
+                                    lazyListState = lazyBodyState,
+                                    headerContent = if (headerAttachments.isNotEmpty()) {
+                                        {
+                                            Column {
+                                                Text(
+                                                    text = "Attached Media & Files (${headerAttachments.size}):",
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = CrimsonPrimary
+                                                )
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                    headerAttachments.forEach { attachment ->
+                                                        if (attachment.mimeType.startsWith("image")) {
+                                                            GlassCard(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                shape = RoundedCornerShape(12.dp),
+                                                                isDarkMode = isDarkMode,
+                                                                elevation = 2.dp
+                                                            ) {
+                                                                Column(modifier = Modifier.padding(8.dp)) {
+                                                                    com.example.ui.components.AttachmentFrame(
+                                                                        att = attachment,
+                                                                        modifier = Modifier.fillMaxWidth(attachment.widthFraction.coerceIn(0.22f, 1f)),
+                                                                        cornerRadius = 8
+                                                                    )
+                                                                    Spacer(modifier = Modifier.height(4.dp))
+                                                                    Text(
+                                                                        text = attachment.fileName,
+                                                                        fontSize = 11.5.sp,
+                                                                        fontWeight = FontWeight.Medium,
+                                                                        color = if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray
+                                                                    )
+                                                                }
+                                                            }
+                                                        } else {
+                                                            ReadAttachmentCard(
+                                                                attachment = attachment,
+                                                                isDarkMode = isDarkMode,
+                                                                onClick = {
+                                                                    try {
+                                                                        val shareUri = AttachmentStorage.getShareableUri(context, attachment.uri)
+                                                                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                                                                            setDataAndType(shareUri, attachment.mimeType)
+                                                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                                        }
+                                                                        context.startActivity(intent)
+                                                                    } catch (_: Exception) {
+                                                                        Toast.makeText(context, "Could not open attachment", Toast.LENGTH_SHORT).show()
+                                                                    }
+                                                                }
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.height(14.dp))
+                                            }
+                                        }
+                                    } else null,
+                                    footerContent = if (liveNote.tableData.isNotBlank()) {
+                                        {
+                                            Column {
+                                                Spacer(modifier = Modifier.height(16.dp))
+                                                Text(
+                                                    text = "Embedded Table:",
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = CrimsonPrimary
+                                                )
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                RenderTable(liveNote.tableData, isDarkMode)
+                                            }
+                                        }
+                                    } else null,
+                                    onToggleCheckboxAtLine = { lineIdx ->
+                                        val updated = NoteArtifactCodec.cycleCheckboxAtLine(liveNote.content, lineIdx)
+                                        if (updated != liveNote.content) {
+                                            val updatedNote = liveNote.copy(content = updated, updatedAt = System.currentTimeMillis())
+                                            liveNote = updatedNote
+                                            onUpdateNoteContent?.invoke(updatedNote)
+                                        }
+                                    }
+                                )
+                            }
+                        } else {
                         // Dynamic notebook rule coordinates reported by real text lines inside ReadRichBody
                         val measuredRuleYsByBlock = remember(liveNote.id, liveNote.content, liveNote.fontSize, savedLineSpacing, selectedFontId) {
                             androidx.compose.runtime.mutableStateMapOf<Int, List<Float>>()
@@ -965,7 +1241,7 @@ fun ReadNoteScreen(
                                 )
                         ) {
                         if (viewAsFormat == "md") {
-                            val mdText = remember(note) { com.example.ui.util.NoteExporter.buildMarkdown(note) }
+                            val mdText = remember(liveNote) { com.example.ui.util.NoteExporter.buildMarkdown(liveNote) }
                             GlassCard(
                                 modifier = Modifier.fillMaxWidth().padding(4.dp),
                                 shape = RoundedCornerShape(12.dp),
@@ -973,7 +1249,7 @@ fun ReadNoteScreen(
                             ) {
                                 androidx.compose.foundation.text.selection.SelectionContainer {
                                     Text(
-                                        text = mdText,
+                                        text = ReadNoteBlockParser.applySearchHighlights(AnnotatedString(mdText), inNoteSearchQuery),
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 13.sp,
                                         lineHeight = 19.sp,
@@ -983,7 +1259,7 @@ fun ReadNoteScreen(
                                 }
                             }
                         } else if (viewAsFormat == "txt") {
-                            val txtContent = remember(note) { com.example.ui.util.NoteExporter.buildPlainText(note) }
+                            val txtContent = remember(liveNote) { com.example.ui.util.NoteExporter.buildPlainText(liveNote) }
                             GlassCard(
                                 modifier = Modifier.fillMaxWidth().padding(4.dp),
                                 shape = RoundedCornerShape(12.dp),
@@ -991,7 +1267,7 @@ fun ReadNoteScreen(
                             ) {
                                 androidx.compose.foundation.text.selection.SelectionContainer {
                                     Text(
-                                        text = txtContent,
+                                        text = ReadNoteBlockParser.applySearchHighlights(AnnotatedString(txtContent), inNoteSearchQuery),
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 13.sp,
                                         lineHeight = 19.sp,
@@ -1039,13 +1315,6 @@ fun ReadNoteScreen(
                                 }
                             }
                         } else {
-                        // Only show non-inline attachments in the top header (inline [img:id] photos render in exact Write Mode positions below)
-                        val inlineImgIds = remember(liveNote.content) {
-                            Regex("(?m)^\\[img:([A-Za-z0-9]{4,32})]$").findAll(liveNote.content).map { it.groupValues[1] }.toSet()
-                        }
-                        val headerAttachments = remember(attachments, inlineImgIds) {
-                            attachments.filterNot { it.id in inlineImgIds }
-                        }
                         if (headerAttachments.isNotEmpty()) {
                             Text(
                                 text = "Attached Media & Files (${headerAttachments.size}):",
@@ -1103,36 +1372,6 @@ fun ReadNoteScreen(
                             Spacer(modifier = Modifier.height(16.dp))
                         }
 
-                        // Content Area with DAY MODE CONTRAST FIX
-                        val displayContent = if (liveNote.category == "API" && preferences.blurApis.value && !revealApi) {
-                            AutoClassifier.maskApiKey(liveNote.content)
-                        } else {
-                            liveNote.content
-                        }
-
-                        // Content Area with PAGE PAPER + DAY MODE CONTRAST FIX
-                        val baseDefaultColor = if (lightPaper) Color(0xFF111111) else if (isDarkMode) Color.White.copy(0.92f) else Color(0xFF111111)
-                        val currentFontColor = run {
-                            val parsed = try { Color(android.graphics.Color.parseColor(liveNote.fontColorHex)) } catch (e: Exception) { null }
-                            when {
-                                parsed == null -> baseDefaultColor
-                                lightPaper && parsed.luminance() > 0.85f -> Color(0xFF111111)
-                                !lightPaper && isDarkMode && parsed.luminance() < 0.12f -> baseDefaultColor
-                                !lightPaper && !isDarkMode && parsed.luminance() > 0.88f -> baseDefaultColor
-                                else -> parsed
-                            }
-                        }
-
-                        // Seamless Artifact + User Notes Rendering (Full-width auto-height WebView + trailing user text below)
-                        val splitNote = remember(displayContent, liveNote.title) {
-                            NoteArtifactCodec.splitNoteContent(displayContent, liveNote.title)
-                        }
-                        val hasTopArtifacts = splitNote.artifacts.isNotEmpty() &&
-                            (displayContent.trimStart().startsWith(NoteArtifactCodec.WEBVIEW_MARKER, ignoreCase = true) ||
-                                displayContent.trimStart().startsWith("<!DOCTYPE html", ignoreCase = true) ||
-                                displayContent.trimStart().startsWith("<html", ignoreCase = true) ||
-                                displayContent.trimStart().startsWith("AUFILE:", ignoreCase = true))
-
                         if (hasTopArtifacts) {
                             Column(
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -1158,7 +1397,7 @@ fun ReadNoteScreen(
                                     androidx.compose.foundation.text.selection.SelectionContainer {
                                         ReadRichBody(
                                             content = tailText,
-                                            styled = AnnotatedString(tailText),
+                                            styled = ReadNoteBlockParser.applySearchHighlights(AnnotatedString(tailText), inNoteSearchQuery),
                                             attachments = allAttachments,
                                             fontSize = liveNote.fontSize,
                                             lineSpacing = savedLineSpacing,
@@ -1166,6 +1405,7 @@ fun ReadNoteScreen(
                                             color = currentFontColor,
                                             isDarkMode = isDarkMode && !lightPaper,
                                             paperTopInRoot = paperContainerTopInRoot,
+                                            searchQuery = inNoteSearchQuery,
                                             onReportRuleYs = { blockId, ys -> measuredRuleYsByBlock[blockId] = ys },
                                             onToggleCheckboxAtLine = { lineIdx ->
                                                 val updatedTail = NoteArtifactCodec.cycleCheckboxAtLine(tailText, lineIdx)
@@ -1180,9 +1420,7 @@ fun ReadNoteScreen(
                                     }
                                 }
                             }
-                        } else if ((liveNote.category == "Code" || liveNote.isCodeFormat) &&
-                            !com.example.data.model.AutoClassifier.hasRichStructure(liveNote.content, liveNote.tableData, liveNote.styleSpansJson, liveNote.attachmentsJson)) {
-                            // Virtualized CodeBoxCard for large code (>6KB) so 50KB+ code notes never lag or crash
+                        } else if (isPureCodeNote) {
                             if (displayContent.length > 6_000) {
                                 com.example.ui.components.CodeBoxCard(
                                     title = liveNote.title.ifBlank { "Code" },
@@ -1190,7 +1428,10 @@ fun ReadNoteScreen(
                                     lang = "",
                                     isDarkMode = isDarkMode && !lightPaper,
                                     modifier = Modifier.fillMaxWidth(),
-                                    fontSize = liveNote.fontSize.coerceIn(11, 18)
+                                    fontSize = liveNote.fontSize.coerceIn(11, 18),
+                                    styledCode = if (inNoteSearchQuery.isNotBlank()) {
+                                        ReadNoteBlockParser.applySearchHighlights(AnnotatedString(displayContent), inNoteSearchQuery)
+                                    } else null
                                 )
                             } else {
                                 val coloredCode by produceState<AnnotatedString?>(
@@ -1213,7 +1454,10 @@ fun ReadNoteScreen(
                                         .padding(horizontal = 2.dp, vertical = 2.dp)
                                 ) {
                                     Text(
-                                        text = coloredCode ?: AnnotatedString(displayContent),
+                                        text = ReadNoteBlockParser.applySearchHighlights(
+                                            coloredCode ?: AnnotatedString(displayContent),
+                                            inNoteSearchQuery
+                                        ),
                                         fontSize = 13.sp,
                                         fontFamily = FontFamily.Monospace,
                                         color = if (lightPaper) Color(0xFF111111) else com.example.ui.util.CodeHighlight.baseColor(isDarkMode),
@@ -1222,7 +1466,6 @@ fun ReadNoteScreen(
                                 }
                             }
                         } else {
-                            // Heavy styling of big notes runs on a background thread with loading badge for huge content
                             val styledState = produceState<AnnotatedString?>(
                                 initialValue = null, displayContent, spans, currentFontColor, liveNote.fontSize, importedFonts
                             ) {
@@ -1240,40 +1483,11 @@ fun ReadNoteScreen(
                                     }
                                 }
                             }
-                            if (styledState.value == null && displayContent.length > 8000) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 6.dp)) {
-                                    CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp, color = CrimsonPrimary)
-                                    Text("Loading large note…", fontSize = 12.sp, color = Color.Gray)
-                                }
-                            }
                             val styledText = styledState.value ?: remember(displayContent) { AnnotatedString(displayContent.take(15_000)) }
 
                             val linkedText = remember(styledText, inNoteSearchQuery, inNoteMatchIndex) {
                                 val baseLinked = if (styledText.length <= 30_000) com.example.ui.util.LinkText.linkify(styledText, context) else styledText
-                                val q = inNoteSearchQuery.trim()
-                                if (q.isEmpty()) {
-                                    baseLinked
-                                } else {
-                                    val found = Regex(Regex.escape(q), RegexOption.IGNORE_CASE).findAll(baseLinked.text).take(200).toList()
-                                    if (found.isEmpty()) baseLinked
-                                    else {
-                                        val activeIdx = inNoteMatchIndex.mod(found.size)
-                                        buildAnnotatedString {
-                                            append(baseLinked)
-                                            found.forEachIndexed { idx, m ->
-                                                addStyle(
-                                                    SpanStyle(
-                                                        background = if (idx == activeIdx) Color(0xFFF97316) else Color(0xFFFACC15).copy(alpha = 0.55f),
-                                                        color = Color.Black,
-                                                        fontWeight = FontWeight.Bold
-                                                    ),
-                                                    start = m.range.first,
-                                                    end = (m.range.last + 1).coerceAtMost(baseLinked.length)
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
+                                ReadNoteBlockParser.applySearchHighlights(baseLinked, inNoteSearchQuery, inNoteMatchIndex)
                             }
 
                             androidx.compose.foundation.text.selection.SelectionContainer {
@@ -1287,6 +1501,7 @@ fun ReadNoteScreen(
                                     color = currentFontColor,
                                     isDarkMode = isDarkMode && !lightPaper,
                                     paperTopInRoot = paperContainerTopInRoot,
+                                    searchQuery = inNoteSearchQuery,
                                     onReportRuleYs = { blockId, ys -> measuredRuleYsByBlock[blockId] = ys },
                                     onToggleCheckboxAtLine = { lineIdx ->
                                         val updated = NoteArtifactCodec.cycleCheckboxAtLine(liveNote.content, lineIdx)
@@ -1301,7 +1516,7 @@ fun ReadNoteScreen(
                         }
 
                         // Render Table if table data exists
-                        if (note.tableData.isNotBlank()) {
+                        if (liveNote.tableData.isNotBlank()) {
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
                                 text = "Embedded Table:",
@@ -1310,20 +1525,53 @@ fun ReadNoteScreen(
                                 color = CrimsonPrimary
                             )
                             Spacer(modifier = Modifier.height(8.dp))
-                            RenderTable(note.tableData, isDarkMode)
+                            RenderTable(liveNote.tableData, isDarkMode)
                         }
                         } // end normal viewAsFormat
-                        }
+                        } // end non-virtualized Column
+                        } // end else (non-virtualized / non-full-artifact)
                     }
                 }
+            }
+
+            if (allActiveNotes.isNotEmpty()) {
+                EdgeNotesSidebarOverlay(
+                    notes = allActiveNotes,
+                    currentNoteId = liveNote.id,
+                    isDarkMode = isDarkMode,
+                    onOpenInSplitScreen = { picked ->
+                        if (onOpenInSplitScreenPair != null) {
+                            onOpenInSplitScreenPair(liveNote, picked)
+                        } else {
+                            onOpenInSplitScreen?.invoke(picked)
+                        }
+                    }
+                )
             }
         }
     }
     }
 
+    if (showCategoryEditDialog) {
+        CategoryBadgeEditDialog(
+            currentCategory = liveNote.category,
+            currentColorHex = noteCategoryColors[liveNote.id],
+            isDarkMode = isDarkMode,
+            onDismiss = { showCategoryEditDialog = false },
+            onSave = { newCat, newHex ->
+                preferences.setNoteCategoryColor(liveNote.id, newHex)
+                val updated = liveNote.copy(category = newCat, updatedAt = System.currentTimeMillis())
+                liveNote = updated
+                onUpdateNoteContent?.invoke(updated)
+                showCategoryEditDialog = false
+                Toast.makeText(context, "Category updated: $newCat", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
     if (showExportDialog) {
         ExportDialog(
-            note = note,
+            note = liveNote,
             isDarkMode = isDarkMode,
             onDismiss = { showExportDialog = false }
         )
@@ -1860,6 +2108,7 @@ private fun ReadRichBody(
     color: Color,
     isDarkMode: Boolean,
     paperTopInRoot: Float = 0f,
+    searchQuery: String = "",
     onReportRuleYs: (blockId: Int, ys: List<Float>) -> Unit = { _, _ -> },
     onToggleCheckboxAtLine: ((lineIndex: Int) -> Unit)? = null
 ) {
@@ -2275,7 +2524,7 @@ private fun ReadRichBody(
                             tableLines.add(lines[i])
                             i++
                         }
-                        ReadMarkdownTableView(tableLines, fontSize, isDarkMode)
+                        AlignedMarkdownTableView(tableLines, fontSize, isDarkMode, searchQuery = searchQuery)
                         Spacer(Modifier.height(6.dp))
                     }
 
@@ -2310,7 +2559,7 @@ private fun ReadRichBody(
                             val subText = styled.subSequence(from, to)
                             val rawSub = subText.text
                             val textToRender = if (rawSub.contains("**") || rawSub.contains("`") || (rawSub.contains("*") && !rawSub.contains(" * "))) {
-                                parseInlineMarkdown(rawSub, color)
+                                ReadNoteBlockParser.parseInlineMarkdownWithHighlights(rawSub, searchQuery)
                             } else {
                                 subText
                             }
@@ -2394,90 +2643,6 @@ private fun ReadRichBody(
 
 /** Parses inline markdown: **bold**, *italic*, `inline code` */
 private fun parseInlineMarkdown(text: String, baseColor: Color): AnnotatedString {
-    return buildAnnotatedString {
-        var cursor = 0
-        val regex = Regex("(`[^`\\n]+`|\\*\\*[^*\\n]+\\*\\*|\\*[^*\\n]+\\*)")
-        val matches = regex.findAll(text).toList()
-        for (m in matches) {
-            if (m.range.first > cursor) {
-                append(text.substring(cursor, m.range.first))
-            }
-            val matchVal = m.value
-            when {
-                matchVal.startsWith("`") && matchVal.endsWith("`") -> {
-                    val raw = matchVal.removeSurrounding("`")
-                    pushStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0x22888888)))
-                    append(" $raw ")
-                    pop()
-                }
-                matchVal.startsWith("**") && matchVal.endsWith("**") -> {
-                    val raw = matchVal.removeSurrounding("**")
-                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
-                    append(raw)
-                    pop()
-                }
-                matchVal.startsWith("*") && matchVal.endsWith("*") -> {
-                    val raw = matchVal.removeSurrounding("*")
-                    pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
-                    append(raw)
-                    pop()
-                }
-                else -> append(matchVal)
-            }
-            cursor = m.range.last + 1
-        }
-        if (cursor < text.length) {
-            append(text.substring(cursor))
-        }
-    }
-}
-
-/** Markdown Table View with borders for note read mode */
-@Composable
-private fun ReadMarkdownTableView(
-    tableLines: List<String>,
-    fontSize: Int,
-    isDarkMode: Boolean
-) {
-    val borderColor = if (isDarkMode) Color(0xFF3B4354) else Color(0xFFCBD5E1)
-    val headerBg = if (isDarkMode) Color(0xFF202531) else Color(0xFFE6EDF5)
-    val rows = tableLines.filter { !it.contains("---") }
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .border(1.dp, borderColor, RoundedCornerShape(8.dp))
-            .horizontalScroll(rememberScrollState())
-    ) {
-        Column {
-            rows.forEachIndexed { rowIndex, rawRow ->
-                val cells = rawRow.split("|").filter { it.isNotBlank() }.map { it.trim() }
-                Row(
-                    modifier = Modifier
-                        .background(
-                            if (rowIndex == 0) headerBg
-                            else if (rowIndex % 2 == 0) (if (isDarkMode) Color(0x12FFFFFF) else Color(0x06000000))
-                            else Color.Transparent
-                        )
-                ) {
-                    cells.forEach { cell ->
-                        Box(
-                            modifier = Modifier
-                                .border(0.5.dp, borderColor)
-                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Text(
-                                text = parseInlineMarkdown(cell, if (isDarkMode) Color.White else Color.Black),
-                                fontSize = (fontSize - 2).coerceAtLeast(11).sp,
-                                fontWeight = if (rowIndex == 0) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isDarkMode) Color.White else Color.Black
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
+    return ReadNoteBlockParser.parseInlineMarkdownWithHighlights(text)
 }
 

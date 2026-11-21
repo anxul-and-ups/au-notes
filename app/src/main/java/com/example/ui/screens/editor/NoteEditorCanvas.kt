@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -73,6 +74,8 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.components.AgentChartCard
+import com.example.ui.components.InlineCodePreviewWebView
+import com.example.ui.components.isPreviewableWebCode
 import com.example.ui.components.AgentDiagramCard
 import com.example.ui.components.AgentVisualsParser
 import com.example.ui.components.AttachmentFrame
@@ -583,6 +586,11 @@ private fun EditorTextFieldWithOverlays(
         }
     }
 
+    val memoizedFences = remember(state.contentValue.text) {
+        val raw = state.contentValue.text
+        if (raw.contains("```")) CodeFences.find(raw) else emptyList()
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -650,7 +658,7 @@ private fun EditorTextFieldWithOverlays(
                     }
                     val layout = state.textLayout ?: return@drawBehind
                     val full = state.contentValue.text
-                    if (layout.layoutInput.text.length != full.length || !full.contains("```")) return@drawBehind
+                    if (layout.layoutInput.text.length != full.length || memoizedFences.isEmpty()) return@drawBehind
                     val boxBg = if (isDarkMode) Color(0xFF1B1F27) else Color(0xFFF1F3F7)
                     val headerBg = if (isDarkMode) Color(0xFF262B35) else Color(0xFFE2E6EE)
                     val borderColor = if (isDarkMode) Color(0xFF333B48) else Color(0xFFD0D7DE)
@@ -658,7 +666,7 @@ private fun EditorTextFieldWithOverlays(
                     val boxLeft = -8.dp.toPx()
                     val boxWidth = size.width + 16.dp.toPx()
 
-                    CodeFences.find(full).forEach { f ->
+                    memoizedFences.forEach { f ->
                         val firstLine = layout.getLineForOffset(f.start)
                         val lastLine = layout.getLineForOffset((f.end - 1).coerceAtLeast(f.start))
                         val boxTop = layout.getLineTop(firstLine) - 2.dp.toPx()
@@ -718,11 +726,14 @@ private fun InlineImagesOverlay(state: NoteEditorState) {
 
     val layout = activeLayout ?: return
     val full = state.contentValue.text
-    if (state.fieldWidthPx <= 0f) return
+    if (state.fieldWidthPx <= 0f || !full.contains("[img:")) return
+    val imgMatches = remember(full) {
+        Regex("(?m)^\\[img:([A-Za-z0-9]{4,32})]$").findAll(full).map { it.range.first to it.groupValues[1] }.toList()
+    }
 
-    Regex("(?m)^\\[img:([A-Za-z0-9]{4,32})]$").findAll(full).forEach { m ->
-        val att = state.attachments.firstOrNull { it.id == m.groupValues[1] } ?: return@forEach
-        val line = layout.getLineForOffset(m.range.first.coerceIn(0, layout.layoutInput.text.length))
+    imgMatches.forEach { (startOffset, imgId) ->
+        val att = state.attachments.firstOrNull { it.id == imgId } ?: return@forEach
+        val line = layout.getLineForOffset(startOffset.coerceIn(0, layout.layoutInput.text.length))
         val top = layout.getLineTop(line)
         val savedOffsetX = with(state.density) { att.posX.coerceAtLeast(0f).dp.toPx() }
         val savedOffsetY = with(state.density) { att.posY.dp.toPx() }
@@ -871,16 +882,21 @@ private fun CheckboxesOverlay(
     val layout = state.textLayout ?: return
     val full = state.contentValue.text
     if (layout.layoutInput.text.length != full.length) return
-    val markerRegex = remember { Regex("(?m)^([ \\t]*)(\\[ \\]|\\[x\\]|\\[!\\]) ") }
+    val cbMatches = remember(full) {
+        if (!full.contains("[ ]") && !full.contains("[x]") && !full.contains("[!]")) emptyList()
+        else Regex("(?m)^([ \\t]*)(\\[ \\]|\\[x\\]|\\[!\\]) ").findAll(full).mapNotNull { m ->
+            val g = m.groups[2] ?: return@mapNotNull null
+            Triple(g.range.first, (g.range.last + 1).coerceAtMost(full.length), g.value)
+        }.toList()
+    }
+    if (cbMatches.isEmpty()) return
     val boxDp = 19.dp
     val boxPx = with(state.density) { boxDp.toPx() }
     val green = Color(0xFF22C55E)
     val red = Color(0xFFEF4444)
     val idleBorder = if (isDarkMode && !state.lightPaper) Color.White.copy(0.65f) else Color(0xFF475569)
 
-    markerRegex.findAll(full).forEach { m ->
-        val markerStart = m.groups[2]!!.range.first
-        val markerEnd = (m.groups[2]!!.range.last + 1).coerceAtMost(full.length)
+    cbMatches.forEach { (markerStart, markerEnd, cbState) ->
         val line = layout.getLineForOffset(markerStart)
         val xStart = layout.getHorizontalPosition(markerStart, true)
         val xEnd = layout.getHorizontalPosition(markerEnd, true)
@@ -888,7 +904,6 @@ private fun CheckboxesOverlay(
         val centeredX = xStart + (spanW - boxPx) / 2f
         val top = layout.getLineTop(line)
         val bottom = layout.getLineBottom(line)
-        val cbState = m.groups[2]!!.value
         val fillColor = when (cbState) {
             "[x]" -> green
             "[!]" -> red
@@ -937,12 +952,23 @@ private fun CodeFenceHeadersOverlay(
     val minHPx = with(state.density) { 34.dp.toPx() }
     val maxOffset = (fenceLayout.layoutInput.text.length - 1).coerceAtLeast(0)
 
-    CodeFences.find(full).forEach { f ->
+    val fences = remember(full) { CodeFences.find(full) }
+    val borderColor = if (isDarkMode) Color(0xFF333B48) else Color(0xFFD0D7DE)
+
+    fences.forEach { f ->
         val safeStart = f.start.coerceIn(0, maxOffset)
+        val safeEnd = (f.end - 1).coerceIn(safeStart, maxOffset)
         val line = fenceLayout.getLineForOffset(safeStart)
+        val lastLine = fenceLayout.getLineForOffset(safeEnd)
         val top = fenceLayout.getLineTop(line)
         val headerHPx = (fenceLayout.getLineBottom(line) - top + pad4Px).coerceAtLeast(minHPx)
         val headerHDp = with(state.density) { headerHPx.toDp() }
+        val boxBottomPx = fenceLayout.getLineBottom(lastLine) + with(state.density) { 6.dp.toPx() }
+        val bodyHPx = (boxBottomPx - (top - pad2Px + headerHPx)).coerceAtLeast(with(state.density) { 200.dp.toPx() })
+        val bodyHDp = with(state.density) { bodyHPx.toDp() }
+        val canPreview = isPreviewableWebCode(f.lang, f.code)
+        val isPreviewing = canPreview && (f.start in state.previewingCodeFenceStarts)
+
         Row(
             modifier = Modifier
                 .offset { IntOffset(-pad8Px, (top - pad2Px).roundToInt()) }
@@ -961,6 +987,25 @@ private fun CodeFenceHeadersOverlay(
                 maxLines = 1,
                 fontWeight = FontWeight.SemiBold
             )
+            if (canPreview) {
+                IconButton(
+                    onClick = {
+                        state.previewingCodeFenceStarts = if (isPreviewing) {
+                            state.previewingCodeFenceStarts - f.start
+                        } else {
+                            state.previewingCodeFenceStarts + f.start
+                        }
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isPreviewing) Icons.Default.Code else Icons.Default.Visibility,
+                        contentDescription = if (isPreviewing) "Show code" else "Live preview",
+                        tint = if (isPreviewing) Color(0xFFEA580C) else CrimsonPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
             IconButton(
                 onClick = {
                     state.pushUndo()
@@ -969,6 +1014,7 @@ private fun CodeFenceHeadersOverlay(
                     val newText = before.trimEnd('\n') + (if (before.isNotBlank() && after.isNotBlank()) "\n" else "") + after.trimStart('\n')
                     state.spans = RichTextFormatter.adjustSpansForEdit(state.spans, full, newText)
                     state.contentValue = TextFieldValue(newText, selection = TextRange(f.start.coerceIn(0, newText.length)))
+                    state.previewingCodeFenceStarts = state.previewingCodeFenceStarts - f.start
                     Toast.makeText(state.context, "Code block removed", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.size(32.dp)
@@ -994,6 +1040,24 @@ private fun CodeFenceHeadersOverlay(
                 modifier = Modifier.size(32.dp)
             ) {
                 Icon(Icons.Default.OpenInFull, contentDescription = "Maximize", tint = textCol.copy(alpha = 0.7f), modifier = Modifier.size(15.dp))
+            }
+        }
+
+        if (isPreviewing) {
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset(-pad8Px, (top - pad2Px + headerHPx).roundToInt()) }
+                    .width(boxWidth)
+                    .height(bodyHDp.coerceIn(220.dp, 420.dp))
+                    .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
+                    .border(1.dp, borderColor, RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
+            ) {
+                InlineCodePreviewWebView(
+                    code = f.code,
+                    lang = f.lang,
+                    isDarkMode = isDarkMode,
+                    modifier = Modifier.fillMaxWidth().height(bodyHDp.coerceIn(220.dp, 420.dp))
+                )
             }
         }
     }

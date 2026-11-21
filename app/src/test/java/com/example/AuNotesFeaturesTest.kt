@@ -744,7 +744,296 @@ class AuNotesFeaturesTest {
         assertEquals("ChatSessionManager must preserve all 55KB+ of attachmentText", bigHtml.length, reloaded!!.attachmentText?.length)
         mgr.clearAllSessions()
     }
+
+    @Test
+    fun `PDF image framing with editor offsets renders visible pixels and exports omit note title from body`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Create a bright red source image and frame it with non-zero editor DP offsets (posX=45, posY=120)
+        // Previously posX*outW pushed the image 81,000px off canvas -> blank image in PDF!
+        val src = Bitmap.createBitmap(120, 90, Bitmap.Config.ARGB_8888).apply { eraseColor(AColor.RED) }
+        val tempImgFile = File(context.cacheDir, "test_red_pdf_frame.png")
+        java.io.FileOutputStream(tempImgFile).use { fos ->
+            src.compress(Bitmap.CompressFormat.PNG, 100, fos)
+        }
+        val att = com.example.ui.util.RichTextFormatter.AttachmentInfo(
+            uri = tempImgFile.absolutePath,
+            fileName = tempImgFile.name,
+            mimeType = "image/png",
+            sizeBytes = tempImgFile.length(),
+            id = "img_1",
+            srcWidth = 120,
+            srcHeight = 90,
+            widthFraction = 0.8f,
+            zoom = 1.0f,
+            posX = 45f,
+            posY = 120f
+        )
+        val (panX, panY) = com.example.ui.util.AttachmentRenderer.computeNormalizedPan(att)
+        assertEquals("Editor DP posX must not push PDF image off-canvas", 0f, panX, 0.0001f)
+        assertEquals("Editor DP posY must not push PDF image off-canvas", 0f, panY, 0.0001f)
+
+        val zoomedAtt = att.copy(zoom = 1.5f, posX = 0.2f, posY = -0.15f)
+        val (zPanX, zPanY) = com.example.ui.util.AttachmentRenderer.computeNormalizedPan(zoomedAtt)
+        assertEquals("Normalized inner-crop panX must be preserved when zoomed", 0.2f, zPanX, 0.0001f)
+        assertEquals("Normalized inner-crop panY must be preserved when zoomed", -0.15f, zPanY, 0.0001f)
+
+        val framed = com.example.ui.util.AttachmentRenderer.frameBitmap(
+            att = att,
+            outWidth = 360,
+            context = context
+        )
+        assertNotNull("frameBitmap must return a valid bitmap", framed)
+        assertEquals("Framed width must match requested outWidth", 360, framed!!.width)
+        assertEquals("Framed height must preserve 4:3 source aspect ratio", 270, framed.height)
+        src.recycle()
+        framed.recycle()
+        tempImgFile.delete()
+
+        // 2. Verify NoteExporter omits note.title from exported document bodies (TXT, MD, HTML body)
+        val note = NoteEntity(
+            id = 8801L,
+            title = "SECRET_TITLE_SHOULD_NOT_EXPORT_IN_BODY",
+            content = "Body line one.\nBody line two."
+        )
+        val plain = NoteExporter.buildPlainText(note)
+        assertFalse("Plain text export must not inject note.title", plain.contains("SECRET_TITLE_SHOULD_NOT_EXPORT_IN_BODY"))
+        assertTrue(plain.contains("Body line one."))
+
+        val md = NoteExporter.buildMarkdown(note)
+        assertFalse("Markdown export must not inject note.title", md.contains("SECRET_TITLE_SHOULD_NOT_EXPORT_IN_BODY"))
+        assertTrue(md.contains("Body line one."))
+
+        val htmlFile = NoteExporter.buildFile(context, note, "no_title_body.html", ".html")
+        val htmlBody = htmlFile.readText().substringAfter("<body")
+        assertFalse("HTML body must not inject note.title heading", htmlBody.contains("SECRET_TITLE_SHOULD_NOT_EXPORT_IN_BODY"))
+        assertTrue(htmlBody.contains("Body line one."))
+        htmlFile.delete()
+    }
+
+    @Test
+    fun `NoteAgentFormatter surgical patch modifies only targeted text and preserves rest of note`() {
+        val original = """
+            # Weekly Plan
+            
+            - Monday: Gym at 7 AM
+            - Tuesday: Study Kotlin Coroutines
+            - Wednesday: Build PDF Exporter
+            
+            Footer notes stay untouched.
+        """.trimIndent()
+
+        val patched = NoteAgentFormatter.applySurgicalPatch(
+            original = original,
+            findText = "- Tuesday: Study Kotlin Coroutines",
+            replaceText = "- Tuesday: Study Jetpack Compose Performance"
+        )
+        assertNotNull("Exact surgical patch must succeed", patched)
+        assertTrue(patched!!.updatedContent.contains("- Monday: Gym at 7 AM"))
+        assertTrue(patched.updatedContent.contains("- Tuesday: Study Jetpack Compose Performance"))
+        assertTrue(patched.updatedContent.contains("- Wednesday: Build PDF Exporter"))
+        assertTrue(patched.updatedContent.contains("Footer notes stay untouched."))
+        assertFalse(patched.updatedContent.contains("Study Kotlin Coroutines"))
+
+        // Whitespace-tolerant fallback matching
+        val wsPatched = NoteAgentFormatter.applySurgicalPatch(
+            original = original,
+            findText = "Footer   notes   stay   untouched.",
+            replaceText = "Footer updated cleanly."
+        )
+        assertNotNull("Whitespace-normalized surgical patch must succeed", wsPatched)
+        assertTrue(wsPatched!!.updatedContent.contains("Footer updated cleanly."))
+    }
+
+    @Test
+    fun `CodeBox live preview helpers identify web code and wrap CSS and JS cleanly`() {
+        assertTrue(com.example.ui.components.isPreviewableWebCode("html", "<div>Hello</div>"))
+        assertTrue(com.example.ui.components.isPreviewableWebCode("css", "body { color: red; }"))
+        assertTrue(com.example.ui.components.isPreviewableWebCode("js", "console.log('hi')"))
+        assertTrue(com.example.ui.components.isPreviewableWebCode("svg", "<svg><circle r='10'/></svg>"))
+        assertFalse(com.example.ui.components.isPreviewableWebCode("kotlin", "fun main() = println(1)"))
+        assertFalse(com.example.ui.components.isPreviewableWebCode("python", "def foo(): return 42"))
+
+        val wrappedCss = com.example.ui.components.wrapCodeForWebPreview("css", ".card { color: blue; }", isDarkMode = false)
+        assertTrue(wrappedCss.contains("<style>"))
+        assertTrue(wrappedCss.contains(".card { color: blue; }"))
+
+        val wrappedJs = com.example.ui.components.wrapCodeForWebPreview("javascript", "console.log('AU');", isDarkMode = true)
+        assertTrue(wrappedJs.contains("<script>"))
+        assertTrue(wrappedJs.contains("console.log('AU');"))
+    }
+
+    @Test
+    fun `MarkdownBoxesCodec and ReadNoteBlockParser build and parse uniformly aligned tables`() {
+        val mdTable = com.example.ui.screens.editor.MarkdownBoxesCodec.toMarkdownTable(
+            listOf(
+                listOf("Problem", "Section", "Priority"),
+                listOf("Termux Shell", "Section 5", "High"),
+                listOf("Robust Edit Tool", "Section 9", "Critical")
+            )
+        )
+        assertTrue(mdTable.contains("| Problem | Section | Priority |"))
+        assertTrue(mdTable.contains("| --- | --- | --- |"))
+
+        // Parse ragged table (different column counts per row) and confirm uniform padding
+        val (rows, colCount) = com.example.ui.screens.ReadNoteBlockParser.parseTableRows(
+            listOf(
+                "| Problem | Fix |",
+                "| --- | --- |",
+                "| Only one col |",
+                "| Col A | Col B | Col C |"
+            )
+        )
+        assertEquals(3, colCount)
+        assertEquals(3, rows.size)
+        assertTrue("Every parsed row must be uniformly padded to colCount", rows.all { it.size == 3 })
+    }
+
+    @Test
+    fun `ReadNoteBlockParser and buildDeepSearchSnippet highlight and locate matches across blocks`() {
+        val doc = """
+            # Release Architecture
+            
+            Intro paragraph discussing caching.
+            
+            | Module | Owner |
+            | --- | --- |
+            | SearchEngine | Quantum |
+            
+            - Deep bullet mentioning Quantum rendering
+            
+            ```kotlin
+            val engine = "Quantum"
+            ```
+        """.trimIndent()
+
+        val blocks = com.example.ui.screens.ReadNoteBlockParser.parseBlocks(doc, emptyList())
+        val matches = com.example.ui.screens.ReadNoteBlockParser.findMatchLocations(blocks, "Quantum")
+        assertEquals("Must find Quantum in table, bullet, and code fence", 3, matches.size)
+
+        val highlighted = com.example.ui.screens.ReadNoteBlockParser.applySearchHighlights(
+            source = androidx.compose.ui.text.AnnotatedString("Hello Quantum World"),
+            query = "quantum",
+            activeLocalOccurrence = 0
+        )
+        assertTrue("Highlight span must be applied case-insensitively", highlighted.spanStyles.isNotEmpty())
+        assertEquals(6, highlighted.spanStyles.first().start)
+        assertEquals(13, highlighted.spanStyles.first().end)
+
+        val longNote = "Prefix ".repeat(30) + "TARGET_KEYWORD_99 appears deep inside the document " + "Suffix ".repeat(30)
+        val snippet = com.example.ui.screens.buildDeepSearchSnippet(longNote, "TARGET_KEYWORD_99")
+        assertNotNull(snippet)
+        assertTrue("Deep search snippet must center around matched word", snippet!!.contains("TARGET_KEYWORD_99"))
+        assertTrue("Deep search snippet must include leading ellipsis", snippet.startsWith("…"))
+    }
+
+    @Test
+    fun `AppPreferences multi-folder membership and custom category badge colors persist cleanly`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = AppPreferences(context)
+
+        prefs.addNoteToFolder(501L, "Work")
+        prefs.addNoteToFolder(501L, "Study")
+        assertTrue("Work" in prefs.noteExtraFolders.value[501L].orEmpty())
+        assertTrue("Study" in prefs.noteExtraFolders.value[501L].orEmpty())
+
+        prefs.removeNoteFromFolder(501L, "Work")
+        assertFalse("Work" in prefs.noteExtraFolders.value[501L].orEmpty())
+        assertTrue("Study" in prefs.noteExtraFolders.value[501L].orEmpty())
+
+        prefs.setNoteCategoryColor(501L, "#10B981")
+        assertEquals("#10B981", prefs.noteCategoryColors.value[501L])
+    }
+
+    @Test
+    fun `MyDocuments exportAsZip creates valid My Documents zip archive`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val f1 = File(context.cacheDir, "doc_alpha.txt").apply { writeText("Alpha content") }
+        val f2 = File(context.cacheDir, "doc_beta.md").apply { writeText("# Beta content") }
+
+        val zipFile = com.example.data.documents.MyDocuments.exportAsZip(
+            context = context,
+            files = listOf(f1, f2),
+            zipName = "My Documents.zip"
+        )
+        assertTrue("ZIP file must exist", zipFile.exists())
+        assertEquals("My Documents.zip", zipFile.name)
+
+        val entries = mutableListOf<String>()
+        java.util.zip.ZipFile(zipFile).use { zf ->
+            val en = zf.entries()
+            while (en.hasMoreElements()) {
+                entries.add(en.nextElement().name)
+            }
+        }
+        assertTrue(entries.contains("doc_alpha.txt"))
+        assertTrue(entries.contains("doc_beta.md"))
+
+        f1.delete()
+        f2.delete()
+        zipFile.delete()
+    }
+
+    @Test
+    fun `TrashBinManager enforces independent per-item 30-day retention and round-trips documents and artifacts`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val now = System.currentTimeMillis()
+        val dayMs = 24L * 60L * 60L * 1000L
+
+        // Item A deleted 29 days ago -> NOT expired (1 day left); Item B deleted 31 days ago -> EXPIRED
+        val deleted29DaysAgo = now - (29L * dayMs)
+        val deleted31DaysAgo = now - (31L * dayMs)
+        assertFalse("29-day item must survive", com.example.data.documents.TrashBinManager.isExpired(deleted29DaysAgo, now))
+        assertEquals(1, com.example.data.documents.TrashBinManager.daysRemaining(deleted29DaysAgo, now))
+        assertTrue("31-day item must expire independently", com.example.data.documents.TrashBinManager.isExpired(deleted31DaysAgo, now))
+        assertEquals(0, com.example.data.documents.TrashBinManager.daysRemaining(deleted31DaysAgo, now))
+
+        // Document Trash -> Restore round-trip
+        val docDir = File(context.filesDir, "my_documents").apply { mkdirs() }
+        val testDoc = File(docDir, "recycle_roundtrip_doc.txt").apply { writeText("Safe in Recycle Bin") }
+        val trashedDoc = com.example.data.documents.TrashBinManager.trashDocument(context, testDoc)
+        assertNotNull("Document should move into Recycle Bin", trashedDoc)
+        assertFalse("Original file must be removed after trashing", testDoc.exists())
+        assertTrue(
+            "Trashed document must appear in Recycle Bin list",
+            com.example.data.documents.TrashBinManager.listTrashedDocuments(context).any { it.id == trashedDoc!!.id }
+        )
+
+        val restoredDocOk = com.example.data.documents.TrashBinManager.restoreDocument(context, trashedDoc!!.id)
+        assertTrue("Trashed document must restore back to My Documents", restoredDocOk)
+        val restoredDoc = File(com.example.data.documents.MyDocuments.dir(context), "recycle_roundtrip_doc.txt")
+        assertTrue(restoredDoc.exists())
+        assertEquals("Safe in Recycle Bin", restoredDoc.readText())
+        restoredDoc.delete()
+
+        // HTML Artifact Trash -> Restore round-trip
+        val sampleArt = com.example.data.ai.SavedArtifactItem(
+            uid = "art_trash_test",
+            kind = com.example.data.ai.SavedArtifactKind.HTML,
+            title = "Trash Test Page",
+            subtitle = "Chat: Test",
+            rawContent = "<!DOCTYPE html><html><body><h1>Restored!</h1></body></html>",
+            timestamp = now,
+            sessionId = "s1",
+            sessionTitle = "Test",
+            messageId = "m1"
+        )
+        val trashedArt = com.example.data.documents.TrashBinManager.trashArtifact(context, sampleArt)
+        assertNotNull("HTML artifact must move into Recycle Bin", trashedArt)
+        assertTrue(
+            com.example.data.documents.TrashBinManager.listTrashedArtifacts(context).any { it.id == trashedArt!!.id }
+        )
+        val artifactsDir = File(context.filesDir, "artifacts")
+        val beforeNames = artifactsDir.listFiles()?.map { it.name }?.toSet().orEmpty()
+        val restoredArtOk = com.example.data.documents.TrashBinManager.restoreArtifact(context, trashedArt!!.id)
+        assertTrue("Trashed artifact must restore into files/artifacts/", restoredArtOk)
+        val restoredArtFile = artifactsDir.listFiles()?.firstOrNull { it.name !in beforeNames && it.name.startsWith("Trash Test Page_") }
+        assertNotNull("Restored artifact file must exist in files/artifacts/", restoredArtFile)
+        assertTrue(restoredArtFile!!.readText().contains("Restored!"))
+        restoredArtFile.delete()
+    }
 }
+
 
 
 

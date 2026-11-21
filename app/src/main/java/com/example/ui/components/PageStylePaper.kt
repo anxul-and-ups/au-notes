@@ -61,7 +61,7 @@ val PAGE_STYLES: List<PageStyleSpec> = listOf(
 
 private const val PREF_NAME = "au_page_styles"
 
-private fun normalizeStyleKey(raw: String?): String = when (raw?.trim()?.lowercase()) {
+internal fun normalizeStyleKey(raw: String?): String = when (raw?.trim()?.lowercase()) {
     "yellow_legal", "legal" -> "legal"
     "ruled" -> "ruled"
     "grid" -> "grid"
@@ -321,13 +321,19 @@ fun DrawScope.drawPageRules(
 /**
  * Draws the notebook paper tint, horizontal lines, grids, dots, and margin lines onto a PDF Canvas
  * so exported PDFs match Write Mode & Read Mode 100%.
+ *
+ * When [drawHorizontalLines] is false on `ruled`, `legal`, or `cornell` paper, only the paper
+ * tint and vertical/summary margin lines are drawn here — allowing the PDF text renderer to place
+ * every horizontal rule dynamically aligned to each rendered line's baseline (Latin) or top
+ * shirorekha bar (Devanagari/Hindi).
  */
 fun drawPdfPagePaper(
     canvas: ACanvas,
     style: String,
     pageW: Float,
     pageH: Float,
-    lineStep: Float
+    lineStep: Float,
+    drawHorizontalLines: Boolean = true
 ) {
     val norm = normalizeStyleKey(style)
     val bgColor = when (norm) {
@@ -339,11 +345,7 @@ fun drawPdfPagePaper(
     if (norm == "standard") return
 
     val step = lineStep.coerceIn(16f, 38f)
-    val rulePaint = APaint(APaint.ANTI_ALIAS_FLAG).apply {
-        color = if (norm == "legal") AColor.argb(135, 59, 130, 246) else AColor.argb(95, 59, 130, 246)
-        strokeWidth = 0.9f
-        this.style = APaint.Style.STROKE
-    }
+    val rulePaint = pdfRulePaint(norm)
     val marginPaint = APaint(APaint.ANTI_ALIAS_FLAG).apply {
         color = AColor.argb(150, 239, 68, 68)
         strokeWidth = 1.15f
@@ -352,10 +354,12 @@ fun drawPdfPagePaper(
 
     when (norm) {
         "ruled", "legal" -> {
-            var y = 64f
-            while (y < pageH - 36f) {
-                canvas.drawLine(24f, y, pageW - 24f, y, rulePaint)
-                y += step
+            if (drawHorizontalLines) {
+                var y = 64f
+                while (y < pageH - 36f) {
+                    canvas.drawLine(24f, y, pageW - 24f, y, rulePaint)
+                    y += step
+                }
             }
             val mx = 48f
             canvas.drawLine(mx, 24f, mx, pageH - 24f, marginPaint)
@@ -395,10 +399,12 @@ fun drawPdfPagePaper(
         "cornell" -> {
             val cueX = pageW * 0.28f
             val summaryY = pageH - 120f
-            var y = 64f
-            while (y < summaryY) {
-                canvas.drawLine(cueX, y, pageW - 24f, y, rulePaint)
-                y += step
+            if (drawHorizontalLines) {
+                var y = 64f
+                while (y < summaryY) {
+                    canvas.drawLine(cueX, y, pageW - 24f, y, rulePaint)
+                    y += step
+                }
             }
             canvas.drawLine(cueX, 36f, cueX, summaryY, marginPaint)
             canvas.drawLine(24f, summaryY, pageW - 24f, summaryY, marginPaint)
@@ -411,6 +417,39 @@ fun drawPdfPagePaper(
                 pathEffect = DashPathEffect(floatArrayOf(6f, 4f), 0f)
             }
             canvas.drawRect(22f, 22f, pageW - 22f, pageH - 22f, framePaint)
+        }
+    }
+}
+
+private fun pdfRulePaint(normStyle: String): APaint = APaint(APaint.ANTI_ALIAS_FLAG).apply {
+    color = if (normStyle == "legal") AColor.argb(135, 59, 130, 246) else AColor.argb(95, 59, 130, 246)
+    strokeWidth = 0.9f
+    style = APaint.Style.STROKE
+}
+
+/** Draws a single dynamically-aligned horizontal rule line for `ruled`, `legal`, or `cornell` PDF pages. */
+fun drawPdfHorizontalRuleLine(
+    canvas: ACanvas,
+    style: String,
+    pageW: Float,
+    pageH: Float,
+    y: Float
+) {
+    val norm = normalizeStyleKey(style)
+    if (norm != "ruled" && norm != "legal" && norm != "cornell") return
+    val paint = pdfRulePaint(norm)
+    when (norm) {
+        "ruled", "legal" -> {
+            if (y in 24f..(pageH - 24f)) {
+                canvas.drawLine(24f, y, pageW - 24f, y, paint)
+            }
+        }
+        "cornell" -> {
+            val cueX = pageW * 0.28f
+            val summaryY = pageH - 120f
+            if (y >= 36f && y < summaryY) {
+                canvas.drawLine(cueX, y, pageW - 24f, y, paint)
+            }
         }
     }
 }

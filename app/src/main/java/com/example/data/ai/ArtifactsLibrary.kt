@@ -87,33 +87,54 @@ object ArtifactsLibrary {
             }
         }
 
-        // Also scan files/artifacts/ subdirectories (files/artifacts/<id>/index.html)
+        // Also scan files/artifacts/ subdirectories (files/artifacts/<id>/index.html and restored slides .json)
         val dir = File(context.filesDir, "artifacts")
         if (dir.exists() && dir.isDirectory) {
             dir.listFiles()?.forEach { entry ->
                 val indexFile = if (entry.isDirectory) File(entry, "index.html") else entry
-                val entryKey = if (entry.isDirectory) entry.name else entry.name
-                if (indexFile.exists() && indexFile.isFile && entryKey !in seenFileNames &&
-                    (indexFile.extension.equals("html", true) || indexFile.extension.equals("htm", true))
-                ) {
-                    val content = try { indexFile.readText() } catch (_: Exception) { "" }
-                    if (content.isNotBlank()) {
-                        val titleMatch = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-                            .find(content)?.groupValues?.getOrNull(1)?.trim()
-                        results.add(
-                            SavedArtifactItem(
-                                uid = "disk_${entryKey}",
-                                kind = SavedArtifactKind.HTML,
-                                title = titleMatch?.ifBlank { null } ?: entry.nameWithoutExtension,
-                                subtitle = "Saved Artifact File",
-                                rawContent = content,
-                                htmlFileName = indexFile.absolutePath,
-                                sessionId = null,
-                                sessionTitle = null,
-                                messageId = null,
-                                timestamp = indexFile.lastModified()
+                val entryKey = entry.name
+                if (indexFile.exists() && indexFile.isFile && entryKey !in seenFileNames) {
+                    val ext = indexFile.extension.lowercase()
+                    if (ext == "html" || ext == "htm") {
+                        val content = try { indexFile.readText() } catch (_: Exception) { "" }
+                        if (content.isNotBlank()) {
+                            val titleMatch = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+                                .find(content)?.groupValues?.getOrNull(1)?.trim()
+                            results.add(
+                                SavedArtifactItem(
+                                    uid = "disk_${entryKey}",
+                                    kind = SavedArtifactKind.HTML,
+                                    title = titleMatch?.ifBlank { null } ?: entry.nameWithoutExtension,
+                                    subtitle = "Saved Artifact File",
+                                    rawContent = content,
+                                    htmlFileName = indexFile.absolutePath,
+                                    sessionId = null,
+                                    sessionTitle = null,
+                                    messageId = null,
+                                    timestamp = indexFile.lastModified()
+                                )
                             )
-                        )
+                        }
+                    } else if (ext == "json") {
+                        val content = try { indexFile.readText() } catch (_: Exception) { "" }
+                        val deck = if (content.isNotBlank()) AgentVisualsParser.parseSlideDeck(content) else null
+                        if (deck != null) {
+                            results.add(
+                                SavedArtifactItem(
+                                    uid = "disk_slides_${entryKey}",
+                                    kind = SavedArtifactKind.SLIDES,
+                                    title = deck.deckTitle.ifBlank { entry.nameWithoutExtension },
+                                    subtitle = "${deck.slides.size} slides • Restored Deck",
+                                    rawContent = content,
+                                    htmlFileName = indexFile.absolutePath,
+                                    slideDeck = deck,
+                                    sessionId = null,
+                                    sessionTitle = null,
+                                    messageId = null,
+                                    timestamp = indexFile.lastModified()
+                                )
+                            )
+                        }
                     }
                 }
             }

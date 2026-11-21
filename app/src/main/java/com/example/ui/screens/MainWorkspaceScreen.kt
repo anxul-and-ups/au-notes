@@ -52,10 +52,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
@@ -75,6 +78,8 @@ import androidx.compose.material.icons.filled.Splitscreen
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -156,6 +161,7 @@ fun MainWorkspaceScreen(
     onOpenSplitScreen: () -> Unit = {},
     onOpenAiChat: () -> Unit,
     onOpenNote: (NoteEntity) -> Unit,
+    onOpenNoteWithQuery: ((NoteEntity, String) -> Unit)? = null,
     onCreateNote: () -> Unit,
     // Security Area "+" flow: user picks notes here, they are moved to Hidden Notes
     pickForHide: Boolean = false,
@@ -166,6 +172,8 @@ fun MainWorkspaceScreen(
     val hazeState = remember { HazeState() }
     val haptic = LocalHapticFeedback.current
     val clipboard = LocalClipboardManager.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val coroutineScope = rememberCoroutineScope()
 
     val blurApis by preferences.blurApis.collectAsState()
@@ -179,12 +187,15 @@ fun MainWorkspaceScreen(
     val hiddenFolders by preferences.hiddenFolders.collectAsState()
     val noteAlarms by preferences.noteAlarms.collectAsState()
     val blinkOnAlarmActive by preferences.blinkOnAlarmActive.collectAsState()
+    val noteExtraFolders by preferences.noteExtraFolders.collectAsState()
+    val noteCategoryColors by preferences.noteCategoryColors.collectAsState()
     val hasActiveAlarmAnywhere = noteAlarms.isNotEmpty()
     var pickedIds by remember { mutableStateOf(setOf<Long>()) }
-    // Long-press a note -> select mode (delete / export many notes)
+    // Long-press a note -> select mode (delete / export / folder actions on many notes)
     var bulkMode by remember { mutableStateOf(false) }
     var bulkIds by remember { mutableStateOf(setOf<Long>()) }
     var showBulkExport by remember { mutableStateOf(false) }
+    var showBulkAddToFolderDialog by remember { mutableStateOf(false) }
     var bulkExt by remember { mutableStateOf(".pdf") }
     var bulkWorking by remember { mutableStateOf(false) }
     // Delete actions wait here for PIN verification when "Verify PIN while deleting" is on
@@ -260,10 +271,11 @@ fun MainWorkspaceScreen(
         }
     }
 
-    val filteredNotes = remember(allNotes, selectedFolder, searchQuery, isDeepSearch, lockedFolders, unlockedFoldersThisSession) {
+    val filteredNotes = remember(allNotes, selectedFolder, searchQuery, isDeepSearch, lockedFolders, unlockedFoldersThisSession, noteExtraFolders, hiddenFolders) {
         allNotes.filter { note ->
             if (note.isTrash) return@filter false
 
+            val extra = noteExtraFolders[note.id].orEmpty()
             val noteFolderNames = listOfNotNull(
                 note.folder,
                 when (note.category) {
@@ -276,15 +288,15 @@ fun MainWorkspaceScreen(
             )
             if (noteFolderNames.any { isFolderClosed(it) }) return@filter false
 
-            // Folder Filter
+            // Folder Filter (notes added to extra folders still appear in All Notes too)
             val matchesFolder = when (selectedFolder) {
                 "All Notes" -> note.folder !in hiddenFolders
-                "Favorites" -> note.isFavorite
-                "APIs Keys" -> note.category == "API"
-                "Code" -> note.category == "Code"
-                "Media" -> note.category == "Media"
-                "Personal" -> note.category == "Personal"
-                else -> note.folder == selectedFolder
+                "Favorites" -> note.isFavorite || "Favorites" in extra
+                "APIs Keys" -> note.category == "API" || "APIs Keys" in extra
+                "Code" -> note.category == "Code" || "Code" in extra
+                "Media" -> note.category == "Media" || "Media" in extra
+                "Personal" -> note.category == "Personal" || "Personal" in extra
+                else -> note.folder == selectedFolder || selectedFolder in extra
             }
 
             if (!matchesFolder) return@filter false
@@ -315,16 +327,17 @@ fun MainWorkspaceScreen(
     }
 
     // Live note count per folder (All Notes is global, so it counts every visible note)
-    val folderCounts = remember(allNotes, lockedFolders) {
-        fun count(folder: String) = allNotes.count {
+    val folderCounts = remember(allNotes, lockedFolders, noteExtraFolders) {
+        fun count(folder: String) = allNotes.count { note ->
+            val extra = noteExtraFolders[note.id].orEmpty()
             when (folder) {
                 "All Notes" -> true
-                "Favorites" -> it.isFavorite
-                "APIs Keys" -> it.category == "API"
-                "Code" -> it.category == "Code"
-                "Media" -> it.category == "Media"
-                "Personal" -> it.category == "Personal"
-                else -> it.folder == folder
+                "Favorites" -> note.isFavorite || "Favorites" in extra
+                "APIs Keys" -> note.category == "API" || "APIs Keys" in extra
+                "Code" -> note.category == "Code" || "Code" in extra
+                "Media" -> note.category == "Media" || "Media" in extra
+                "Personal" -> note.category == "Personal" || "Personal" in extra
+                else -> note.folder == folder || folder in extra
             }
         }
         (listOf("All Notes", "Favorites", "APIs Keys", "Code", "Media", "Personal") + customFolders)
@@ -334,15 +347,16 @@ fun MainWorkspaceScreen(
     fun exportFolderAsZip(folderName: String) {
         coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val notesInFolder = allNotes.filter {
+                val notesInFolder = allNotes.filter { note ->
+                    val extra = noteExtraFolders[note.id].orEmpty()
                     when (folderName) {
                         "All Notes" -> true
-                        "Favorites" -> it.isFavorite
-                        "APIs Keys" -> it.category == "API"
-                        "Code" -> it.category == "Code"
-                        "Media" -> it.category == "Media"
-                        "Personal" -> it.category == "Personal"
-                        else -> it.folder == folderName
+                        "Favorites" -> note.isFavorite || "Favorites" in extra
+                        "APIs Keys" -> note.category == "API" || "APIs Keys" in extra
+                        "Code" -> note.category == "Code" || "Code" in extra
+                        "Media" -> note.category == "Media" || "Media" in extra
+                        "Personal" -> note.category == "Personal" || "Personal" in extra
+                        else -> note.folder == folderName || folderName in extra
                     }
                 }
 
@@ -456,6 +470,45 @@ fun MainWorkspaceScreen(
                             IconButton(onClick = {
                                 bulkIds = if (bulkIds.size == filteredNotes.size) emptySet() else filteredNotes.map { it.id }.toSet()
                             }) { Icon(Icons.Default.SelectAll, contentDescription = "Select all", tint = CrimsonPrimary) }
+                            IconButton(
+                                onClick = {
+                                    if (bulkIds.isEmpty()) Toast.makeText(context, "Select at least one note", Toast.LENGTH_SHORT).show()
+                                    else showBulkAddToFolderDialog = true
+                                },
+                                modifier = Modifier.testTag("bulk_add_to_folder_btn")
+                            ) {
+                                Icon(Icons.Default.CreateNewFolder, contentDescription = "Add to folder", tint = CrimsonPrimary)
+                            }
+                            if (selectedFolder != "All Notes") {
+                                IconButton(
+                                    onClick = {
+                                        val chosen = allNotes.filter { it.id in bulkIds }
+                                        if (chosen.isEmpty()) {
+                                            Toast.makeText(context, "Select at least one note", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            coroutineScope.launch {
+                                                chosen.forEach { n ->
+                                                    preferences.removeNoteFromFolder(n.id, selectedFolder)
+                                                    when (selectedFolder) {
+                                                        "Favorites" -> if (n.isFavorite) repository.toggleFavorite(n.id, true)
+                                                        "APIs Keys" -> if (n.category == "API") repository.saveNote(n.copy(category = "General", folder = if (n.folder == selectedFolder) "All Notes" else n.folder))
+                                                        "Code" -> if (n.category == "Code") repository.saveNote(n.copy(category = "General", folder = if (n.folder == selectedFolder) "All Notes" else n.folder))
+                                                        "Media" -> if (n.category == "Media") repository.saveNote(n.copy(category = "General", folder = if (n.folder == selectedFolder) "All Notes" else n.folder))
+                                                        "Personal" -> if (n.category == "Personal") repository.saveNote(n.copy(category = "General", folder = if (n.folder == selectedFolder) "All Notes" else n.folder))
+                                                        else -> if (n.folder == selectedFolder) repository.saveNote(n.copy(folder = "All Notes"))
+                                                    }
+                                                }
+                                                Toast.makeText(context, "Removed ${chosen.size} note(s) from $selectedFolder", Toast.LENGTH_SHORT).show()
+                                            }
+                                            bulkMode = false
+                                            bulkIds = emptySet()
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("bulk_remove_from_folder_btn")
+                                ) {
+                                    Icon(Icons.Default.FolderOff, contentDescription = "Remove from this folder", tint = Color(0xFFF59E0B))
+                                }
+                            }
                             IconButton(onClick = {
                                 if (bulkIds.isEmpty()) Toast.makeText(context, "Select at least one note", Toast.LENGTH_SHORT).show()
                                 else showBulkExport = true
@@ -468,6 +521,7 @@ fun MainWorkspaceScreen(
                                 } else {
                                     coroutineScope.launch {
                                         com.example.ui.util.UiSoundManager.playDeleteSound(context)
+                                        deletable.forEach { preferences.recordNoteTrashed(it.id) }
                                         repository.moveToTrash(deletable.map { it.id })
                                         Toast.makeText(context, "Moved ${deletable.size} note(s) to Recycle Bin", Toast.LENGTH_SHORT).show()
                                     }
@@ -496,8 +550,13 @@ fun MainWorkspaceScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Search Bar with Deep Search Toggle (shown only when focused or query is non-empty)
+                // Search Bar with Deep Search Toggle & clean Exit Search button
                 var isSearchFocused by remember { mutableStateOf(false) }
+                val exitSearch: () -> Unit = {
+                    searchQuery = ""
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -513,25 +572,56 @@ fun MainWorkspaceScreen(
                             )
                         },
                         leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(20.dp))
+                            if (isSearchFocused || searchQuery.isNotEmpty()) {
+                                IconButton(
+                                    onClick = exitSearch,
+                                    modifier = Modifier.size(36.dp).testTag("workspace_search_back_btn")
+                                ) {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "Exit search",
+                                        tint = CrimsonPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            } else {
+                                Icon(Icons.Default.Search, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(20.dp))
+                            }
                         },
                         trailingIcon = {
                             if (isSearchFocused || searchQuery.isNotEmpty()) {
                                 Row(
-                                    modifier = Modifier
-                                        .padding(end = 6.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isDeepSearch) CrimsonPrimary else (if (isDarkMode) Color(0x33FFFFFF) else Color(0x1F000000)))
-                                        .clickable { isDeepSearch = !isDeepSearch }
-                                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.padding(end = 4.dp)
                                 ) {
-                                    Text(
-                                        text = "Deep",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isDeepSearch) Color.White else (if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray)
-                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isDeepSearch) CrimsonPrimary else (if (isDarkMode) Color(0x33FFFFFF) else Color(0x1F000000)))
+                                            .clickable { isDeepSearch = !isDeepSearch }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                            .testTag("workspace_deep_search_toggle"),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Deep",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isDeepSearch) Color.White else (if (isDarkMode) Color.White.copy(0.7f) else Color.DarkGray)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = exitSearch,
+                                        modifier = Modifier.size(32.dp).testTag("workspace_search_exit_btn")
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Close search",
+                                            tint = if (isDarkMode) Color.White.copy(0.75f) else Color(0xFF555555),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                             }
                         },
@@ -842,6 +932,9 @@ fun MainWorkspaceScreen(
                                 blurApis = blurApis,
                                 selectionMode = pickForHide || bulkMode,
                                 selected = note.id in pickedIds || note.id in bulkIds,
+                                highlightQuery = searchQuery.trim(),
+                                isDeepSearch = isDeepSearch,
+                                customCategoryColorHex = noteCategoryColors[note.id],
                                 onOpen = {
                                     if (pickForHide) {
                                         pickedIds = if (note.id in pickedIds) pickedIds - note.id else pickedIds + note.id
@@ -851,7 +944,12 @@ fun MainWorkspaceScreen(
                                     } else if (note.isLocked) {
                                         pendingLockedNote = note
                                     } else {
-                                        onOpenNote(note)
+                                        val q = searchQuery.trim()
+                                        if (isDeepSearch && q.isNotBlank() && onOpenNoteWithQuery != null) {
+                                            onOpenNoteWithQuery(note, q)
+                                        } else {
+                                            onOpenNote(note)
+                                        }
                                     }
                                 },
                                 onLongPress = {
@@ -1024,6 +1122,7 @@ fun MainWorkspaceScreen(
                         guardDelete {
                             coroutineScope.launch {
                                 com.example.ui.util.UiSoundManager.playDeleteSound(context)
+                                preferences.recordNoteTrashed(note.id)
                                 repository.moveToTrash(note.id)
                                 Toast.makeText(context, "Moved '${note.title}' to Recycle Bin", Toast.LENGTH_SHORT).show()
                             }
@@ -1141,6 +1240,7 @@ fun MainWorkspaceScreen(
                             longPressedFolder = null
                             guardDelete {
                                 com.example.ui.util.UiSoundManager.playDeleteSound(context)
+                                preferences.recordFolderTrashed(folder)
                                 preferences.deleteCustomFolder(folder)
                                 if (selectedFolder == folder) selectedFolder = "All Notes"
                                 Toast.makeText(context, "Folder moved to Recycle Bin", Toast.LENGTH_SHORT).show()
@@ -1305,6 +1405,83 @@ fun MainWorkspaceScreen(
         )
     }
 
+    // Bulk Add-to-Folder dialog (adds notes to chosen folder while keeping them in All Notes)
+    if (showBulkAddToFolderDialog) {
+        val chosen = allNotes.filter { it.id in bulkIds }
+        val targetFolders = (listOf("Favorites", "APIs Keys", "Code", "Media", "Personal") + customFolders)
+            .distinct()
+            .filter { it != "All Notes" && it !in hiddenFolders }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showBulkAddToFolderDialog = false },
+            containerColor = if (isDarkMode) Color(0xFF1A1F2A) else Color.White,
+            title = {
+                Text(
+                    "Add ${chosen.size} note(s) to folder",
+                    fontWeight = FontWeight.Bold,
+                    color = if (isDarkMode) Color.White else Color(0xFF111827)
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.heightIn(max = 320.dp)
+                ) {
+                    Text(
+                        "Notes stay in All Notes and are also linked inside the chosen folder.",
+                        fontSize = 11.5.sp,
+                        color = Color.Gray
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(targetFolders) { targetFolder ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (isDarkMode) Color(0x18FFFFFF) else Color(0xFFF3F4F6))
+                                    .clickable {
+                                        coroutineScope.launch {
+                                            chosen.forEach { n ->
+                                                preferences.addNoteToFolder(n.id, targetFolder)
+                                                if (targetFolder == "Favorites" && !n.isFavorite) {
+                                                    repository.toggleFavorite(n.id, false)
+                                                }
+                                            }
+                                            Toast.makeText(
+                                                context,
+                                                "Added ${chosen.size} note(s) to $targetFolder",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                        showBulkAddToFolderDialog = false
+                                        bulkMode = false
+                                        bulkIds = emptySet()
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Folder, contentDescription = null, tint = CrimsonPrimary, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    targetFolder,
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isDarkMode) Color.White else Color(0xFF111827)
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showBulkAddToFolderDialog = false }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
+    }
+
     // PIN dialog for unlocking note
     pendingLockedNote?.let { note ->
         PinLockDialog(
@@ -1316,7 +1493,12 @@ fun MainWorkspaceScreen(
             onDismiss = { pendingLockedNote = null },
             onUnlocked = {
                 pendingLockedNote = null
-                onOpenNote(note)
+                val q = searchQuery.trim()
+                if (isDeepSearch && q.isNotBlank() && onOpenNoteWithQuery != null) {
+                    onOpenNoteWithQuery(note, q)
+                } else {
+                    onOpenNote(note)
+                }
             },
             onSetupComplete = { pin, question, answer ->
                 preferences.setSecurityDetails(pin, question, answer)
@@ -1400,9 +1582,16 @@ fun CompactNoteCard(
     onLongPress: () -> Unit,
     onCopy: () -> Unit,
     selectionMode: Boolean = false,
-    selected: Boolean = false
+    selected: Boolean = false,
+    highlightQuery: String = "",
+    isDeepSearch: Boolean = false,
+    customCategoryColorHex: String? = null
 ) {
-    val categoryColor = when (note.category) {
+    val categoryColor = remember(note.category, customCategoryColorHex) {
+        if (!customCategoryColorHex.isNullOrBlank()) {
+            runCatching { Color(android.graphics.Color.parseColor(customCategoryColorHex)) }.getOrNull()
+        } else null
+    } ?: when (note.category) {
         "API" -> CategoryApiColor
         "Code" -> CategoryCodeColor
         "Media" -> CategoryMediaColor
@@ -1410,10 +1599,14 @@ fun CompactNoteCard(
         else -> CategoryGeneralColor
     }
 
-    val displayContent = if (note.category == "API" && blurApis) {
-        "•••••••••••••••••••• (API Key Blurred)"
-    } else {
-        extractCleanSnippet(note.content)
+    val displayContent = remember(note.content, note.category, blurApis, highlightQuery, isDeepSearch) {
+        if (note.category == "API" && blurApis) {
+            "•••••••••••••••••••• (API Key Blurred)"
+        } else if (isDeepSearch && highlightQuery.isNotBlank()) {
+            buildDeepSearchSnippet(note.content, highlightQuery) ?: extractCleanSnippet(note.content)
+        } else {
+            extractCleanSnippet(note.content)
+        }
     }
 
     val formattedTime = remember(note.updatedAt) {
@@ -1508,8 +1701,19 @@ fun CompactNoteCard(
                         Spacer(modifier = Modifier.width(5.dp))
                     }
 
+                    val titleAnnotated = remember(note.title, highlightQuery) {
+                        if (highlightQuery.isBlank()) {
+                            androidx.compose.ui.text.AnnotatedString(note.title)
+                        } else {
+                            ReadNoteBlockParser.applySearchHighlights(
+                                source = androidx.compose.ui.text.AnnotatedString(note.title),
+                                query = highlightQuery,
+                                activeLocalOccurrence = -1
+                            )
+                        }
+                    }
                     Text(
-                        text = note.title,
+                        text = titleAnnotated,
                         fontSize = 14.5.sp,
                         fontWeight = FontWeight.Bold,
                         color = if (isDarkMode) Color.White else Color(0xFF111111),
@@ -1520,8 +1724,8 @@ fun CompactNoteCard(
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                val checkboxPreview = remember(note.content, note.category, blurApis) {
-                    if (note.category == "API" && blurApis) emptyList()
+                val checkboxPreview = remember(note.content, note.category, blurApis, highlightQuery, isDeepSearch) {
+                    if ((note.category == "API" && blurApis) || (isDeepSearch && highlightQuery.isNotBlank())) emptyList()
                     else com.example.ui.util.NoteArtifactCodec.extractCheckboxLines(note.content, maxLines = 2)
                 }
                 if (checkboxPreview.isNotEmpty()) {
@@ -1574,11 +1778,22 @@ fun CompactNoteCard(
                         }
                     }
                 } else {
+                    val snippetAnnotated = remember(displayContent, highlightQuery, isDeepSearch) {
+                        if (!isDeepSearch || highlightQuery.isBlank()) {
+                            androidx.compose.ui.text.AnnotatedString(displayContent)
+                        } else {
+                            ReadNoteBlockParser.applySearchHighlights(
+                                source = androidx.compose.ui.text.AnnotatedString(displayContent),
+                                query = highlightQuery,
+                                activeLocalOccurrence = -1
+                            )
+                        }
+                    }
                     Text(
-                        text = displayContent,
+                        text = snippetAnnotated,
                         fontSize = 12.sp,
                         color = if (isDarkMode) Color.White.copy(alpha = 0.65f) else Color(0xFF555555),
-                        maxLines = 1,
+                        maxLines = if (isDeepSearch && highlightQuery.isNotBlank()) 2 else 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -1750,4 +1965,22 @@ private fun extractCleanSnippet(rawContent: String): String {
     }
     return ""
 }
+
+internal fun buildDeepSearchSnippet(rawContent: String, query: String): String? {
+    val q = query.trim()
+    if (q.isBlank()) return null
+    val cleaned = com.example.ui.util.ImageMarkers.strip(rawContent)
+        .replace(Regex("\\s+"), " ")
+        .trim()
+    val idx = cleaned.indexOf(q, ignoreCase = true)
+    if (idx < 0) return null
+    val radiusBefore = 36
+    val radiusAfter = 84
+    val start = (idx - radiusBefore).coerceAtLeast(0)
+    val end = (idx + q.length + radiusAfter).coerceAtMost(cleaned.length)
+    val prefix = if (start > 0) "…" else ""
+    val suffix = if (end < cleaned.length) "…" else ""
+    return prefix + cleaned.substring(start, end).trim() + suffix
+}
+
 

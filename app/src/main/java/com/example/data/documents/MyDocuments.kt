@@ -91,4 +91,36 @@ object MyDocuments {
         bytes < 1024 * 1024 -> "${bytes / 1024} KB"
         else -> "%.1f MB".format(bytes / 1024f / 1024f)
     }
+
+    /**
+     * Packages the selected [files] into a ZIP archive in cacheDir (default filename: "My Documents.zip")
+     * with duplicate entry deduplication so multiple files export cleanly in one share sheet.
+     */
+    fun exportAsZip(
+        context: Context,
+        files: List<File>,
+        zipName: String = "My Documents.zip"
+    ): File {
+        val safeZipName = if (zipName.endsWith(".zip", ignoreCase = true)) zipName else "$zipName.zip"
+        val outDir = File(context.cacheDir, "exports").apply { mkdirs() }
+        val outFile = File(outDir, safeZipName)
+        if (outFile.exists()) outFile.delete()
+        val usedNames = HashSet<String>()
+        java.util.zip.ZipOutputStream(outFile.outputStream().buffered()).use { zos ->
+            files.filter { it.exists() && it.isFile }.forEach { file ->
+                var entryName = file.name
+                var n = 2
+                while (!usedNames.add(entryName.lowercase())) {
+                    val base = file.nameWithoutExtension
+                    val ext = file.extension
+                    entryName = if (ext.isNotBlank()) "$base ($n).$ext" else "$base ($n)"
+                    n++
+                }
+                zos.putNextEntry(java.util.zip.ZipEntry(entryName))
+                file.inputStream().use { input -> input.copyTo(zos, 64 * 1024) }
+                zos.closeEntry()
+            }
+        }
+        return outFile
+    }
 }

@@ -191,6 +191,22 @@ object CustomFontManager {
         }
     }
 
+    fun peekCachedFontFamily(fontId: String): FontFamily? {
+        if (fontId.isBlank() || fontId == DEFAULT_FONT_ID) return FontFamily.Default
+        return fontCache[fontId]
+    }
+
+    suspend fun resolveFontFamilyAsync(item: AppFontItem): FontFamily {
+        fontCache[item.id]?.let { return it }
+        if (item.systemFamily != null) {
+            fontCache[item.id] = item.systemFamily
+            return item.systemFamily
+        }
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            resolveFontFamilyForItem(item)
+        }
+    }
+
     fun resolveFontFamilyForItem(item: AppFontItem): FontFamily {
         fontCache[item.id]?.let { return it }
         val fam = when {

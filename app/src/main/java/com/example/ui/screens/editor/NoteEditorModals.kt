@@ -226,10 +226,53 @@ fun NoteEditorModals(
         )
     }
 
-    state.maximizedCodeFence?.let { fence ->
-        MaximizedCodeFenceDialog(
-            fence = fence,
+    if (state.showBoxesEditor) {
+        NoteEditorBoxesScreen(
             isDarkMode = isDarkMode,
+            onDismiss = { state.showBoxesEditor = false },
+            onInsertBoxesMarkdown = { markdown ->
+                val cur = state.contentValue
+                val pos = cur.selection.max.coerceIn(0, cur.text.length)
+                val prefix = if (pos > 0 && cur.text[pos - 1] != '\n') "\n\n" else if (pos > 0) "\n" else ""
+                val insertStr = "$prefix$markdown\n\n"
+                val newText = cur.text.substring(0, pos) + insertStr + cur.text.substring(pos)
+                state.pushUndo()
+                state.spans = RichTextFormatter.adjustSpansForEdit(state.spans, cur.text, newText)
+                state.contentValue = TextFieldValue(newText, TextRange((pos + insertStr.length).coerceAtMost(newText.length)))
+                state.showBoxesEditor = false
+                Toast.makeText(state.context, "Boxes inserted!", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    if (state.showCodeInputModal) {
+        NoteEditorCodeInputScreen(
+            isDarkMode = isDarkMode,
+            onDismiss = { state.showCodeInputModal = false },
+            onDone = { codeTitle, rawCode ->
+                val resolvedTitle = codeTitle.ifBlank {
+                    NoteArtifactCodec.inferHtmlTitle(rawCode, "Interactive Web Code")
+                }
+                val newArt = NoteArtifactCodec.EditableNoteArtifact(
+                    id = "art_${System.currentTimeMillis()}",
+                    kind = NoteArtifactCodec.ArtifactKind.HTML,
+                    title = resolvedTitle,
+                    code = rawCode
+                )
+                state.embeddedArtifacts = state.embeddedArtifacts + newArt
+                state.showCodeInputModal = false
+                Toast.makeText(state.context, "Code added — previews in Note Viewer!", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    state.maximizedCodeFence?.let { fence ->
+        com.example.ui.components.CodeBoxFullscreenDialog(
+            title = fence.title.ifBlank { fence.lang.ifBlank { "Code" } },
+            code = fence.code,
+            lang = fence.lang,
+            isDarkMode = isDarkMode,
+            initialPreview = fence.start in state.previewingCodeFenceStarts,
             onDismiss = { state.maximizedCodeFence = null }
         )
     }

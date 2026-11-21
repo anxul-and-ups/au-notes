@@ -747,6 +747,108 @@ object NoteAgentFormatter {
             }
         }
     }
+
+    data class SurgicalPatchResult(
+        val updatedContent: String,
+        val matchStart: Int,
+        val matchEnd: Int,
+        val replacementLength: Int
+    )
+
+    /**
+     * Surgically locates [findText] inside [original] and replaces ONLY that range with [replaceText],
+     * leaving all surrounding lines and paragraphs 100% untouched.
+     *
+     * Matching order:
+     * 1. Exact substring match.
+     * 2. Trimmed substring match.
+     * 3. Line-trimmed multi-line sequence match (tolerates leading/trailing spaces on lines).
+     * 4. Case-insensitive match.
+     */
+    fun applySurgicalPatch(
+        original: String,
+        findText: String,
+        replaceText: String
+    ): SurgicalPatchResult? {
+        if (findText.isEmpty() || original.isEmpty()) return null
+
+        // 1. Exact match
+        val exactIdx = original.indexOf(findText)
+        if (exactIdx >= 0) {
+            val end = exactIdx + findText.length
+            val updated = original.substring(0, exactIdx) + replaceText + original.substring(end)
+            return SurgicalPatchResult(updated, exactIdx, end, replaceText.length)
+        }
+
+        // 2. Trimmed match
+        val trimmedFind = findText.trim()
+        if (trimmedFind.isNotEmpty() && trimmedFind != findText) {
+            val idx = original.indexOf(trimmedFind)
+            if (idx >= 0) {
+                val end = idx + trimmedFind.length
+                val updated = original.substring(0, idx) + replaceText + original.substring(end)
+                return SurgicalPatchResult(updated, idx, end, replaceText.length)
+            }
+        }
+
+        // 3. Multi-line trimmed sequence match
+        val findLines = trimmedFind.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        if (findLines.isNotEmpty()) {
+            val origLines = original.split("\n")
+            val lineStarts = IntArray(origLines.size)
+            var cursor = 0
+            for (i in origLines.indices) {
+                lineStarts[i] = cursor
+                cursor += origLines[i].length + 1
+            }
+            for (startLine in 0..origLines.size - findLines.size) {
+                var matched = true
+                var origIdx = startLine
+                for (fl in findLines) {
+                    while (origIdx < origLines.size && origLines[origIdx].trim().isEmpty()) {
+                        origIdx++
+                    }
+                    if (origIdx >= origLines.size || !origLines[origIdx].trim().equals(fl, ignoreCase = true)) {
+                        matched = false
+                        break
+                    }
+                    origIdx++
+                }
+                if (matched) {
+                    val lastMatchedLine = (origIdx - 1).coerceAtLeast(startLine)
+                    val matchStart = lineStarts[startLine]
+                    val matchEnd = (lineStarts[lastMatchedLine] + origLines[lastMatchedLine].length).coerceAtMost(original.length)
+                    val updated = original.substring(0, matchStart) + replaceText + original.substring(matchEnd)
+                    return SurgicalPatchResult(updated, matchStart, matchEnd, replaceText.length)
+                }
+            }
+        }
+
+        // 4. Case-insensitive fallback
+        val ciIdx = original.indexOf(trimmedFind, ignoreCase = true)
+        if (ciIdx >= 0 && trimmedFind.isNotEmpty()) {
+            val end = ciIdx + trimmedFind.length
+            val updated = original.substring(0, ciIdx) + replaceText + original.substring(end)
+            return SurgicalPatchResult(updated, ciIdx, end, replaceText.length)
+        }
+
+        // 5. Whitespace-normalized fallback (handles collapsed/extra spaces between tokens)
+        if (trimmedFind.isNotEmpty()) {
+            val tokens = trimmedFind.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (tokens.size >= 2) {
+                val pattern = tokens.joinToString("\\s+") { Regex.escape(it) }
+                val match = Regex(pattern, setOf(RegexOption.IGNORE_CASE)).find(original)
+                if (match != null) {
+                    val start = match.range.first
+                    val end = match.range.last + 1
+                    val updated = original.substring(0, start) + replaceText + original.substring(end)
+                    return SurgicalPatchResult(updated, start, end, replaceText.length)
+                }
+            }
+        }
+
+        return null
+    }
 }
 
 data class AgentChecklistItem(val text: String, val checked: Boolean)

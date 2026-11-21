@@ -30,16 +30,17 @@ import androidx.compose.material.icons.filled.ChecklistRtl
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.Slideshow
 import androidx.compose.material.icons.filled.StickyNote2
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,10 +53,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.documents.MyDocuments
+import com.example.data.documents.TrashBinManager
+import com.example.data.documents.TrashedArtifactItem
+import com.example.data.documents.TrashedDocumentItem
 import com.example.data.preferences.AppPreferences
 import com.example.data.repository.NoteRepository
 import com.example.ui.components.DeletePinDialog
@@ -65,9 +71,11 @@ import com.example.ui.components.NeuIconButton
 import com.example.ui.components.PinLockDialog
 import com.example.ui.components.needsDeleteVerification
 import com.example.ui.theme.CrimsonPrimary
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-private enum class BinSection { HOME, NOTES, FOLDERS }
+private enum class BinSection { HOME, NOTES, FOLDERS, DOCUMENTS, ARTIFACTS }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -81,11 +89,31 @@ fun RecycleBinScreen(
     val scope = rememberCoroutineScope()
     val trashNotes by repository.trashNotes.collectAsState(initial = emptyList())
     val trashFolders by preferences.trashedFolders.collectAsState()
+    val noteTrashTimes by preferences.trashedNoteTimestamps.collectAsState()
+    val folderTrashTimes by preferences.trashedFolderTimestamps.collectAsState()
     val binLocked by preferences.recycleBinLocked.collectAsState()
     val lockPin by preferences.lockPin.collectAsState()
-    val hasCustomPin by preferences.hasCustomPin.collectAsState()
     val secQuestion by preferences.securityQuestion.collectAsState()
     val secAnswer by preferences.securityAnswer.collectAsState()
+
+    var trashedDocs by remember { mutableStateOf<List<TrashedDocumentItem>>(emptyList()) }
+    var trashedArtifacts by remember { mutableStateOf<List<TrashedArtifactItem>>(emptyList()) }
+
+    fun reloadFileTrash() {
+        scope.launch {
+            trashedDocs = withContext(Dispatchers.IO) { TrashBinManager.listTrashedDocuments(context) }
+            trashedArtifacts = withContext(Dispatchers.IO) { TrashBinManager.listTrashedArtifacts(context) }
+        }
+    }
+
+    // Auto-purge ONLY individual items whose own 30-day timer has elapsed (never wipes newer items)
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            TrashBinManager.purgeExpiredItems(context, repository, preferences)
+        }
+        trashedDocs = withContext(Dispatchers.IO) { TrashBinManager.listTrashedDocuments(context) }
+        trashedArtifacts = withContext(Dispatchers.IO) { TrashBinManager.listTrashedArtifacts(context) }
+    }
 
     // The bin asks for the PIN once per visit while it is locked.
     var passed by remember { mutableStateOf(!binLocked) }
@@ -93,19 +121,26 @@ fun RecycleBinScreen(
     var selectMode by remember { mutableStateOf(false) }
     var selectedNotes by remember { mutableStateOf(setOf<Long>()) }
     var selectedFolders by remember { mutableStateOf(setOf<String>()) }
+    var selectedDocIds by remember { mutableStateOf(setOf<String>()) }
+    var selectedArtIds by remember { mutableStateOf(setOf<String>()) }
 
     var showEmptyConfirm by remember { mutableStateOf(false) }
-    var pendingForeverDelete by remember { mutableStateOf<(() -> Unit)?>(null) } // needs confirm dialog
-    var pendingDeleteVerify by remember { mutableStateOf<(() -> Unit)?>(null) }   // needs PIN
+    var pendingForeverDelete by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingDeleteVerify by remember { mutableStateOf<(() -> Unit)?>(null) }
     var showUnlockBinVerify by remember { mutableStateOf(false) }
     var showLockSetup by remember { mutableStateOf(false) }
 
     val textColor = if (isDarkMode) Color.White else Color(0xFF111111)
     val subColor = if (isDarkMode) Color.White.copy(0.6f) else Color.Gray
 
-    fun exitSelect() { selectMode = false; selectedNotes = emptySet(); selectedFolders = emptySet() }
+    fun exitSelect() {
+        selectMode = false
+        selectedNotes = emptySet()
+        selectedFolders = emptySet()
+        selectedDocIds = emptySet()
+        selectedArtIds = emptySet()
+    }
 
-    /** Runs [action] after PIN verification when "Verify PIN while deleting" is on. */
     fun guardDelete(action: () -> Unit) {
         if (needsDeleteVerification(preferences)) pendingDeleteVerify = action else action()
     }
@@ -131,6 +166,8 @@ fun RecycleBinScreen(
         return
     }
 
+    val totalSelected = selectedNotes.size + selectedFolders.size + selectedDocIds.size + selectedArtIds.size
+
     GlassBackground(isDarkMode = isDarkMode) {
         Column(
             modifier = Modifier
@@ -150,7 +187,8 @@ fun RecycleBinScreen(
                         icon = if (selectMode) Icons.Default.Close else Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = "Back",
                         isDarkMode = isDarkMode,
-                        size = 38.dp, iconSize = 18.dp,
+                        size = 38.dp,
+                        iconSize = 18.dp,
                         tint = textColor,
                         onClick = {
                             when {
@@ -163,46 +201,83 @@ fun RecycleBinScreen(
                     Spacer(Modifier.width(12.dp))
                     Text(
                         text = when {
-                            selectMode -> "${selectedNotes.size + selectedFolders.size} selected"
+                            selectMode -> "$totalSelected selected"
                             section == BinSection.NOTES -> "Deleted Notes"
                             section == BinSection.FOLDERS -> "Deleted Folders"
+                            section == BinSection.DOCUMENTS -> "My Documents"
+                            section == BinSection.ARTIFACTS -> "HTML & Slides"
                             else -> "Recycle Bin"
                         },
-                        fontSize = 18.sp, fontWeight = FontWeight.Bold, color = textColor
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textColor
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (section != BinSection.HOME && !selectMode) {
-                        val hasItems = if (section == BinSection.NOTES) trashNotes.isNotEmpty() else trashFolders.isNotEmpty()
-                        if (hasItems) {
-                            NeuIconButton(
-                                icon = Icons.Default.ChecklistRtl,
-                                contentDescription = "Select",
-                                isDarkMode = isDarkMode,
-                                size = 38.dp, iconSize = 18.dp,
-                                tint = CrimsonPrimary,
-                                onClick = { selectMode = true }
-                            )
-                        }
+                if (section != BinSection.HOME && !selectMode) {
+                    val hasItems = when (section) {
+                        BinSection.NOTES -> trashNotes.isNotEmpty()
+                        BinSection.FOLDERS -> trashFolders.isNotEmpty()
+                        BinSection.DOCUMENTS -> trashedDocs.isNotEmpty()
+                        BinSection.ARTIFACTS -> trashedArtifacts.isNotEmpty()
+                        BinSection.HOME -> false
+                    }
+                    if (hasItems) {
+                        NeuIconButton(
+                            icon = Icons.Default.ChecklistRtl,
+                            contentDescription = "Select",
+                            isDarkMode = isDarkMode,
+                            size = 38.dp,
+                            iconSize = 18.dp,
+                            tint = CrimsonPrimary,
+                            onClick = { selectMode = true }
+                        )
                     }
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(14.dp))
 
             when (section) {
                 BinSection.HOME -> {
                     Text(
-                        "Deleted items stay here until you restore or erase them.",
-                        fontSize = 12.sp, color = subColor, modifier = Modifier.padding(bottom = 14.dp)
+                        "Each deleted item keeps its own 30-day countdown and is erased individually after 30 days.",
+                        fontSize = 12.sp,
+                        color = subColor,
+                        modifier = Modifier.padding(bottom = 14.dp)
                     )
-                    BinFolderTile(Icons.Default.StickyNote2, "Notes", "${trashNotes.size} deleted note(s)", isDarkMode) {
-                        section = BinSection.NOTES
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    BinFolderTile(Icons.Default.Folder, "Folders", "${trashFolders.size} deleted folder(s)", isDarkMode) {
-                        section = BinSection.FOLDERS
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        BinFolderTile(
+                            icon = Icons.Default.StickyNote2,
+                            title = "Notes",
+                            subtitle = "${trashNotes.size} deleted note(s)",
+                            isDarkMode = isDarkMode,
+                            testTag = "bin_folder_notes"
+                        ) { section = BinSection.NOTES }
+
+                        BinFolderTile(
+                            icon = Icons.Default.Folder,
+                            title = "Folders",
+                            subtitle = "${trashFolders.size} deleted folder(s)",
+                            isDarkMode = isDarkMode,
+                            testTag = "bin_folder_folders"
+                        ) { section = BinSection.FOLDERS }
+
+                        BinFolderTile(
+                            icon = Icons.Default.Description,
+                            title = "My Documents",
+                            subtitle = "${trashedDocs.size} deleted file(s)",
+                            isDarkMode = isDarkMode,
+                            testTag = "bin_folder_documents"
+                        ) { section = BinSection.DOCUMENTS }
+
+                        BinFolderTile(
+                            icon = Icons.Default.Slideshow,
+                            title = "HTML & Slides",
+                            subtitle = "${trashedArtifacts.size} deleted artifact(s)",
+                            isDarkMode = isDarkMode,
+                            testTag = "bin_folder_artifacts"
+                        ) { section = BinSection.ARTIFACTS }
                     }
                 }
 
@@ -216,9 +291,11 @@ fun RecycleBinScreen(
                         ) {
                             items(trashNotes, key = { it.id }) { note ->
                                 val selected = note.id in selectedNotes
+                                val deletedAt = noteTrashTimes[note.id] ?: note.updatedAt
+                                val expiryLabel = TrashBinManager.formatExpiryLabel(deletedAt)
                                 BinRow(
-                                    title = note.title,
-                                    subtitle = "Deleted • ${note.category}",
+                                    title = note.title.ifBlank { "Untitled Note" },
+                                    subtitle = "${note.category} • $expiryLabel",
                                     selectMode = selectMode,
                                     selected = selected,
                                     isDarkMode = isDarkMode,
@@ -232,6 +309,7 @@ fun RecycleBinScreen(
                                     onRestore = {
                                         scope.launch {
                                             repository.restoreFromTrash(note.id)
+                                            preferences.clearNoteTrashed(note.id)
                                             Toast.makeText(context, "Restored note", Toast.LENGTH_SHORT).show()
                                         }
                                     },
@@ -240,6 +318,7 @@ fun RecycleBinScreen(
                                             guardDelete {
                                                 scope.launch {
                                                     repository.permanentDelete(note.id)
+                                                    preferences.clearNoteTrashed(note.id)
                                                     Toast.makeText(context, "Permanently deleted", Toast.LENGTH_SHORT).show()
                                                 }
                                             }
@@ -268,9 +347,11 @@ fun RecycleBinScreen(
                         ) {
                             items(trashFolders, key = { it }) { name ->
                                 val selected = name in selectedFolders
+                                val deletedAt = folderTrashTimes[name] ?: System.currentTimeMillis()
+                                val expiryLabel = TrashBinManager.formatExpiryLabel(deletedAt)
                                 BinRow(
                                     title = name,
-                                    subtitle = "Deleted folder",
+                                    subtitle = "Folder • $expiryLabel",
                                     selectMode = selectMode,
                                     selected = selected,
                                     isDarkMode = isDarkMode,
@@ -298,11 +379,113 @@ fun RecycleBinScreen(
                         }
                     }
                 }
+
+                BinSection.DOCUMENTS -> {
+                    if (trashedDocs.isEmpty()) {
+                        EmptyBin("No deleted documents", isDarkMode)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(trashedDocs, key = { it.id }) { doc ->
+                                val selected = doc.id in selectedDocIds
+                                val expiryLabel = TrashBinManager.formatExpiryLabel(doc.deletedAt)
+                                BinRow(
+                                    title = doc.originalName,
+                                    subtitle = "${MyDocuments.humanSize(doc.sizeBytes)} • $expiryLabel",
+                                    selectMode = selectMode,
+                                    selected = selected,
+                                    isDarkMode = isDarkMode,
+                                    onClick = {
+                                        if (selectMode) selectedDocIds = if (selected) selectedDocIds - doc.id else selectedDocIds + doc.id
+                                    },
+                                    onLongClick = {
+                                        selectMode = true
+                                        selectedDocIds = selectedDocIds + doc.id
+                                    },
+                                    onRestore = {
+                                        scope.launch {
+                                            val ok = withContext(Dispatchers.IO) { TrashBinManager.restoreDocument(context, doc.id) }
+                                            reloadFileTrash()
+                                            Toast.makeText(context, if (ok) "Restored to My Documents" else "Restore failed", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onDeleteForever = {
+                                        pendingForeverDelete = {
+                                            guardDelete {
+                                                scope.launch {
+                                                    withContext(Dispatchers.IO) { TrashBinManager.deleteDocumentForever(context, doc.id) }
+                                                    reloadFileTrash()
+                                                    Toast.makeText(context, "Document deleted forever", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                BinSection.ARTIFACTS -> {
+                    if (trashedArtifacts.isEmpty()) {
+                        EmptyBin("No deleted HTML or Slides", isDarkMode)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(trashedArtifacts, key = { it.id }) { art ->
+                                val selected = art.id in selectedArtIds
+                                val expiryLabel = TrashBinManager.formatExpiryLabel(art.deletedAt)
+                                BinRow(
+                                    title = art.title,
+                                    subtitle = "${art.kind} • $expiryLabel",
+                                    selectMode = selectMode,
+                                    selected = selected,
+                                    isDarkMode = isDarkMode,
+                                    onClick = {
+                                        if (selectMode) selectedArtIds = if (selected) selectedArtIds - art.id else selectedArtIds + art.id
+                                    },
+                                    onLongClick = {
+                                        selectMode = true
+                                        selectedArtIds = selectedArtIds + art.id
+                                    },
+                                    onRestore = {
+                                        scope.launch {
+                                            val ok = withContext(Dispatchers.IO) { TrashBinManager.restoreArtifact(context, art.id) }
+                                            reloadFileTrash()
+                                            Toast.makeText(context, if (ok) "Restored to HTML & Slides" else "Restore failed", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onDeleteForever = {
+                                        pendingForeverDelete = {
+                                            guardDelete {
+                                                scope.launch {
+                                                    withContext(Dispatchers.IO) { TrashBinManager.deleteArtifactForever(context, art.id) }
+                                                    reloadFileTrash()
+                                                    Toast.makeText(context, "Artifact deleted forever", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             // ---- Multi-select action bar ----
             if (selectMode) {
-                val count = selectedNotes.size + selectedFolders.size
+                val allSelected = when (section) {
+                    BinSection.NOTES -> selectedNotes.size == trashNotes.size && trashNotes.isNotEmpty()
+                    BinSection.FOLDERS -> selectedFolders.size == trashFolders.size && trashFolders.isNotEmpty()
+                    BinSection.DOCUMENTS -> selectedDocIds.size == trashedDocs.size && trashedDocs.isNotEmpty()
+                    BinSection.ARTIFACTS -> selectedArtIds.size == trashedArtifacts.size && trashedArtifacts.isNotEmpty()
+                    BinSection.HOME -> false
+                }
                 Spacer(Modifier.height(8.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -310,43 +493,69 @@ fun RecycleBinScreen(
                 ) {
                     ActionPill(
                         modifier = Modifier.weight(1f),
-                        label = if (section == BinSection.NOTES && selectedNotes.size == trashNotes.size ||
-                            section == BinSection.FOLDERS && selectedFolders.size == trashFolders.size) "Clear" else "Select all",
-                        color = Color.Gray, isDarkMode = isDarkMode
+                        label = if (allSelected) "Clear" else "Select all",
+                        color = Color.Gray,
+                        isDarkMode = isDarkMode
                     ) {
-                        if (section == BinSection.NOTES) {
-                            selectedNotes = if (selectedNotes.size == trashNotes.size) emptySet() else trashNotes.map { it.id }.toSet()
-                        } else {
-                            selectedFolders = if (selectedFolders.size == trashFolders.size) emptySet() else trashFolders.toSet()
+                        when (section) {
+                            BinSection.NOTES -> selectedNotes = if (allSelected) emptySet() else trashNotes.map { it.id }.toSet()
+                            BinSection.FOLDERS -> selectedFolders = if (allSelected) emptySet() else trashFolders.toSet()
+                            BinSection.DOCUMENTS -> selectedDocIds = if (allSelected) emptySet() else trashedDocs.map { it.id }.toSet()
+                            BinSection.ARTIFACTS -> selectedArtIds = if (allSelected) emptySet() else trashedArtifacts.map { it.id }.toSet()
+                            BinSection.HOME -> Unit
                         }
                     }
                     ActionPill(
                         modifier = Modifier.weight(1f),
-                        label = "Restore ($count)",
-                        color = Color(0xFF2CB552), isDarkMode = isDarkMode
+                        label = "Restore ($totalSelected)",
+                        color = Color(0xFF2CB552),
+                        isDarkMode = isDarkMode
                     ) {
-                        if (count == 0) return@ActionPill
+                        if (totalSelected == 0) return@ActionPill
+                        val nIds = selectedNotes
+                        val fNames = selectedFolders
+                        val dIds = selectedDocIds
+                        val aIds = selectedArtIds
                         scope.launch {
-                            repository.restoreFromTrash(selectedNotes)
-                            selectedFolders.forEach { preferences.restoreTrashedFolder(it) }
-                            Toast.makeText(context, "Restored $count item(s)", Toast.LENGTH_SHORT).show()
+                            if (nIds.isNotEmpty()) {
+                                repository.restoreFromTrash(nIds)
+                                nIds.forEach { preferences.clearNoteTrashed(it) }
+                            }
+                            fNames.forEach { preferences.restoreTrashedFolder(it) }
+                            withContext(Dispatchers.IO) {
+                                dIds.forEach { TrashBinManager.restoreDocument(context, it) }
+                                aIds.forEach { TrashBinManager.restoreArtifact(context, it) }
+                            }
+                            reloadFileTrash()
+                            Toast.makeText(context, "Restored $totalSelected item(s)", Toast.LENGTH_SHORT).show()
                             exitSelect()
                         }
                     }
                     ActionPill(
                         modifier = Modifier.weight(1f),
-                        label = "Delete ($count)",
-                        color = Color(0xFFDC2626), isDarkMode = isDarkMode
+                        label = "Delete ($totalSelected)",
+                        color = Color(0xFFDC2626),
+                        isDarkMode = isDarkMode
                     ) {
-                        if (count == 0) return@ActionPill
-                        val notesToDelete = selectedNotes
-                        val foldersToDelete = selectedFolders
+                        if (totalSelected == 0) return@ActionPill
+                        val nIds = selectedNotes
+                        val fNames = selectedFolders
+                        val dIds = selectedDocIds
+                        val aIds = selectedArtIds
                         pendingForeverDelete = {
                             guardDelete {
                                 scope.launch {
-                                    repository.permanentDelete(notesToDelete)
-                                    foldersToDelete.forEach { preferences.deleteTrashedFolderForever(it) }
-                                    Toast.makeText(context, "Deleted ${notesToDelete.size + foldersToDelete.size} item(s) forever", Toast.LENGTH_SHORT).show()
+                                    if (nIds.isNotEmpty()) {
+                                        repository.permanentDelete(nIds)
+                                        nIds.forEach { preferences.clearNoteTrashed(it) }
+                                    }
+                                    fNames.forEach { preferences.deleteTrashedFolderForever(it) }
+                                    withContext(Dispatchers.IO) {
+                                        dIds.forEach { TrashBinManager.deleteDocumentForever(context, it) }
+                                        aIds.forEach { TrashBinManager.deleteArtifactForever(context, it) }
+                                    }
+                                    reloadFileTrash()
+                                    Toast.makeText(context, "Deleted ${nIds.size + fNames.size + dIds.size + aIds.size} item(s) forever", Toast.LENGTH_SHORT).show()
                                     exitSelect()
                                 }
                             }
@@ -382,6 +591,7 @@ fun RecycleBinScreen(
                     showEmptyConfirm = false
                     guardDelete {
                         scope.launch {
+                            trashNotes.forEach { preferences.clearNoteTrashed(it.id) }
                             repository.emptyTrash()
                             Toast.makeText(context, "Deleted notes erased", Toast.LENGTH_SHORT).show()
                         }
@@ -450,22 +660,31 @@ private fun EmptyBin(message: String, isDarkMode: Boolean) {
 }
 
 @Composable
-private fun BinFolderTile(icon: ImageVector, title: String, subtitle: String, isDarkMode: Boolean, onClick: () -> Unit) {
+private fun BinFolderTile(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    isDarkMode: Boolean,
+    testTag: String = "",
+    onClick: () -> Unit
+) {
     GlassCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (testTag.isNotBlank()) Modifier.testTag(testTag) else Modifier),
         shape = RoundedCornerShape(16.dp),
         isDarkMode = isDarkMode,
         elevation = 3.dp,
         onClick = onClick
     ) {
-        Row(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
-                modifier = Modifier.size(46.dp).clip(RoundedCornerShape(14.dp)).background(CrimsonPrimary.copy(alpha = 0.15f)),
+                modifier = Modifier.size(44.dp).clip(RoundedCornerShape(13.dp)).background(CrimsonPrimary.copy(alpha = 0.15f)),
                 contentAlignment = Alignment.Center
-            ) { Icon(icon, null, tint = CrimsonPrimary, modifier = Modifier.size(24.dp)) }
+            ) { Icon(icon, null, tint = CrimsonPrimary, modifier = Modifier.size(22.dp)) }
             Spacer(Modifier.width(14.dp))
             Column {
-                Text(title, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
+                Text(title, fontSize = 15.5.sp, fontWeight = FontWeight.Bold, color = if (isDarkMode) Color.White else Color.Black)
                 Text(subtitle, fontSize = 12.sp, color = Color.Gray)
             }
         }
@@ -512,21 +731,34 @@ private fun BinRow(
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                title,
+                fontSize = 14.5.sp,
+                fontWeight = FontWeight.SemiBold,
                 color = if (isDarkMode) Color.White else Color.Black,
-                maxLines = 1, overflow = TextOverflow.Ellipsis
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-            Text(subtitle, fontSize = 11.sp, color = CrimsonPrimary)
+            Text(subtitle, fontSize = 11.sp, color = CrimsonPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (!selectMode) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 NeuIconButton(
-                    icon = Icons.Default.Restore, contentDescription = "Restore", isDarkMode = isDarkMode,
-                    size = 36.dp, iconSize = 18.dp, tint = Color(0xFF2CF95F), onClick = onRestore
+                    icon = Icons.Default.Restore,
+                    contentDescription = "Restore",
+                    isDarkMode = isDarkMode,
+                    size = 36.dp,
+                    iconSize = 18.dp,
+                    tint = Color(0xFF2CF95F),
+                    onClick = onRestore
                 )
                 NeuIconButton(
-                    icon = Icons.Default.DeleteForever, contentDescription = "Delete Forever", isDarkMode = isDarkMode,
-                    size = 36.dp, iconSize = 18.dp, tint = Color(0xFFFF5252), onClick = onDeleteForever
+                    icon = Icons.Default.DeleteForever,
+                    contentDescription = "Delete Forever",
+                    isDarkMode = isDarkMode,
+                    size = 36.dp,
+                    iconSize = 18.dp,
+                    tint = Color(0xFFFF5252),
+                    onClick = onDeleteForever
                 )
             }
         }

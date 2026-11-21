@@ -148,6 +148,9 @@ fun MyDocumentsScreen(
     var searchQuery by remember { mutableStateOf("") }
     var viewing by remember { mutableStateOf<File?>(null) }
     var menuFor by remember { mutableStateOf<File?>(null) }
+    var selectMode by remember { mutableStateOf(false) }
+    var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var exportingZip by remember { mutableStateOf(false) }
     var showNotePicker by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
     var ocrRunningFile by remember { mutableStateOf<File?>(null) }
@@ -156,6 +159,11 @@ fun MyDocumentsScreen(
     val clipboard = LocalClipboardManager.current
     val userPreferences = remember { com.example.data.preferences.AppPreferences(context) }
     val allNotes by repository.allActiveNotes.collectAsState(initial = emptyList())
+
+    fun exitSelectMode() {
+        selectMode = false
+        selectedPaths = emptySet()
+    }
 
     fun runDocumentOcr(target: File) {
         if (ocrRunningFile != null) return
@@ -228,35 +236,121 @@ fun MyDocumentsScreen(
         }
     }
 
-    BackHandler { if (viewing != null) viewing = null else onBack() }
+    BackHandler {
+        when {
+            viewing != null -> viewing = null
+            selectMode -> exitSelectMode()
+            else -> onBack()
+        }
+    }
 
     GlassBackground(isDarkMode = isDarkMode) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-            // Top Bar
+            // Top Bar (switches to bulk Select / Export ZIP / Delete bar when in selectMode)
             Row(
                 Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = fg) }
+                IconButton(onClick = { if (selectMode) exitSelectMode() else onBack() }) {
+                    Icon(
+                        if (selectMode) Icons.Default.Close else Icons.AutoMirrored.Filled.ArrowBack,
+                        if (selectMode) "Exit selection" else "Back",
+                        tint = fg
+                    )
+                }
                 Column(Modifier.weight(1f)) {
-                    Text("My Documents", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = fg)
-                    Text("${files.size} file${if (files.size == 1) "" else "s"} • Artifacts preview", fontSize = 11.sp, color = sub)
+                    Text(
+                        if (selectMode) "${selectedPaths.size} selected" else "My Documents",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = fg
+                    )
+                    Text(
+                        if (selectMode) "Tap items to select • Export ZIP or Delete"
+                        else "${files.size} file${if (files.size == 1) "" else "s"} • Artifacts preview",
+                        fontSize = 11.sp,
+                        color = sub
+                    )
                 }
-                IconButton(onClick = { showNotePicker = true }) { Icon(Icons.Default.StickyNote2, "Add note as doc", tint = fg) }
-                Box(
-                    Modifier
-                        .size(38.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(CrimsonPrimary)
-                        .clickable(enabled = !importing) { picker.launch(arrayOf("*/*")) },
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (importing) CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
-                    else Icon(Icons.Default.Add, "Add files", tint = Color.White)
+                if (selectMode) {
+                    // Select All / Deselect All
+                    IconButton(
+                        onClick = {
+                            selectedPaths = if (selectedPaths.size == filteredFiles.size) emptySet()
+                            else filteredFiles.map { it.absolutePath }.toSet()
+                        }
+                    ) {
+                        Icon(
+                            if (selectedPaths.size == filteredFiles.size && filteredFiles.isNotEmpty()) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                            "Select all",
+                            tint = CrimsonPrimary
+                        )
+                    }
+                    // Export Selected as "My Documents.zip"
+                    IconButton(
+                        enabled = selectedPaths.isNotEmpty() && !exportingZip,
+                        onClick = {
+                            val chosen = files.filter { it.absolutePath in selectedPaths }
+                            if (chosen.isEmpty()) return@IconButton
+                            exportingZip = true
+                            scope.launch {
+                                val zipFile = withContext(Dispatchers.IO) {
+                                    runCatching { MyDocuments.exportAsZip(context, chosen, "My Documents.zip") }.getOrNull()
+                                }
+                                exportingZip = false
+                                if (zipFile != null && zipFile.exists()) {
+                                    shareDocument(context, zipFile)
+                                    Toast.makeText(context, "Exported ${chosen.size} file(s) as My Documents.zip", Toast.LENGTH_SHORT).show()
+                                    exitSelectMode()
+                                } else {
+                                    Toast.makeText(context, "Failed to create My Documents.zip", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    ) {
+                        if (exportingZip) CircularProgressIndicator(Modifier.size(18.dp), color = CrimsonPrimary, strokeWidth = 2.dp)
+                        else Icon(Icons.Default.Share, "Export as My Documents.zip", tint = CrimsonPrimary)
+                    }
+                    // Delete Selected -> Move to Recycle Bin
+                    IconButton(
+                        enabled = selectedPaths.isNotEmpty(),
+                        onClick = {
+                            val chosen = files.filter { it.absolutePath in selectedPaths }
+                            if (chosen.isEmpty()) return@IconButton
+                            scope.launch {
+                                val trashedCount = withContext(Dispatchers.IO) {
+                                    chosen.count { com.example.data.documents.TrashBinManager.trashDocument(context, it) != null }
+                                }
+                                refresh()
+                                exitSelectMode()
+                                Toast.makeText(context, "Moved $trashedCount file(s) to Recycle Bin", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    ) {
+                        Icon(Icons.Default.Delete, "Move selected to Recycle Bin", tint = Color(0xFFEF4444))
+                    }
+                } else {
+                    if (files.isNotEmpty()) {
+                        IconButton(onClick = { selectMode = true }) {
+                            Icon(Icons.Default.CheckBoxOutlineBlank, "Select multiple", tint = CrimsonPrimary)
+                        }
+                    }
+                    IconButton(onClick = { showNotePicker = true }) { Icon(Icons.Default.StickyNote2, "Add note as doc", tint = fg) }
+                    Box(
+                        Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(CrimsonPrimary)
+                            .clickable(enabled = !importing) { picker.launch(arrayOf("*/*")) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (importing) CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                        else Icon(Icons.Default.Add, "Add files", tint = Color.White)
+                    }
+                    Spacer(Modifier.width(6.dp))
                 }
-                Spacer(Modifier.width(6.dp))
             }
 
             // Global Search Bar across all saved documents
@@ -331,11 +425,24 @@ fun MyDocumentsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(filteredFiles, key = { it.absolutePath }) { f ->
+                        val isSel = f.absolutePath in selectedPaths
                         DocumentCard(
                             file = f,
                             isDarkMode = isDarkMode,
                             searchQuery = searchQuery,
-                            onOpen = { viewing = f },
+                            selectMode = selectMode,
+                            selected = isSel,
+                            onOpen = {
+                                if (selectMode) {
+                                    selectedPaths = if (isSel) selectedPaths - f.absolutePath else selectedPaths + f.absolutePath
+                                } else {
+                                    viewing = f
+                                }
+                            },
+                            onLongPress = {
+                                selectMode = true
+                                selectedPaths = selectedPaths + f.absolutePath
+                            },
                             onMenu = { menuFor = f }
                         )
                     }
@@ -347,7 +454,7 @@ fun MyDocumentsScreen(
     var renamingFile by remember { mutableStateOf<File?>(null) }
     var renameInput by remember { mutableStateOf("") }
 
-    // Long-press / ⋮ menu
+    // ⋮ menu (Export ZIP / Share / OCR / Rename / Move to Recycle Bin)
     menuFor?.let { f ->
         val fKind = MyDocuments.kindOf(f)
         val supportsOcr = fKind == MyDocuments.Kind.IMAGE || fKind == MyDocuments.Kind.PDF || fKind == MyDocuments.Kind.TEXT
@@ -363,7 +470,7 @@ fun MyDocumentsScreen(
                             menuFor = null
                             runDocumentOcr(target)
                         }) {
-                            Text("OCR Text", color = CrimsonPrimary, fontWeight = FontWeight.ExtraBold)
+                            Text("OCR", color = CrimsonPrimary, fontWeight = FontWeight.ExtraBold)
                         }
                     }
                     TextButton(onClick = {
@@ -371,17 +478,22 @@ fun MyDocumentsScreen(
                         renamingFile = f
                         menuFor = null
                     }) { Text("Rename", color = CrimsonPrimary, fontWeight = FontWeight.Bold) }
-                    TextButton(onClick = { shareDocument(context, f); menuFor = null }) { Text("Share") }
+                    TextButton(onClick = { shareDocument(context, f); menuFor = null }) { Text("Export") }
                 }
             },
             dismissButton = {
                 Row {
                     TextButton(onClick = {
-                        f.delete()
-                        refresh()
+                        val target = f
                         menuFor = null
-                        Toast.makeText(context, "Removed from My Documents", Toast.LENGTH_SHORT).show()
-                    }) { Text("Remove", color = Color(0xFFEF4444)) }
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                com.example.data.documents.TrashBinManager.trashDocument(context, target)
+                            }
+                            refresh()
+                            Toast.makeText(context, "Moved to Recycle Bin", Toast.LENGTH_SHORT).show()
+                        }
+                    }) { Text("Delete", color = Color(0xFFEF4444)) }
                     TextButton(onClick = { menuFor = null }) { Text("Close") }
                 }
             }
@@ -694,14 +806,17 @@ private fun DocumentCard(
     file: File,
     isDarkMode: Boolean,
     searchQuery: String,
+    selectMode: Boolean = false,
+    selected: Boolean = false,
     onOpen: () -> Unit,
+    onLongPress: () -> Unit = {},
     onMenu: () -> Unit
 ) {
     val kind = remember(file) { MyDocuments.kindOf(file) }
     val fg = if (isDarkMode) Color.White else Color(0xFF111111)
     val cardBg = if (isDarkMode) Color(0xFF161821) else Color.White
     val headerBg = if (isDarkMode) Color(0xFF222631) else Color(0xFFF1F5F9)
-    val borderColor = if (isDarkMode) Color(0xFF2E3342) else Color(0xFFE2E8F0)
+    val borderColor = if (selected) CrimsonPrimary else if (isDarkMode) Color(0xFF2E3342) else Color(0xFFE2E8F0)
     var thumb by remember(file.absolutePath, file.lastModified()) { mutableStateOf<Bitmap?>(null) }
 
     LaunchedEffect(file.absolutePath, file.lastModified()) {
@@ -751,9 +866,9 @@ private fun DocumentCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(cardBg)
-            .border(1.dp, borderColor, RoundedCornerShape(14.dp))
-            .combinedClickable(onClick = onOpen, onLongClick = onMenu)
+            .background(if (selected) CrimsonPrimary.copy(alpha = 0.12f) else cardBg)
+            .border(if (selected) 1.8.dp else 1.dp, borderColor, RoundedCornerShape(14.dp))
+            .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
     ) {
         // Prominent File Name Header directly ABOVE the preview card (user requirement)
         Row(
@@ -765,20 +880,30 @@ private fun DocumentCard(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(CrimsonPrimary)
-                        .padding(horizontal = 4.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        (file.extension.ifBlank { "DOC" }).uppercase().take(4),
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
+                if (selectMode) {
+                    Icon(
+                        imageVector = if (selected) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                        contentDescription = if (selected) "Selected" else "Not selected",
+                        tint = if (selected) CrimsonPrimary else fg.copy(alpha = 0.5f),
+                        modifier = Modifier.size(16.dp)
                     )
+                    Spacer(Modifier.width(5.dp))
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(CrimsonPrimary)
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            (file.extension.ifBlank { "DOC" }).uppercase().take(4),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
                 }
-                Spacer(Modifier.width(6.dp))
                 Text(
                     text = highlightedName,
                     fontSize = 11.5.sp,
@@ -788,8 +913,10 @@ private fun DocumentCard(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            IconButton(onClick = onMenu, modifier = Modifier.size(24.dp)) {
-                Text("⋮", color = fg.copy(alpha = 0.8f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            if (!selectMode) {
+                IconButton(onClick = onMenu, modifier = Modifier.size(24.dp)) {
+                    Text("⋮", color = fg.copy(alpha = 0.8f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
 

@@ -152,7 +152,7 @@ object NoteExporter {
     fun buildPlainText(note: NoteEntity): String {
         // (marker lines like [img:abc123] are layout data, never exported as text)
         val sb = StringBuilder()
-        sb.append(note.title).append("\n==================\n").append(ImageMarkers.strip(note.content))
+        sb.append(ImageMarkers.strip(note.content))
         val rows = tableRows(note)
         if (rows.isNotEmpty()) {
             sb.append("\n\n[Table]\n")
@@ -389,11 +389,29 @@ object NoteExporter {
         var canvas: Canvas? = null
         var pageNo = 0
         var y = MARGIN
+        var lastRuleY = 0f
         val bottom = pageH - MARGIN
         val contentW = PAGE_W - 2 * MARGIN
+        val usesDynamicRules: Boolean = com.example.ui.components.normalizeStyleKey(pageStyle) in setOf("ruled", "legal", "cornell")
+
+        fun fillRemainingRules() {
+            val c = canvas ?: return
+            if (!usesDynamicRules) return
+            val safeStep = lineStep.coerceIn(16f, 38f)
+            val norm = com.example.ui.components.normalizeStyleKey(pageStyle)
+            val maxY = if (norm == "cornell") pageH - 120f else pageH - 36f
+            var ry = if (lastRuleY > 0f) lastRuleY + safeStep else (MARGIN + safeStep)
+            while (ry < maxY) {
+                com.example.ui.components.drawPdfHorizontalRuleLine(c, pageStyle, PAGE_W.toFloat(), pageH.toFloat(), ry)
+                ry += safeStep
+            }
+        }
 
         fun newPage() {
-            page?.let { doc.finishPage(it) }
+            if (page != null) {
+                fillRemainingRules()
+                doc.finishPage(page!!)
+            }
             pageNo++
             page = doc.startPage(PdfDocument.PageInfo.Builder(PAGE_W, pageH, pageNo).create())
             canvas = page!!.canvas
@@ -402,16 +420,21 @@ object NoteExporter {
                 style = pageStyle,
                 pageW = PAGE_W.toFloat(),
                 pageH = pageH.toFloat(),
-                lineStep = lineStep
+                lineStep = lineStep,
+                drawHorizontalLines = !usesDynamicRules
             )
             drawWatermark(canvas!!, pageH)
             y = MARGIN
+            lastRuleY = 0f
         }
 
         fun ensure(height: Float) { if (page == null || (!single && y + height > bottom)) newPage() }
 
         fun finish(file: File) {
-            page?.let { doc.finishPage(it) }
+            if (page != null) {
+                fillRemainingRules()
+                doc.finishPage(page!!)
+            }
             FileOutputStream(file).use { doc.writeTo(it) }
             doc.close()
         }
@@ -444,7 +467,6 @@ object NoteExporter {
             sb.insert(pos.coerceIn(0, sb.length), m)
         }
         val out = StringBuilder()
-        out.append("# ").append(note.title.ifBlank { "Untitled Note" }).append("\n\n")
         out.append(sb.toString().trimEnd())
         out.append("\n")
         val rows = tableRows(note)
@@ -562,10 +584,11 @@ object NoteExporter {
         return sp
     }
 
-    /** Draws a layout across as many pages as needed, splitting between lines. */
-    private fun drawLayout(pager: Pager, layout: StaticLayout, left: Float) {
+    /** Draws a layout across as many pages as needed, splitting between lines and drawing dynamic aligned rules. */
+    private fun drawLayout(pager: Pager, layout: StaticLayout, left: Float, drawRules: Boolean = true) {
         var line = 0
         val total = layout.lineCount
+        val rawText = layout.text
         while (line < total) {
             pager.ensure((layout.getLineBottom(line) - layout.getLineTop(line)).toFloat())
             val startTop = layout.getLineTop(line)
@@ -574,6 +597,31 @@ object NoteExporter {
             if (end == line) end = line + 1 // a single very tall line: draw it anyway
             val endBottom = layout.getLineBottom(end - 1)
             val c = pager.canvas!!
+            if (drawRules && pager.usesDynamicRules) {
+                for (ln in line until end) {
+                    val lStart = layout.getLineStart(ln).coerceIn(0, rawText.length)
+                    val lEnd = layout.getLineEnd(ln).coerceIn(lStart, rawText.length)
+                    val lineStr = rawText.subSequence(lStart, lEnd).toString().trimEnd('\n', '\r')
+                    val lTop = pager.y + (layout.getLineTop(ln) - startTop)
+                    val lBase = pager.y + (layout.getLineBaseline(ln) - startTop)
+                    val lBot = pager.y + (layout.getLineBottom(ln) - startTop)
+                    val ruleY = NoteArtifactCodec.computeRuleYForLine(
+                        lineText = lineStr,
+                        lineTop = lTop,
+                        lineBaseline = lBase,
+                        lineBottom = lBot,
+                        baselineOffsetPx = 2.2f
+                    )
+                    com.example.ui.components.drawPdfHorizontalRuleLine(
+                        canvas = c,
+                        style = pager.pageStyle,
+                        pageW = PAGE_W.toFloat(),
+                        pageH = pager.pageH.toFloat(),
+                        y = ruleY
+                    )
+                    if (ruleY > pager.lastRuleY) pager.lastRuleY = ruleY
+                }
+            }
             c.save()
             c.translate(left, pager.y - startTop)
             c.clipRect(0f, startTop.toFloat(), layout.width.toFloat(), endBottom.toFloat())
@@ -585,16 +633,26 @@ object NoteExporter {
         }
     }
 
-    private fun makeLayout(text: CharSequence, paint: TextPaint, width: Int): StaticLayout =
-        StaticLayout.Builder.obtain(text, 0, text.length, paint, width)
-            .setLineSpacing(3f, 1f).setIncludePad(false).setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
+    private fun makeLayout(
+        text: CharSequence,
+        paint: TextPaint,
+        width: Int,
+        lineSpacingMult: Float = 1.15f,
+        lineSpacingAdd: Float = 3f
+    ): StaticLayout =
+        StaticLayout.Builder.obtain(text, 0, text.length, paint, width.coerceAtLeast(40))
+            .setLineSpacing(lineSpacingAdd, lineSpacingMult)
+            .setIncludePad(false)
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .build()
 
     /**
      * Draws one image at the current position with its saved edit (rotation, crop, zoom, offset)
      * and its saved size (fraction of the page's content width).
      */
-    private fun drawImageAt(pager: Pager, att: RichTextFormatter.AttachmentInfo, paint: TextPaint, cw: Int) {
+    private fun drawImageAt(pager: Pager, att: RichTextFormatter.AttachmentInfo, paint: TextPaint, cw: Int, bodyLeft: Float = MARGIN) {
         val ctx = appContext
+        val availW = (PAGE_W - MARGIN - bodyLeft).coerceAtLeast(100f)
         if (att.fullPage && !pager.single) {
             // dedicated page: the image alone, centred, aspect ratio kept
             if (pager.y > MARGIN + 1f) pager.newPage()
@@ -612,7 +670,7 @@ object NoteExporter {
         }
         pager.y += 6f
         val maxH = pager.bottom - MARGIN
-        var w = pager.contentW * att.widthFraction.coerceIn(0.2f, 1f)
+        var w = availW * att.widthFraction.coerceIn(0.25f, 1f)
         var h = AttachmentRenderer.frameHeightPx(att, w, ctx)
         if (h > maxH) { w *= maxH / h; h = maxH }
         // Fit into the space that is LEFT on this page instead of leaving it blank and jumping to the next page
@@ -622,14 +680,15 @@ object NoteExporter {
         }
         val bmp = AttachmentRenderer.frameBitmap(att, (w * 4).toInt().coerceIn(400, 3600), context = ctx)
         if (bmp == null) {
-            drawLayout(pager, makeLayout("[Image could not be loaded: ${att.fileName}]", paint, cw), MARGIN)
+            drawLayout(pager, makeLayout("[Image could not be loaded: ${att.fileName}]", paint, cw), bodyLeft, drawRules = false)
             return
         }
         pager.ensure(h)
-        val left = MARGIN
+        val left = bodyLeft + (availW - w) / 2f
         pager.canvas!!.drawBitmap(bmp, null, android.graphics.RectF(left, pager.y, left + w, pager.y + h),
             Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
         pager.y += h + 6f
+        if (pager.y > pager.lastRuleY) pager.lastRuleY = pager.y
     }
 
     private fun drawDecodedBitmapAt(pager: Pager, bmp: Bitmap) {
@@ -656,11 +715,18 @@ object NoteExporter {
     /** Writes the PDF; returns how far down the last page was filled (used to size single-page PDFs). */
     private fun writePdfPass(note: NoteEntity, target: File, pageH: Int, single: Boolean): Float {
         val (notePageStyle, noteLineSpacing) = com.example.ui.components.loadNotePageStyle(appContext, note.id)
-        val pdfLineStep = (note.fontSize.coerceIn(9, 28).toFloat() * noteLineSpacing.coerceIn(1.0f, 2.2f) * 0.9f).coerceIn(14f, 44f)
+        val normStyle = com.example.ui.components.normalizeStyleKey(notePageStyle)
+        val safeLineMult = noteLineSpacing.coerceIn(1.05f, 2.2f)
+        val bodyTextSizePt = note.fontSize.coerceIn(9, 28).toFloat() * 0.85f
+        val pdfLineStep = (bodyTextSizePt * safeLineMult + 3f).coerceIn(16f, 44f)
         val pager = Pager(pageH, single, notePageStyle, pdfLineStep)
         pager.newPage()
         val cw = pager.contentW.toInt()
-        val bodyLeft = if (notePageStyle in listOf("ruled", "legal")) MARGIN + 14f else MARGIN
+        val bodyLeft = when (normStyle) {
+            "ruled", "legal" -> maxOf(MARGIN, 56f)
+            "cornell" -> (PAGE_W * 0.28f + 10f)
+            else -> MARGIN
+        }
 
         val ctxForPdf = appContext
         val prefsForPdf = ctxForPdf?.let { ctx -> runCatching { com.example.data.preferences.AppPreferences(ctx) }.getOrNull() }
@@ -670,20 +736,14 @@ object NoteExporter {
             CustomFontManager.resolveTypeface(ctx, defaultFontIdForPdf, importedFontsForPdf)
         }
 
-        // Title
-        val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AColor.rgb(255, 45, 85)
-            textSize = 22f
-            typeface = Typeface.create(defaultPdfTypeface ?: Typeface.DEFAULT, Typeface.BOLD)
-        }
-        drawLayout(pager, makeLayout(note.title.ifBlank { "Untitled Note" }, titlePaint, (cw - (bodyLeft - MARGIN)).toInt()), bodyLeft)
-        pager.y += 10f
+        // Note title is intentionally NOT printed inside the exported PDF body —
+        // only the note's actual content, formatting, tables, and attachments are exported.
 
         // Body — default text is dark on white/tinted paper regardless of app theme,
         // explicit color and per-selection font spans keep their chosen styles.
         val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AColor.rgb(25, 25, 25)
-            textSize = note.fontSize.coerceIn(9, 28).toFloat() * 0.8f
+            textSize = bodyTextSizePt
             typeface = defaultPdfTypeface ?: Typeface.DEFAULT
         }
         val allAtts = RichTextFormatter.deserializeAttachments(note.attachmentsJson)
@@ -723,7 +783,7 @@ object NoteExporter {
             note
         }
 
-        val textW = (cw - (bodyLeft - MARGIN)).toInt().coerceAtLeast(120)
+        val textW = (PAGE_W - MARGIN - bodyLeft).toInt().coerceAtLeast(120)
         if (cleanedNoteForPdf.content.isNotEmpty()) {
             val body = buildSpannable(cleanedNoteForPdf, importedFontsForPdf)
             if (cleanedNoteForPdf.isCodeFormat) body.setSpan(TypefaceSpan("monospace"), 0, body.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
@@ -735,7 +795,7 @@ object NoteExporter {
                 val a = segStart
                 var b = endExclusive
                 if (b > a && b <= body.length && body[b - 1] == '\n') b--
-                if (b > a) drawLayout(pager, makeLayout(body.subSequence(a, b), bodyPaint, textW), bodyLeft)
+                if (b > a) drawLayout(pager, makeLayout(body.subSequence(a, b), bodyPaint, textW, safeLineMult, 3f), bodyLeft)
             }
             for (line in lines) {
                 val lineStart = offset
@@ -757,7 +817,7 @@ object NoteExporter {
                             val att = allAtts.firstOrNull { it.id == id }
                             if (att != null) {
                                 placedInline.add(id)
-                                drawImageAt(pager, att, bodyPaint, textW)
+                                drawImageAt(pager, att, bodyPaint, textW, bodyLeft)
                             }
                         }
                         segStart = (lineEnd + 1).coerceAtMost(body.length)
@@ -766,7 +826,7 @@ object NoteExporter {
                 offset = lineEnd + 1
             }
             if (segStart < body.length) {
-                drawLayout(pager, makeLayout(body.subSequence(segStart, body.length), bodyPaint, textW), bodyLeft)
+                drawLayout(pager, makeLayout(body.subSequence(segStart, body.length), bodyPaint, textW, safeLineMult, 3f), bodyLeft)
             }
         }
 
@@ -858,9 +918,9 @@ object NoteExporter {
             }
             pager.y += 12f
             if (AttachmentRenderer.isImageAttachment(att)) {
-                drawImageAt(pager, att, bodyPaint, cw)
+                drawImageAt(pager, att, bodyPaint, textW, bodyLeft)
             } else {
-                drawLayout(pager, makeLayout("Attachment: ${att.fileName}", bodyPaint, cw), MARGIN)
+                drawLayout(pager, makeLayout("Attachment: ${att.fileName}", bodyPaint, textW), bodyLeft, drawRules = false)
             }
         }
         val usedY = pager.y
@@ -965,11 +1025,7 @@ object NoteExporter {
         val text = ImageMarkers.blank(note.content)
         val body = StringBuilder()
 
-        // Title
-        body.append("<w:p><w:r><w:rPr><w:b/><w:color w:val=\"FF2D55\"/><w:sz w:val=\"44\"/></w:rPr><w:t xml:space=\"preserve\">")
-            .append(xesc(note.title)).append("</w:t></w:r></w:p>")
-
-        // Body: one run per span-boundary segment, paragraphs split on newlines.
+        // Body: one run per span-boundary segment, paragraphs split on newlines (no note.title header).
         val cuts = (spans.flatMap { listOf(it.start, it.end) } + listOf(0, text.length) + text.indices.filter { text[it] == '\n' }.flatMap { listOf(it, it + 1) })
             .map { it.coerceIn(0, text.length) }.distinct().sorted()
         val fenceList = if (note.content.contains("```")) com.example.ui.components.CodeFences.find(note.content) else emptyList()

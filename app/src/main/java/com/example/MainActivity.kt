@@ -72,7 +72,8 @@ sealed class Screen {
     data class MainWorkspace(val initialFolder: String = "All Notes", val pickForHide: Boolean = false) : Screen()
     data class ReadNote(
         val note: NoteEntity,
-        val returnScreen: Screen = MainWorkspace("All Notes")
+        val returnScreen: Screen = MainWorkspace("All Notes"),
+        val initialSearchQuery: String = ""
     ) : Screen()
     data class EditNote(
         val note: NoteEntity?,
@@ -80,6 +81,7 @@ sealed class Screen {
     ) : Screen()
     data class SplitNotes(
         val primaryNote: NoteEntity? = null,
+        val secondaryNote: NoteEntity? = null,
         val initialPrimaryEdit: Boolean = false,
         val returnScreen: Screen = MainWorkspace("All Notes")
     ) : Screen()
@@ -405,6 +407,15 @@ fun AuNotesApp(
     var artifactsVersion by remember { mutableIntStateOf(0) }
     val allActiveNotesForSplit by repository.allActiveNotes.collectAsState(initial = emptyList())
 
+    // Enforce independent per-item 30-day Recycle Bin retention on app launch
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                com.example.data.documents.TrashBinManager.purgeExpiredItems(activity, repository, preferences)
+            }
+        }
+    }
+
     LaunchedEffect(incomingQuickNote) {
         if (incomingQuickNote) {
             onConsumeIncomingQuickNote()
@@ -650,6 +661,13 @@ fun AuNotesApp(
                             returnScreen = Screen.MainWorkspace(currentFolder)
                         )
                     },
+                    onOpenNoteWithQuery = { note, query ->
+                        currentScreen = Screen.ReadNote(
+                            note = note,
+                            returnScreen = Screen.MainWorkspace(currentFolder),
+                            initialSearchQuery = query
+                        )
+                    },
                     onCreateNote = {
                         latestEditedNote = null
                         currentScreen = Screen.EditNote(
@@ -673,10 +691,20 @@ fun AuNotesApp(
                     note = screen.note,
                     preferences = preferences,
                     isDarkMode = isDarkMode,
+                    initialSearchQuery = screen.initialSearchQuery,
+                    allActiveNotes = allActiveNotesForSplit,
                     onBack = navigateBackFromRead,
                     onOpenInSplitScreen = { note ->
                         currentScreen = Screen.SplitNotes(
                             primaryNote = note,
+                            initialPrimaryEdit = false,
+                            returnScreen = screen
+                        )
+                    },
+                    onOpenInSplitScreenPair = { primary, secondary ->
+                        currentScreen = Screen.SplitNotes(
+                            primaryNote = primary,
+                            secondaryNote = secondary,
                             initialPrimaryEdit = false,
                             returnScreen = screen
                         )
@@ -701,6 +729,7 @@ fun AuNotesApp(
                     onDeleteNote = { noteId ->
                         val doDelete = {
                             coroutineScope.launch {
+                                preferences.recordNoteTrashed(noteId)
                                 repository.moveToTrash(noteId)
                                 navigateBackFromRead()
                             }
@@ -754,10 +783,19 @@ fun AuNotesApp(
                     isDarkMode = isDarkMode,
                     repository = repository,
                     preferences = preferences,
+                    allActiveNotes = allActiveNotesForSplit,
                     onBack = navigateBackFromEdit,
                     onOpenInSplitScreen = { note ->
                         currentScreen = Screen.SplitNotes(
                             primaryNote = note,
+                            initialPrimaryEdit = true,
+                            returnScreen = screen
+                        )
+                    },
+                    onOpenInSplitScreenPair = { primary, secondary ->
+                        currentScreen = Screen.SplitNotes(
+                            primaryNote = primary,
+                            secondaryNote = secondary,
                             initialPrimaryEdit = true,
                             returnScreen = screen
                         )
@@ -861,7 +899,7 @@ fun AuNotesApp(
                 SplitScreenNotesScreen(
                     allNotes = allActiveNotesForSplit,
                     initialPrimaryNote = screen.primaryNote,
-                    initialSecondaryNote = null,
+                    initialSecondaryNote = screen.secondaryNote,
                     initialPrimaryEdit = screen.initialPrimaryEdit,
                     repository = repository,
                     preferences = preferences,

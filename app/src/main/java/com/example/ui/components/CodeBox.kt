@@ -23,17 +23,33 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.WrapText
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -200,6 +216,9 @@ fun CodeBoxCard(
     var wrap by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(!startCollapsed && lineCount <= 28) }
     var justCopied by remember { mutableStateOf(false) }
+    val canPreview = remember(lang, code) { isPreviewableWebCode(lang, code) }
+    var showInlinePreview by remember(code) { mutableStateOf(false) }
+    var showFullscreenDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(justCopied) {
         if (justCopied) {
@@ -286,13 +305,27 @@ fun CodeBoxCard(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (canPreview) {
+                    HeaderMiniButton(
+                        icon = if (showInlinePreview) Icons.Default.Code else Icons.Default.Visibility,
+                        tint = if (showInlinePreview) Color(0xFFEA580C) else CrimsonPrimary,
+                        label = if (showInlinePreview) "Show code" else "Live preview"
+                    ) { showInlinePreview = !showInlinePreview }
+                }
+
+                HeaderMiniButton(
+                    icon = Icons.Default.OpenInFull,
+                    tint = gutterCol,
+                    label = "Fullscreen"
+                ) { showFullscreenDialog = true }
+
                 HeaderMiniButton(
                     icon = Icons.Default.WrapText,
                     tint = if (wrap) CrimsonPrimary else gutterCol,
                     label = if (wrap) "Unwrap" else "Wrap"
                 ) { wrap = !wrap }
 
-                if (lineCount > 18) {
+                if (lineCount > 18 && !showInlinePreview) {
                     HeaderMiniButton(
                         icon = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                         tint = gutterCol,
@@ -376,7 +409,16 @@ fun CodeBoxCard(
         }
 
         val maxBodyHeight = if (expanded) 560.dp else maxCollapsedHeightDp.dp
-        if (chunks == null) {
+        if (showInlinePreview && canPreview) {
+            InlineCodePreviewWebView(
+                code = code,
+                lang = lang,
+                isDarkMode = isDarkMode,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(340.dp)
+            )
+        } else if (chunks == null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -493,7 +535,7 @@ fun CodeBoxCard(
             }
         }
 
-        if (!expanded && lineCount > 18) {
+        if (!showInlinePreview && !expanded && lineCount > 18) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -508,6 +550,245 @@ fun CodeBoxCard(
                     fontWeight = FontWeight.SemiBold,
                     color = CrimsonPrimary
                 )
+            }
+        }
+    }
+
+    if (showFullscreenDialog) {
+        CodeBoxFullscreenDialog(
+            title = badge,
+            code = code,
+            lang = lang,
+            isDarkMode = isDarkMode,
+            initialPreview = showInlinePreview && canPreview,
+            onDismiss = { showFullscreenDialog = false }
+        )
+    }
+}
+
+/**
+ * Returns true if the code block can be live-previewed inside an embedded WebView
+ * (HTML, SVG, CSS, or interactive JS/HTML snippet).
+ */
+fun isPreviewableWebCode(lang: String, code: String): Boolean {
+    val l = lang.trim().lowercase()
+    val trimmed = code.trim()
+    if (trimmed.isEmpty()) return false
+    if (l in setOf("html", "htm", "svg", "css", "js", "javascript", "html_artifact", "html_page")) return true
+    val lower = trimmed.lowercase()
+    return lower.contains("<!doctype html") ||
+        lower.contains("<html") ||
+        lower.contains("<svg") ||
+        (lower.contains("<style") && lower.contains("</style>")) ||
+        (lower.contains("<div") && lower.contains("</div>")) ||
+        (lower.contains("<script") && lower.contains("</script>")) ||
+        (lower.contains("<body") && lower.contains("</body>"))
+}
+
+/** Wraps raw HTML, SVG, CSS, or JavaScript snippets into a standalone previewable HTML document. */
+fun wrapCodeForWebPreview(lang: String, code: String, isDarkMode: Boolean): String {
+    val trimmed = code.trim()
+    val lower = trimmed.lowercase()
+    val l = lang.trim().lowercase()
+    val bg = if (isDarkMode) "#0E1117" else "#FFFFFF"
+    val fg = if (isDarkMode) "#E6EDF3" else "#18181B"
+    return when {
+        lower.startsWith("<!doctype") || lower.startsWith("<html") -> trimmed
+        l == "css" && !lower.contains("<style") -> """
+            <!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>body{font-family:system-ui,sans-serif;padding:16px;background:$bg;color:$fg;}$trimmed</style></head>
+            <body><div class="preview"><h2>CSS Preview</h2><p>Styled sample paragraph.</p><button>Sample Button</button></div></body></html>
+        """.trimIndent()
+        (l == "js" || l == "javascript") && !lower.contains("<script") && !lower.contains("<div") -> """
+            <!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>body{font-family:monospace;padding:14px;background:$bg;color:$fg;white-space:pre-wrap;}</style></head>
+            <body><div id="app"></div><pre id="out"></pre><script>
+            (function(){var out=document.getElementById('out');var log=console.log;
+            console.log=function(){out.textContent+=Array.prototype.slice.call(arguments).join(' ')+'\n';if(log)log.apply(console,arguments);};
+            try{$trimmed}catch(e){out.textContent+='Error: '+e.message;}})();
+            </script></body></html>
+        """.trimIndent()
+        else -> """
+            <!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>html,body{margin:0;padding:12px;background:$bg;color:$fg;font-family:system-ui,-apple-system,sans-serif;box-sizing:border-box;}*,*::before,*::after{box-sizing:border-box;}</style></head>
+            <body>$trimmed</body></html>
+        """.trimIndent()
+    }
+}
+
+@Composable
+fun InlineCodePreviewWebView(
+    code: String,
+    lang: String,
+    isDarkMode: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val html = remember(code, lang, isDarkMode) { wrapCodeForWebPreview(lang, code, isDarkMode) }
+    AndroidView(
+        modifier = modifier.background(if (isDarkMode) Color(0xFF0E1117) else Color.White),
+        factory = { ctx ->
+            WebView(ctx).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    useWideViewPort = true
+                    loadWithOverviewMode = false
+                    setSupportZoom(false)
+                    builtInZoomControls = false
+                    displayZoomControls = false
+                    textZoom = 100
+                }
+                setInitialScale(100)
+                setOnTouchListener { v, _ ->
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                    false
+                }
+                webChromeClient = WebChromeClient()
+                webViewClient = android.webkit.WebViewClient()
+                tag = html.hashCode()
+                loadDataWithBaseURL("file:///android_asset/", html, "text/html", "UTF-8", null)
+            }
+        },
+        update = { wv ->
+            val key = html.hashCode()
+            if (wv.tag != key) {
+                wv.tag = key
+                wv.loadDataWithBaseURL("file:///android_asset/", html, "text/html", "UTF-8", null)
+            }
+        },
+        onRelease = { wv ->
+            runCatching {
+                (wv.parent as? ViewGroup)?.removeView(wv)
+                wv.stopLoading()
+                wv.destroy()
+            }
+        }
+    )
+}
+
+@Composable
+fun CodeBoxFullscreenDialog(
+    title: String,
+    code: String,
+    lang: String,
+    isDarkMode: Boolean,
+    initialPreview: Boolean = false,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val canPreview = remember(lang, code) { isPreviewableWebCode(lang, code) }
+    var showPreview by remember(code, initialPreview) { mutableStateOf(initialPreview && canPreview) }
+
+    val boxBg = if (isDarkMode) Color(0xFF0D1117) else Color(0xFFF6F8FA)
+    val headerBg = if (isDarkMode) Color(0xFF161B22) else Color(0xFFEAEEF2)
+    val textCol = if (isDarkMode) Color(0xFFE6EDF3) else Color(0xFF1F2328)
+    val coloredCode = remember(code, lang, isDarkMode) {
+        buildHighlightedAnnotatedString(code, lang.ifBlank { guessCodeLanguage(code) }, isDarkMode, textCol)
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+    ) {
+        ConfigureEdgeToEdgeDialog(isDarkMode = isDarkMode)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(boxBg)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(headerBg)
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = "Close fullscreen", tint = textCol)
+                }
+                Text(
+                    text = title.ifBlank { codeDisplayName(lang) },
+                    modifier = Modifier.weight(1f),
+                    color = textCol,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    maxLines = 1
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (canPreview) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (showPreview) Color(0xFFEA580C).copy(alpha = 0.18f) else CrimsonPrimary.copy(alpha = 0.15f))
+                                .clickable { showPreview = !showPreview }
+                                .testTag("codebox_fullscreen_preview_toggle")
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (showPreview) Icons.Default.Code else Icons.Default.Visibility,
+                                contentDescription = if (showPreview) "View code" else "Live preview",
+                                tint = if (showPreview) Color(0xFFEA580C) else CrimsonPrimary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                text = if (showPreview) "Code" else "Preview",
+                                color = if (showPreview) Color(0xFFEA580C) else CrimsonPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(if (isDarkMode) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.06f))
+                            .clickable {
+                                clipboard.setText(AnnotatedString(code))
+                                Toast.makeText(context, "Code copied", Toast.LENGTH_SHORT).show()
+                            }
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy code", tint = textCol, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("Copy", color = textCol, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                    }
+                }
+            }
+
+            if (showPreview && canPreview) {
+                InlineCodePreviewWebView(
+                    code = code,
+                    lang = lang,
+                    isDarkMode = isDarkMode,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                SelectionContainer(modifier = Modifier.fillMaxSize()) {
+                    Text(
+                        text = coloredCode,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.5.sp,
+                        lineHeight = 21.sp,
+                        color = textCol,
+                        softWrap = false,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .horizontalScroll(rememberScrollState())
+                            .padding(14.dp)
+                    )
+                }
             }
         }
     }

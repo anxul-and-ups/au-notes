@@ -172,7 +172,10 @@ class NoteEditorState(
     var toolsOpen by mutableStateOf(false)
     var toolbarHidden by mutableStateOf(false)
     var showTableFullscreen by mutableStateOf(false)
+    var showBoxesEditor by mutableStateOf(false)
+    var showCodeInputModal by mutableStateOf(false)
     var maximizedCodeFence by mutableStateOf<CodeFence?>(null)
+    var previewingCodeFenceStarts by mutableStateOf<Set<Int>>(emptySet())
 
     private val initialStylePair = loadNotePageStyle(context, initialNote?.id ?: 0L, preferences)
     var pageStyle by mutableStateOf(initialStylePair.first)

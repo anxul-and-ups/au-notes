@@ -213,7 +213,20 @@ object AttachmentRenderer {
         else Bitmap.createBitmap(rotated, l, t, w, h)
     }
 
-    /** Final frame bitmap: the base picture scaled by zoom and shifted by posX/posY inside its frame. */
+    /**
+     * Converts attachment pan offsets safely for PDF/export framing.
+     * Editor canvas offsets (posX/posY in DP, e.g. 40f, 120f) must NOT be treated as normalized
+     * frame fractions (which would push the bitmap thousands of pixels off-canvas). Only apply
+     * fractional inner-crop pan within [-1f, 1f] when explicitly zoomed in.
+     */
+    fun computeNormalizedPan(att: AttachmentInfo): Pair<Float, Float> {
+        val zoom = if (att.zoom > 0.05f) att.zoom else 1f
+        val normPanX = if (zoom > 1.01f && kotlin.math.abs(att.posX) <= 1f) att.posX else 0f
+        val normPanY = if (zoom > 1.01f && kotlin.math.abs(att.posY) <= 1f) att.posY else 0f
+        return normPanX to normPanY
+    }
+
+    /** Final frame bitmap: the base picture scaled by zoom and shifted by normalized pan inside its frame. */
     fun frameBitmap(
         att: AttachmentInfo,
         outWidth: Int,
@@ -229,11 +242,12 @@ object AttachmentRenderer {
         val c = Canvas(out)
         c.drawColor(background)
         val zoom = if (att.zoom > 0.05f) att.zoom else 1f
+        val (normPanX, normPanY) = computeNormalizedPan(att)
         val m = Matrix().apply {
             postTranslate(-base.width / 2f, -base.height / 2f)
             val s = (outW.toFloat() / base.width.coerceAtLeast(1)) * zoom * fit
             postScale(s, s)
-            postTranslate(outW / 2f + att.posX * outW, outH / 2f + att.posY * outH)
+            postTranslate(outW / 2f + normPanX * outW, outH / 2f + normPanY * outH)
         }
         c.drawBitmap(base, m, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
         return out
